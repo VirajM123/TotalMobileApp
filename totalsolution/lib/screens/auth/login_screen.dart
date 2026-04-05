@@ -87,7 +87,7 @@ class UserModel {
           ? DateTime.parse(map['createdAt'].toString())
           : DateTime.now(),
       isActive: map['isActive'] ?? true,
-      distributorId: map['distributorId'],
+      distributorId: map['distributorId'] ?? map['distributor_id'],
     );
   }
 }
@@ -435,6 +435,19 @@ class OrderTemplateModel {
   });
 }
 
+// Helper function to show SnackBar safely
+void showSafeSnackBar(BuildContext context, String message, {Color? backgroundColor}) {
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: backgroundColor,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+}
+
 // API Service for backend communication
 class ApiService {
   static String get apiUrl {
@@ -469,6 +482,7 @@ class ApiService {
     }
   }
 
+  // Fixed: Use correct endpoint with distributorId parameter
   static Future<List<dynamic>> getCustomers(String distributorId) async {
     try {
       final response = await http.get(
@@ -502,6 +516,7 @@ class ApiService {
     }
   }
 
+  // Fixed: Use correct endpoint with distributorId parameter
   static Future<List<dynamic>> getProducts(String distributorId) async {
     try {
       final response = await http.get(
@@ -535,6 +550,7 @@ class ApiService {
     }
   }
 
+  // Fixed: Use correct endpoint with distributorId parameter
   static Future<List<dynamic>> getSalesmen(String distributorId) async {
     try {
       final response = await http.get(
@@ -565,7 +581,7 @@ class CustomerService {
     
     try {
       final response = await ApiService.getCustomers(_currentDistributorId!);
-      _customers = response.map((data) => CustomerModel.fromMap(data, data['_id'] ?? '')).toList();
+      _customers = response.map((data) => CustomerModel.fromMap(data, data['_id']?.toString() ?? '')).toList();
       return _customers;
     } catch (e) {
       // Fallback to mock data if API fails
@@ -605,7 +621,7 @@ class CustomerService {
   Future<void> addCustomer(CustomerModel customer) async {
     try {
       final response = await ApiService.addCustomer(customer.toMap());
-      final newCustomer = CustomerModel.fromMap(response, response['_id'] ?? customer.id);
+      final newCustomer = CustomerModel.fromMap(response, response['_id']?.toString() ?? customer.id);
       _customers.add(newCustomer);
     } catch (e) {
       // Fallback to local storage
@@ -633,7 +649,7 @@ class ProductService {
     
     try {
       final response = await ApiService.getProducts(_currentDistributorId!);
-      _products = response.map((data) => ProductModel.fromMap(data, data['_id'] ?? '')).toList();
+      _products = response.map((data) => ProductModel.fromMap(data, data['_id']?.toString() ?? '')).toList();
       return _products;
     } catch (e) {
       // Fallback to mock data
@@ -673,7 +689,7 @@ class ProductService {
   Future<void> addProduct(ProductModel product) async {
     try {
       final response = await ApiService.addProduct(product.toMap());
-      final newProduct = ProductModel.fromMap(response, response['_id'] ?? product.id);
+      final newProduct = ProductModel.fromMap(response, response['_id']?.toString() ?? product.id);
       _products.add(newProduct);
     } catch (e) {
       _products.add(product);
@@ -700,7 +716,7 @@ class SalesmanService {
     
     try {
       final response = await ApiService.getSalesmen(_currentDistributorId!);
-      _salesmen = response.map((data) => SalesmanModel.fromMap(data, data['_id'] ?? '')).toList();
+      _salesmen = response.map((data) => SalesmanModel.fromMap(data, data['_id']?.toString() ?? '')).toList();
       return _salesmen;
     } catch (e) {
       // Fallback to mock data
@@ -726,7 +742,7 @@ class SalesmanService {
   Future<void> addSalesman(SalesmanModel salesman) async {
     try {
       final response = await ApiService.addSalesman(salesman.toMap());
-      final newSalesman = SalesmanModel.fromMap(response, response['_id'] ?? salesman.id);
+      final newSalesman = SalesmanModel.fromMap(response, response['_id']?.toString() ?? salesman.id);
       _salesmen.add(newSalesman);
     } catch (e) {
       _salesmen.add(salesman);
@@ -1211,12 +1227,7 @@ class _DistributorDashboardEnhancedState
   // Post orders to desktop
   Future<void> _postOrdersToDesktop() async {
     if (_selectedOrderIds.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please select at least one order to post'),
-          backgroundColor: warningOrange,
-        ),
-      );
+      showSafeSnackBar(context, 'Please select at least one order to post', backgroundColor: warningOrange);
       return;
     }
 
@@ -1274,14 +1285,7 @@ class _DistributorDashboardEnhancedState
         await Future.delayed(const Duration(seconds: 1));
 
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '✅ Successfully posted ${selectedOrders.length} order(s) to desktop!',
-              ),
-              backgroundColor: successGreen,
-            ),
-          );
+          showSafeSnackBar(context, '✅ Successfully posted ${selectedOrders.length} order(s) to desktop!', backgroundColor: successGreen);
 
           setState(() {
             _selectedOrderIds.clear();
@@ -1290,12 +1294,7 @@ class _DistributorDashboardEnhancedState
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error posting orders: $e'),
-            backgroundColor: errorRed,
-          ),
-        );
+        showSafeSnackBar(context, 'Error posting orders: $e', backgroundColor: errorRed);
       }
     } finally {
       if (mounted) {
@@ -1484,12 +1483,7 @@ class _DistributorDashboardEnhancedState
     await _orderService.createOrder(order);
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✅ Order submitted successfully!'),
-          backgroundColor: successGreen,
-        ),
-      );
+      showSafeSnackBar(context, '✅ Order submitted successfully!', backgroundColor: successGreen);
       _clearCart();
       _loadData();
     }
@@ -1524,24 +1518,12 @@ class _DistributorDashboardEnhancedState
         await _productService.syncProducts(products);
         await _loadData();
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '✅ Imported ${products.length} products successfully!',
-              ),
-              backgroundColor: successGreen,
-            ),
-          );
+          showSafeSnackBar(context, '✅ Imported ${products.length} products successfully!', backgroundColor: successGreen);
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error importing products: $e'),
-            backgroundColor: errorRed,
-          ),
-        );
+        showSafeSnackBar(context, 'Error importing products: $e', backgroundColor: errorRed);
       }
     }
   }
@@ -1553,24 +1535,12 @@ class _DistributorDashboardEnhancedState
         await _customerService.syncCustomers(customers);
         await _loadData();
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '✅ Imported ${customers.length} customers successfully!',
-              ),
-              backgroundColor: successGreen,
-            ),
-          );
+          showSafeSnackBar(context, '✅ Imported ${customers.length} customers successfully!', backgroundColor: successGreen);
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error importing customers: $e'),
-            backgroundColor: errorRed,
-          ),
-        );
+        showSafeSnackBar(context, 'Error importing customers: $e', backgroundColor: errorRed);
       }
     }
   }
@@ -1580,21 +1550,14 @@ class _DistributorDashboardEnhancedState
     try {
       final result = await SyncService.syncCustomersFromDesktop();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result.message),
-            backgroundColor: result.success ? successGreen : errorRed,
-          ),
-        );
+        showSafeSnackBar(context, result.message, backgroundColor: result.success ? successGreen : errorRed);
         if (result.success) {
           await _loadData();
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: errorRed),
-        );
+        showSafeSnackBar(context, 'Error: $e', backgroundColor: errorRed);
       }
     } finally {
       if (mounted) setState(() => _isSyncing = false);
@@ -1606,21 +1569,14 @@ class _DistributorDashboardEnhancedState
     try {
       final result = await SyncService.syncProductsFromDesktop();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result.message),
-            backgroundColor: result.success ? successGreen : errorRed,
-          ),
-        );
+        showSafeSnackBar(context, result.message, backgroundColor: result.success ? successGreen : errorRed);
         if (result.success) {
           await _loadData();
         }
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e'), backgroundColor: errorRed),
-        );
+        showSafeSnackBar(context, 'Error: $e', backgroundColor: errorRed);
       }
     } finally {
       if (mounted) setState(() => _isSyncing = false);
@@ -1701,12 +1657,7 @@ class _DistributorDashboardEnhancedState
                 await _loadData();
                 if (mounted) {
                   Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Customer added successfully!'),
-                      backgroundColor: successGreen,
-                    ),
-                  );
+                  showSafeSnackBar(context, 'Customer added successfully!', backgroundColor: successGreen);
                 }
               }
             },
@@ -1802,12 +1753,7 @@ class _DistributorDashboardEnhancedState
                 await _loadData();
                 if (mounted) {
                   Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Product added successfully!'),
-                      backgroundColor: successGreen,
-                    ),
-                  );
+                  showSafeSnackBar(context, 'Product added successfully!', backgroundColor: successGreen);
                 }
               }
             },
@@ -1917,12 +1863,7 @@ class _DistributorDashboardEnhancedState
                 await _loadData();
                 if (mounted) {
                   Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Salesman added successfully!'),
-                      backgroundColor: successGreen,
-                    ),
-                  );
+                  showSafeSnackBar(context, 'Salesman added successfully!', backgroundColor: successGreen);
                 }
               }
             },
@@ -2362,27 +2303,11 @@ class _DistributorDashboardEnhancedState
                           final path = await PdfService.downloadOrderPdf(order);
                           if (mounted) {
                             Navigator.pop(context);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(
-                                  path != null
-                                      ? 'PDF saved to: $path'
-                                      : 'Failed to download PDF',
-                                ),
-                                backgroundColor: path != null
-                                    ? successGreen
-                                    : errorRed,
-                              ),
-                            );
+                            showSafeSnackBar(context, path != null ? 'PDF saved to: $path' : 'Failed to download PDF', backgroundColor: path != null ? successGreen : errorRed);
                           }
                         } catch (e) {
                           if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Error: $e'),
-                                backgroundColor: errorRed,
-                              ),
-                            );
+                            showSafeSnackBar(context, 'Error: $e', backgroundColor: errorRed);
                           }
                         }
                       },
@@ -2401,12 +2326,7 @@ class _DistributorDashboardEnhancedState
                           await PdfService.shareOrderPdf(order);
                         } catch (e) {
                           if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Error sharing: $e'),
-                                backgroundColor: errorRed,
-                              ),
-                            );
+                            showSafeSnackBar(context, 'Error sharing: $e', backgroundColor: errorRed);
                           }
                         }
                       },
@@ -2441,6 +2361,7 @@ class _DistributorDashboardEnhancedState
         scaffoldBackgroundColor: const Color(0xFF1A1A2E),
       ),
       home: Scaffold(
+        key: const ValueKey('distributorScaffold'),
         backgroundColor: _themeMode == ThemeMode.dark
             ? const Color(0xFF1A1A2E)
             : const Color(0xFFF5F7FA),
@@ -5417,12 +5338,7 @@ class _DistributorDashboardEnhancedState
                   await _loadData();
                   if (mounted) {
                     Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Payment collected successfully!'),
-                        backgroundColor: successGreen,
-                      ),
-                    );
+                    showSafeSnackBar(context, 'Payment collected successfully!', backgroundColor: successGreen);
                   }
                 }
               },
@@ -5562,6 +5478,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      key: const ValueKey('salesmanScaffold'),
       backgroundColor: const Color(0xFFF5F7FA),
       body: Stack(
         children: [
@@ -6557,12 +6474,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             Expanded(
               child: ElevatedButton(
                 onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('✅ Order submitted successfully!'),
-                      backgroundColor: successGreen,
-                    ),
-                  );
+                  showSafeSnackBar(context, '✅ Order submitted successfully!', backgroundColor: successGreen);
                   clearCart();
                   setState(() => _selectedIndex = 0);
                 },
@@ -6944,9 +6856,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               );
             } else {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Unknown user role!')),
-              );
+              showSafeSnackBar(context, 'Unknown user role!', backgroundColor: Colors.red);
             }
           }
         } else if (mounted) {
