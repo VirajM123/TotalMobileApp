@@ -1,0 +1,150 @@
+                    ChoiceChip(
+                      label: const Text('Cheque'),
+                      selected: selectedMode == PaymentMode.cheque,
+                      onSelected: (_) => setDialogState(() {
+                        selectedMode = PaymentMode.cheque;
+                        showChequeFields = true;
+                      }),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Cheque+Cash'),
+                      selected: selectedMode == PaymentMode.chequeWithCash,
+                      onSelected: (_) => setDialogState(() {
+                        selectedMode = PaymentMode.chequeWithCash;
+                        showChequeFields = true;
+                      }),
+                    ),
+                    ChoiceChip(
+                      label: const Text('GPay'),
+                      selected: selectedMode == PaymentMode.gpay,
+                      onSelected: (_) => setDialogState(() {
+                        selectedMode = PaymentMode.gpay;
+                        showChequeFields = false;
+                      }),
+                    ),
+                    ChoiceChip(
+                      label: const Text('PhonePe'),
+                      selected: selectedMode == PaymentMode.phonepe,
+                      onSelected: (_) => setDialogState(() {
+                        selectedMode = PaymentMode.phonepe;
+                        showChequeFields = false;
+                      }),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Paytm'),
+                      selected: selectedMode == PaymentMode.paytm,
+                      onSelected: (_) => setDialogState(() {
+                        selectedMode = PaymentMode.paytm;
+                        showChequeFields = false;
+                      }),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Other UPI'),
+                      selected: selectedMode == PaymentMode.upiOther,
+                      onSelected: (_) => setDialogState(() {
+                        selectedMode = PaymentMode.upiOther;
+                        showChequeFields = false;
+                      }),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Bank Transfer'),
+                      selected: selectedMode == PaymentMode.bankTransfer,
+                      onSelected: (_) => setDialogState(() {
+                        selectedMode = PaymentMode.bankTransfer;
+                        showChequeFields = false;
+                      }),
+                    ),
+                  ],
+                ),
+                if (showChequeFields) ...[
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Cheque Details:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _chequeNumberController,
+                    decoration: const InputDecoration(
+                      labelText: 'Cheque Number',
+                      border: OutlineInputBorder(),
+                    ),
+                    keyboardType: TextInputType.number,
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _chequeDateController,
+                    decoration: const InputDecoration(
+                      labelText: 'Cheque Date',
+                      border: OutlineInputBorder(),
+                      hintText: 'DD/MM/YYYY',
+                      suffixIcon: Icon(Icons.calendar_today),
+                    ),
+                    readOnly: true,
+                    onTap: () async {
+                      final date = await showDatePicker(
+                        context: context,
+                        initialDate: DateTime.now(),
+                        firstDate: DateTime.now(),
+                        lastDate: DateTime.now().add(const Duration(days: 365)),
+                      );
+                      if (date != null) {
+                        _chequeDateController.text =
+                            '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')}/${date.year}';
+                      }
+                    },
+                  ),
+                ],
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _referenceController,
+                  decoration: const InputDecoration(
+                    labelText: 'Reference / Transaction ID (Optional)',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final amount =
+                    double.tryParse(_paymentAmountController.text) ?? 0;
+                if (amount > 0) {
+                  String? ref = _referenceController.text.isNotEmpty
+                      ? _referenceController.text
+                      : null;
+                  if (showChequeFields &&
+                      _chequeNumberController.text.isNotEmpty) {
+                    ref =
+                        'Cheque: ${_chequeNumberController.text}, Date: ${_chequeDateController.text}${ref != null ? ", $ref" : ""}';
+                  }
+                  _orderService.recordPayment(
+                    order.id,
+                    amount,
+                    selectedMode,
+                    reference: ref,
+                  );
+                  _referenceController.clear();
+                  Navigator.pop(context);
+                  _loadData();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Payment of ₹$amount recorded!'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              },
+              child: const Text('Record Payment'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }

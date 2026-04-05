@@ -1,0 +1,8 @@
+{
+  "name": "Total Solution",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "angular",
+  "id": "83910b7e"
+}

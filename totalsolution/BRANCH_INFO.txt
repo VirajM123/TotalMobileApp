@@ -1,0 +1,15 @@
+Total App - Initial Feature Branch
+====================================
+
+This branch contains the initial implementation of the Total App project.
+
+Features included:
+- Authentication service
+- User, Product, Customer, Order models
+- Services: Firebase config, Product, Customer, Order, Import, PDF, Sync
+- Login screen and dashboards for distributor and salesman
+- Backend server setup
+
+Created by: BlackBoxAI
+Branch: blackboxai/feature/total-app-initial-commit
+

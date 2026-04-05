@@ -1,0 +1,33 @@
+# Read the file
+file_path = r'l:\Total App\totalsolution\lib\screens\salesman\salesman_dashboard_enhanced.dart'
+
+with open(file_path, 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+
+# Find the line with rateController and product.price.toStringAsFixed(0)
+for i, line in enumerate(lines):
+    if 'final rateController = TextEditingController(' in line:
+        print(f"Found rateController at line {i+1}")
+        # Check next few lines
+        for j in range(i, min(i+5, len(lines))):
+            print(f"Line {j+1}: {repr(lines[j])}")
+        
+        # Replace the text in the next line that has product.price.toStringAsFixed(0)
+        for j in range(i, min(i+5, len(lines))):
+            if 'text: product.price.toStringAsFixed(0),' in lines[j]:
+                old_line = lines[j]
+                new_line = old_line.replace(
+                    'text: product.price.toStringAsFixed(0),',
+                    'text: existingCartItem != null ? existingCartItem.rate.toStringAsFixed(0) : product.price.toStringAsFixed(0),'
+                )
+                lines[j] = new_line
+                print(f"Replaced line {j+1}")
+                print(f"New line: {repr(new_line)}")
+                break
+        break
+
+# Write back
+with open(file_path, 'w', encoding='utf-8') as f:
+    f.writelines(lines)
+
+print("Done!")

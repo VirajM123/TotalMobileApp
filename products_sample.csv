@@ -1,0 +1,6 @@
+Name,SKU,Price,Stock,Category,Description
+Test Product 1,T001,100,50,"Beverages","Cola Drink 1L"
+Test Product 2,T002,150,30,"Snacks","Chips Regular"
+Test Product 3,T003,200,20,"Dairy","Milk Packet"
+Test Product 4,T004,75,100,"Household","Soap Bar"
+Test Product 5,T005,300,15,"Electronics","Battery AA Pack"
