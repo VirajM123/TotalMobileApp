@@ -2,9 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:io' show Platform;
 import 'package:fl_chart/fl_chart.dart';
+import 'package:image_picker/image_picker.dart';
+import 'dart:async';
+import 'package:flutter/material.dart';
 
 // Define models inline if missing
 enum UserRole {
@@ -51,6 +54,8 @@ class UserModel {
   final DateTime createdAt;
   final bool isActive;
   final String? distributorId;
+  final String? salesmanId;
+  final Map<String, dynamic>? permissions;
 
   UserModel({
     required this.id,
@@ -61,6 +66,8 @@ class UserModel {
     required this.createdAt,
     required this.isActive,
     this.distributorId,
+    this.salesmanId,
+    this.permissions,
   });
 
   Map<String, dynamic> toMap() {
@@ -73,6 +80,8 @@ class UserModel {
       'createdAt': createdAt.toIso8601String(),
       'isActive': isActive,
       'distributorId': distributorId,
+      'salesmanId': salesmanId,
+      'permissions': permissions,
     };
   }
 
@@ -87,7 +96,9 @@ class UserModel {
           ? DateTime.parse(map['createdAt'].toString())
           : DateTime.now(),
       isActive: map['isActive'] ?? true,
-      distributorId: map['distributorId'] ?? map['distributor_id'],
+      distributorId: map['distributor_id'] ?? map['distributorId'],
+      salesmanId: map['salesman_id'],
+      permissions: map['permissions'] != null ? Map<String, dynamic>.from(map['permissions']) : null,
     );
   }
 }
@@ -196,7 +207,7 @@ class ProductModel {
       'sku': sku,
       'price': price,
       'category': category,
-      'stock': stock >= 10 ? 'Available' : 'Low Stock',
+      'stock': stock,
       'stockQuantity': stock,
       'description': description,
       'createdAt': createdAt.toIso8601String(),
@@ -216,7 +227,7 @@ class ProductModel {
       sku: map['sku'] ?? '',
       price: (map['price'] ?? 0).toDouble(),
       category: map['category'] ?? '',
-      stock: map['stockQuantity'] ?? map['stock'] ?? 0,
+      stock: map['stock'] ?? map['stockQuantity'] ?? 0,
       description: map['description'],
       createdAt: map['createdAt'] != null ? DateTime.parse(map['createdAt']) : DateTime.now(),
       updatedAt: map['updatedAt'] != null ? DateTime.parse(map['updatedAt']) : DateTime.now(),
@@ -320,6 +331,56 @@ class SalesmanModel {
       bankDetails: map['bank_details'] ?? {},
       documents: map['documents'] ?? {},
       notes: map['notes'] ?? '',
+    );
+  }
+}
+
+class NotificationModel {
+  final String id;
+  final String distributorId;
+  final String? orderId;
+  final String orderNumber;
+  final String customerName;
+  final String salesmanName;
+  final double amount;
+  final String message;
+  final String type;
+  final bool isRead;
+  final DateTime createdAt;
+  final DateTime? readAt;
+  final Map<String, dynamic>? orderData;
+
+  NotificationModel({
+    required this.id,
+    required this.distributorId,
+    this.orderId,
+    required this.orderNumber,
+    required this.customerName,
+    required this.salesmanName,
+    required this.amount,
+    required this.message,
+    required this.type,
+    required this.isRead,
+    required this.createdAt,
+    this.readAt,
+    this.orderData,
+  });
+
+  factory NotificationModel.fromMap(Map<String, dynamic> map, String id) {
+    return NotificationModel(
+      id: id,
+      distributorId: map['distributor_id'] ?? '',
+      orderId: map['order_id'],
+      orderNumber: map['order_number'] ?? '',
+      customerName: map['customer_name'] ?? '',
+      salesmanName: map['salesman_name'] ?? '',
+      amount: (map['amount'] ?? 0).toDouble(),
+      message: map['message'] ?? '',
+      type: map['type'] ?? 'new_order',
+      isRead: map['isRead'] ?? false,
+      createdAt: map['createdAt'] != null ? DateTime.parse(map['createdAt']) : DateTime.now(),
+      readAt: map['readAt'] != null ? DateTime.tryParse(map['readAt']) : null,
+      orderData: map['order_data'],
     );
   }
 }
@@ -448,6 +509,58 @@ void showSafeSnackBar(BuildContext context, String message, {Color? backgroundCo
   }
 }
 
+// Cart Item Data Model for Order with Scheme Calculation
+class CartItemData {
+  String productId;
+  String productName;
+  String sku;
+  int quantity;
+  double rate;
+  double schPer;
+  double schAmt;
+  double grossAmt;
+  double netAmt;
+  int stock;
+  bool schEnabled;
+
+  CartItemData({
+    required this.productId,
+    required this.productName,
+    required this.sku,
+    this.quantity = 1,
+    this.rate = 0,
+    this.schPer = 0,
+    this.schAmt = 0,
+    this.grossAmt = 0,
+    this.netAmt = 0,
+    this.stock = 0,
+    this.schEnabled = false,
+  });
+
+  void calculate() {
+    grossAmt = quantity * rate;
+    schAmt = schEnabled ? (schPer / 100) * grossAmt : 0;
+    netAmt = grossAmt - schAmt;
+  }
+
+  CartItemData copyWith({
+    int? quantity,
+    double? rate,
+    double? schPer,
+    bool? schEnabled,
+  }) {
+    return CartItemData(
+      productId: productId,
+      productName: productName,
+      sku: sku,
+      quantity: quantity ?? this.quantity,
+      rate: rate ?? this.rate,
+      schPer: schPer ?? this.schPer,
+      schEnabled: schEnabled ?? this.schEnabled,
+    );
+  }
+}
+
 // API Service for backend communication
 class ApiService {
   static String get apiUrl {
@@ -482,7 +595,6 @@ class ApiService {
     }
   }
 
-  // Fixed: Use correct endpoint with distributorId parameter
   static Future<List<dynamic>> getCustomers(String distributorId) async {
     try {
       final response = await http.get(
@@ -494,6 +606,7 @@ class ApiService {
       }
       return [];
     } catch (e) {
+      print('Error fetching customers: $e');
       return [];
     }
   }
@@ -516,7 +629,6 @@ class ApiService {
     }
   }
 
-  // Fixed: Use correct endpoint with distributorId parameter
   static Future<List<dynamic>> getProducts(String distributorId) async {
     try {
       final response = await http.get(
@@ -524,10 +636,13 @@ class ApiService {
       );
       
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        final data = json.decode(response.body);
+        print('Products fetched: ${data.length} products');
+        return data;
       }
       return [];
     } catch (e) {
+      print('Error fetching products: $e');
       return [];
     }
   }
@@ -550,7 +665,6 @@ class ApiService {
     }
   }
 
-  // Fixed: Use correct endpoint with distributorId parameter
   static Future<List<dynamic>> getSalesmen(String distributorId) async {
     try {
       final response = await http.get(
@@ -562,12 +676,386 @@ class ApiService {
       }
       return [];
     } catch (e) {
+      print('Error fetching salesmen: $e');
       return [];
+    }
+  }
+
+  // Salesman Data API (for salesman to get their distributor's data)
+  static Future<Map<String, dynamic>> getSalesmanData(String salesmanId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/salesman-data/$salesmanId'),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      throw Exception('Failed to fetch salesman data: ${response.statusCode}');
+    } catch (e) {
+      print('Error fetching salesman data: $e');
+      throw Exception('Error fetching salesman data: $e');
+    }
+  }
+
+  // Order APIs
+  static Future<Map<String, dynamic>> createOrder(Map<String, dynamic> orderData) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$apiUrl/orders'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(orderData),
+      );
+      
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        return json.decode(response.body);
+      }
+      final errorData = json.decode(response.body);
+      throw Exception(errorData['error'] ?? 'Failed to create order');
+    } catch (e) {
+      throw Exception('Error creating order: $e');
+    }
+  }
+
+  static Future<List<dynamic>> getOrdersBySalesman(String salesmanId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/orders/salesman/$salesmanId'),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching orders: $e');
+      return [];
+    }
+  }
+
+  static Future<List<dynamic>> getOrdersByDistributor(String distributorId, {String? customerName, String? salesmanId, DateTime? startDate, DateTime? endDate}) async {
+    try {
+      var url = '$apiUrl/orders/distributor/$distributorId';
+      var queryParams = <String>[];
+      
+      if (customerName != null && customerName.isNotEmpty) {
+        queryParams.add('customerName=$customerName');
+      }
+      if (salesmanId != null && salesmanId.isNotEmpty && salesmanId != 'all') {
+        queryParams.add('salesmanId=$salesmanId');
+      }
+      if (startDate != null) {
+        queryParams.add('startDate=${startDate.toIso8601String()}');
+      }
+      if (endDate != null) {
+        queryParams.add('endDate=${endDate.toIso8601String()}');
+      }
+      
+      if (queryParams.isNotEmpty) {
+        url += '?${queryParams.join('&')}';
+      }
+      
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching orders: $e');
+      return [];
+    }
+  }
+
+  static Future<Map<String, dynamic>> getLastOrderByCustomer(String customerId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/orders/customer/$customerId/last'),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {};
+    } catch (e) {
+      print('Error fetching last order: $e');
+      return {};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getLastSaleForProduct(String productId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/products/$productId/last-sale'),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {};
+    } catch (e) {
+      print('Error fetching last sale: $e');
+      return {};
+    }
+  }
+
+  static Future<Map<String, dynamic>> recordPayment(String orderId, Map<String, dynamic> paymentData) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$apiUrl/orders/$orderId/payment'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(paymentData),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      throw Exception('Failed to record payment: ${response.statusCode}');
+    } catch (e) {
+      throw Exception('Error recording payment: $e');
+    }
+  }
+
+  // Payment APIs with file upload - FIXED for UPI photo attachment
+  static Future<Map<String, dynamic>> recordPaymentWithFile({
+    required String orderId,
+    required double amount,
+    required String paymentMode,
+    required String collectedBy,
+    required String collectedByName,
+    required String collectedByType,
+    String? salesmanId,
+    String? salesmanName,
+    String? chequeNumber,
+    String? chequeDate,
+    String? bankName,
+    String? upiType,
+    String? transactionNumber,
+    String? remark,
+    File? paymentPhoto,
+  }) async {
+    try {
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$apiUrl/orders/$orderId/payment'),
+      );
+      
+      request.fields['amount'] = amount.toString();
+      request.fields['paymentMode'] = paymentMode;
+      request.fields['collectedBy'] = collectedBy;
+      request.fields['collectedByName'] = collectedByName;
+      request.fields['collectedByType'] = collectedByType;
+      
+      if (salesmanId != null) request.fields['salesmanId'] = salesmanId;
+      if (salesmanName != null) request.fields['salesmanName'] = salesmanName;
+      if (chequeNumber != null) request.fields['chequeNumber'] = chequeNumber;
+      if (chequeDate != null) request.fields['chequeDate'] = chequeDate;
+      if (bankName != null) request.fields['bankName'] = bankName;
+      if (upiType != null) request.fields['upiType'] = upiType;
+      if (transactionNumber != null) request.fields['transactionNumber'] = transactionNumber;
+      if (remark != null) request.fields['remark'] = remark;
+      
+      if (paymentPhoto != null) {
+        request.files.add(await http.MultipartFile.fromPath('paymentPhoto', paymentPhoto.path));
+      }
+      
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      final errorText = response.body;
+      throw Exception('Failed to record payment: ${response.statusCode} - $errorText');
+    } catch (e) {
+      throw Exception('Error recording payment: $e');
+    }
+  }
+
+  static Future<List<dynamic>> getBanks() async {
+    try {
+      final response = await http.get(Uri.parse('$apiUrl/banks'));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['banks'] ?? [];
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching banks: $e');
+      return [];
+    }
+  }
+
+  static Future<List<dynamic>> getUpiTypes() async {
+    try {
+      final response = await http.get(Uri.parse('$apiUrl/upi-types'));
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['upiTypes'] ?? [];
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching UPI types: $e');
+      return [];
+    }
+  }
+
+  // Permission APIs
+  static Future<Map<String, dynamic>> updateSalesmanPermissions(String salesmanId, Map<String, dynamic> permissions) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$apiUrl/salesmen/permissions/$salesmanId'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'permissions': permissions}),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      throw Exception('Failed to update permissions: ${response.statusCode}');
+    } catch (e) {
+      throw Exception('Error updating permissions: $e');
+    }
+  }
+
+  static Future<Map<String, dynamic>> getSalesmanPermissions(String salesmanId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/salesmen/permissions/$salesmanId'),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {'permissions': {}};
+    } catch (e) {
+      print('Error fetching permissions: $e');
+      return {'permissions': {}};
+    }
+  }
+  
+  // Logout API
+  static Future<Map<String, dynamic>> logout() async {
+    try {
+      final response = await http.post(
+        Uri.parse('$apiUrl/logout'),
+        headers: {'Content-Type': 'application/json'},
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {'success': true};
+    } catch (e) {
+      print('Error during logout: $e');
+      return {'success': true};
+    }
+  }
+
+  // Get customer outstanding balance
+  static Future<double> getCustomerOutstanding(String customerId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/customers/$customerId/outstanding'),
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return (data['outstanding'] ?? 0).toDouble();
+      }
+      return 0.0;
+    } catch (e) {
+      print('Error fetching outstanding: $e');
+      return 0.0;
+    }
+  }
+
+  // Notification APIs
+  static Future<List<dynamic>> getNotifications(String distributorId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/notifications/$distributorId'),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching notifications: $e');
+      return [];
+    }
+  }
+
+  static Future<int> getUnreadNotificationCount(String distributorId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/notifications/unread-count/$distributorId'),
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['count'] ?? 0;
+      }
+      return 0;
+    } catch (e) {
+      print('Error fetching unread count: $e');
+      return 0;
+    }
+  }
+
+  static Future<Map<String, dynamic>> markNotificationRead(String notificationId) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$apiUrl/notifications/$notificationId/read'),
+        headers: {'Content-Type': 'application/json'},
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      throw Exception('Failed to mark notification as read');
+    } catch (e) {
+      throw Exception('Error marking notification as read: $e');
+    }
+  }
+
+  static Future<Map<String, dynamic>> markAllNotificationsRead(String distributorId) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$apiUrl/notifications/mark-all-read/$distributorId'),
+        headers: {'Content-Type': 'application/json'},
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      throw Exception('Failed to mark all notifications as read');
+    } catch (e) {
+      throw Exception('Error marking all notifications as read: $e');
+    }
+  }
+
+  // Product stock update
+  static Future<Map<String, dynamic>> updateProductStock(String productId, int stockReduction) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$apiUrl/products/$productId/stock'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'stockReduction': stockReduction}),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      throw Exception('Failed to update product stock: ${response.statusCode}');
+    } catch (e) {
+      throw Exception('Error updating product stock: $e');
     }
   }
 }
 
-// Mock Services (modified to use API)
+// Services using API
 class CustomerService {
   List<CustomerModel> _customers = [];
   String? _currentDistributorId;
@@ -581,40 +1069,16 @@ class CustomerService {
     
     try {
       final response = await ApiService.getCustomers(_currentDistributorId!);
-      _customers = response.map((data) => CustomerModel.fromMap(data, data['_id']?.toString() ?? '')).toList();
+      print('Customers response: ${response.length} customers');
+      _customers = response.map((data) {
+        final id = data['_id']?.toString() ?? data['id']?.toString() ?? '';
+        return CustomerModel.fromMap(data, id);
+      }).toList();
+      print('Loaded ${_customers.length} customers');
       return _customers;
     } catch (e) {
-      // Fallback to mock data if API fails
-      await Future.delayed(const Duration(milliseconds: 300));
-      _customers = [
-        CustomerModel(
-          id: 'cust_001',
-          name: 'Ramesh Patel',
-          phone: '9876543210',
-          mobile: '9876543210',
-          area: 'Andheri East',
-          route: 'Route A',
-          address: '123, Main Road, Andheri East',
-          createdAt: DateTime.now().subtract(const Duration(days: 30)),
-          updatedAt: DateTime.now(),
-          customerId: 'GK001',
-          distributorId: _currentDistributorId,
-        ),
-        CustomerModel(
-          id: 'cust_002',
-          name: 'Suresh Sharma',
-          phone: '9876543211',
-          mobile: '9876543211',
-          area: 'Bandra West',
-          route: 'Route B',
-          address: '456, Linking Road, Bandra West',
-          createdAt: DateTime.now().subtract(const Duration(days: 25)),
-          updatedAt: DateTime.now(),
-          customerId: 'GK002',
-          distributorId: _currentDistributorId,
-        ),
-      ];
-      return _customers;
+      print('Error in getCustomers: $e');
+      return [];
     }
   }
 
@@ -624,7 +1088,7 @@ class CustomerService {
       final newCustomer = CustomerModel.fromMap(response, response['_id']?.toString() ?? customer.id);
       _customers.add(newCustomer);
     } catch (e) {
-      // Fallback to local storage
+      print('Error adding customer: $e');
       _customers.add(customer);
     }
   }
@@ -649,40 +1113,16 @@ class ProductService {
     
     try {
       final response = await ApiService.getProducts(_currentDistributorId!);
-      _products = response.map((data) => ProductModel.fromMap(data, data['_id']?.toString() ?? '')).toList();
+      print('Products response: ${response.length} products');
+      _products = response.map((data) {
+        final id = data['_id']?.toString() ?? data['id']?.toString() ?? '';
+        return ProductModel.fromMap(data, id);
+      }).toList();
+      print('Loaded ${_products.length} products');
       return _products;
     } catch (e) {
-      // Fallback to mock data
-      await Future.delayed(const Duration(milliseconds: 300));
-      _products = [
-        ProductModel(
-          id: 'prod_001',
-          name: 'Premium Rice 5kg',
-          sku: 'RICE005',
-          price: 250,
-          category: 'Rice',
-          stock: 100,
-          description: 'High quality basmati rice',
-          createdAt: DateTime.now(),
-          updatedAt: DateTime.now(),
-          createdBy: _currentCreatedBy,
-          distributorId: _currentDistributorId,
-        ),
-        ProductModel(
-          id: 'prod_002',
-          name: 'Wheat Flour 5kg',
-          sku: 'FLOUR005',
-          price: 180,
-          category: 'Flour',
-          stock: 150,
-          description: 'Whole wheat flour',
-          createdAt: DateTime.now(),
-          updatedAt: DateTime.now(),
-          createdBy: _currentCreatedBy,
-          distributorId: _currentDistributorId,
-        ),
-      ];
-      return _products;
+      print('Error in getProducts: $e');
+      return [];
     }
   }
 
@@ -692,6 +1132,7 @@ class ProductService {
       final newProduct = ProductModel.fromMap(response, response['_id']?.toString() ?? product.id);
       _products.add(newProduct);
     } catch (e) {
+      print('Error adding product: $e');
       _products.add(product);
     }
   }
@@ -716,26 +1157,16 @@ class SalesmanService {
     
     try {
       final response = await ApiService.getSalesmen(_currentDistributorId!);
-      _salesmen = response.map((data) => SalesmanModel.fromMap(data, data['_id']?.toString() ?? '')).toList();
+      print('Salesmen response: ${response.length} salesmen');
+      _salesmen = response.map((data) {
+        final id = data['_id']?.toString() ?? data['id']?.toString() ?? '';
+        return SalesmanModel.fromMap(data, id);
+      }).toList();
+      print('Loaded ${_salesmen.length} salesmen');
       return _salesmen;
     } catch (e) {
-      // Fallback to mock data
-      await Future.delayed(const Duration(milliseconds: 300));
-      _salesmen = [
-        SalesmanModel(
-          id: 'salesman_001',
-          salesmanId: 'SM001',
-          name: 'John Salesman',
-          email: 'john@demo.com',
-          phone: '9876543211',
-          distributorId: _currentDistributorId!,
-          createdBy: _currentCreatedBy!,
-          createdAt: DateTime.now(),
-          updatedAt: DateTime.now(),
-          joiningDate: DateTime.now().subtract(const Duration(days: 30)),
-        ),
-      ];
-      return _salesmen;
+      print('Error in getSalesmen: $e');
+      return [];
     }
   }
 
@@ -744,7 +1175,12 @@ class SalesmanService {
       final response = await ApiService.addSalesman(salesman.toMap());
       final newSalesman = SalesmanModel.fromMap(response, response['_id']?.toString() ?? salesman.id);
       _salesmen.add(newSalesman);
+      
+      if (response['defaultPassword'] != null) {
+        print('Salesman default password: ${response['defaultPassword']}');
+      }
     } catch (e) {
+      print('Error adding salesman: $e');
       _salesmen.add(salesman);
     }
   }
@@ -753,46 +1189,161 @@ class SalesmanService {
 class OrderService {
   List<OrderModel> _orders = [];
   List<OrderModel> _draftOrders = [];
+  String? _currentDistributorId;
+  String? _currentSalesmanId;
 
-  Future<List<OrderModel>> getOrders() async {
-    await Future.delayed(const Duration(milliseconds: 300));
-    _orders = [
-      OrderModel(
-        id: 'ord_001',
-        orderNumber: 'ORD001',
-        customerId: 'cust_001',
-        customerName: 'Ramesh Patel',
-        customerPhone: '9876543210',
-        areaName: 'Andheri East',
-        routeName: 'Route A',
-        salesmanId: 'salesman_001',
-        salesmanName: 'John Salesman',
-        items: [
-          OrderItemModel(
-            id: 'item_001',
-            productId: 'prod_001',
-            productName: 'Premium Rice 5kg',
-            sku: 'RICE005',
-            quantity: 2,
-            rate: 250,
-            amount: 500,
-          ),
-        ],
-        totalAmount: 500,
-        paidAmount: 0,
-        dueAmount: 500,
-        status: OrderStatus.pending,
-        orderType: OrderType.regular,
-        paymentMode: PaymentMode.credit,
-        createdAt: DateTime.now().subtract(const Duration(days: 2)),
-        timeline: [],
-      ),
-    ];
+  void setDistributorId(String distributorId) {
+    _currentDistributorId = distributorId;
+  }
+
+  void setSalesmanId(String salesmanId) {
+    _currentSalesmanId = salesmanId;
+  }
+
+  Future<List<OrderModel>> getOrders({String? customerName, String? salesmanId, DateTime? startDate, DateTime? endDate}) async {
+    if (_currentDistributorId != null) {
+      try {
+        final response = await ApiService.getOrdersByDistributor(
+          _currentDistributorId!,
+          customerName: customerName,
+          salesmanId: salesmanId,
+          startDate: startDate,
+          endDate: endDate,
+        );
+        _orders = _parseOrdersFromResponse(response);
+        print('Fetched ${_orders.length} orders for distributor $_currentDistributorId');
+      } catch (e) {
+        print('Error fetching distributor orders: $e');
+      }
+    } else if (_currentSalesmanId != null) {
+      try {
+        final response = await ApiService.getOrdersBySalesman(_currentSalesmanId!);
+        _orders = _parseOrdersFromResponse(response);
+        print('Fetched ${_orders.length} orders for salesman $_currentSalesmanId');
+      } catch (e) {
+        print('Error fetching salesman orders: $e');
+      }
+    }
     return _orders;
   }
 
+  List<OrderModel> _parseOrdersFromResponse(List<dynamic> response) {
+    return response.map((data) {
+      final id = data['_id']?.toString() ?? data['id']?.toString() ?? '';
+      return OrderModel(
+        id: id,
+        orderNumber: data['orderNumber'] ?? '',
+        customerId: data['customerId'] ?? '',
+        customerName: data['customerName'] ?? '',
+        customerPhone: data['customerPhone'] ?? '',
+        areaName: data['areaName'] ?? '',
+        routeName: data['routeName'] ?? '',
+        salesmanId: data['salesman_id'] ?? data['salesmanId'] ?? '',
+        salesmanName: data['salesmanName'] ?? '',
+        items: (data['items'] as List?)?.map((item) => OrderItemModel(
+          id: item['id'] ?? '',
+          productId: item['productId'] ?? '',
+          productName: item['productName'] ?? '',
+          sku: item['sku'] ?? '',
+          quantity: item['quantity'] ?? 0,
+          rate: (item['rate'] ?? 0).toDouble(),
+          amount: (item['amount'] ?? 0).toDouble(),
+        )).toList() ?? [],
+        totalAmount: (data['grand_total'] ?? data['totalAmount'] ?? 0).toDouble(),
+        paidAmount: (data['paidAmount'] ?? 0).toDouble(),
+        dueAmount: (data['dueAmount'] ?? 0).toDouble(),
+        status: _parseOrderStatus(data['status'] ?? 'pending'),
+        orderType: _parseOrderType(data['orderType'] ?? 'regular'),
+        paymentMode: data['paymentMode'] != null ? _parsePaymentMode(data['paymentMode']) : null,
+        scheduledDate: data['scheduledDate'] != null ? DateTime.tryParse(data['scheduledDate']) : null,
+        notes: data['notes'],
+        internalNotes: data['internalNotes'],
+        createdAt: data['createdAt'] != null ? DateTime.parse(data['createdAt']) : DateTime.now(),
+        timeline: [],
+      );
+    }).toList();
+  }
+
+  OrderStatus _parseOrderStatus(String status) {
+    switch (status.toLowerCase()) {
+      case 'pending': return OrderStatus.pending;
+      case 'taken': return OrderStatus.taken;
+      case 'dispatched': return OrderStatus.dispatched;
+      case 'delivered': return OrderStatus.delivered;
+      case 'cancelled': return OrderStatus.cancelled;
+      default: return OrderStatus.pending;
+    }
+  }
+
+  OrderType _parseOrderType(String type) {
+    switch (type.toLowerCase()) {
+      case 'regular': return OrderType.regular;
+      case 'urgent': return OrderType.urgent;
+      default: return OrderType.regular;
+    }
+  }
+
+  PaymentMode _parsePaymentMode(String mode) {
+    switch (mode.toLowerCase()) {
+      case 'cash': return PaymentMode.cash;
+      case 'upi': return PaymentMode.upi;
+      case 'banktransfer': return PaymentMode.bankTransfer;
+      case 'credit': return PaymentMode.credit;
+      case 'partial': return PaymentMode.partial;
+      case 'cheque': return PaymentMode.cheque;
+      case 'chequewithcash': return PaymentMode.chequeWithCash;
+      default: return PaymentMode.credit;
+    }
+  }
+
   Future<void> createOrder(OrderModel order) async {
-    _orders.add(order);
+    try {
+      final orderMap = {
+        'orderNumber': order.orderNumber,
+        'customerId': order.customerId,
+        'customerName': order.customerName,
+        'customerPhone': order.customerPhone,
+        'areaName': order.areaName,
+        'routeName': order.routeName,
+        'salesman_id': order.salesmanId,
+        'salesmanName': order.salesmanName,
+        'distributor_id': _currentDistributorId,
+        'distributorId': _currentDistributorId,
+        'items': order.items.map((item) => {
+          'productId': item.productId,
+          'productName': item.productName,
+          'sku': item.sku,
+          'quantity': item.quantity,
+          'rate': item.rate,
+          'amount': item.amount,
+        }).toList(),
+        'totalAmount': order.totalAmount,
+        'paidAmount': order.paidAmount,
+        'dueAmount': order.dueAmount,
+        'grand_total': order.totalAmount,
+        'order_total': order.totalAmount,
+        'status': order.status.toString().split('.').last,
+        'orderType': order.orderType.toString().split('.').last,
+        'paymentMode': order.paymentMode?.toString().split('.').last,
+        'payment_method': order.paymentMode?.toString().split('.').last,
+        'payment_status': order.paidAmount >= order.totalAmount ? 'paid' : 'pending',
+        'scheduledDate': order.scheduledDate?.toIso8601String(),
+        'notes': order.notes,
+        'internalNotes': order.internalNotes,
+        'customer': {
+          'customer_id': order.customerId,
+          'name': order.customerName,
+          'phone': order.customerPhone,
+        }
+      };
+      
+      final response = await ApiService.createOrder(orderMap);
+      print('Order created successfully: ${response['orderNumber']}');
+      _orders.add(order);
+    } catch (e) {
+      print('Error creating order: $e');
+      rethrow;
+    }
   }
 
   List<OrderModel> getDraftOrders() {
@@ -811,34 +1362,82 @@ class OrderService {
     return _orders.fold(0.0, (sum, o) => sum + o.dueAmount);
   }
 
-  Future<void> recordPayment(String orderId, double amount, PaymentMode mode, {String? reference}) async {
-    final index = _orders.indexWhere((o) => o.id == orderId);
-    if (index != -1) {
-      final order = _orders[index];
-      final newPaidAmount = order.paidAmount + amount;
-      _orders[index] = OrderModel(
-        id: order.id,
-        orderNumber: order.orderNumber,
-        customerId: order.customerId,
-        customerName: order.customerName,
-        customerPhone: order.customerPhone,
-        areaName: order.areaName,
-        routeName: order.routeName,
-        salesmanId: order.salesmanId,
-        salesmanName: order.salesmanName,
-        items: order.items,
-        totalAmount: order.totalAmount,
-        paidAmount: newPaidAmount,
-        dueAmount: order.totalAmount - newPaidAmount,
-        status: newPaidAmount >= order.totalAmount ? OrderStatus.delivered : order.status,
-        orderType: order.orderType,
-        paymentMode: mode,
-        scheduledDate: order.scheduledDate,
-        notes: order.notes,
-        internalNotes: order.internalNotes,
-        createdAt: order.createdAt,
-        timeline: order.timeline,
-      );
+  Future<void> recordPayment(String orderId, double amount, PaymentMode mode, 
+      {String? reference, String? collectedBy, String? salesmanId, 
+      String? chequeNumber, String? chequeDate, String? bankName,
+      String? upiType, String? transactionNumber, String? remark,
+      File? paymentPhoto}) async {
+    try {
+      final paymentData = {
+        'amount': amount,
+        'paymentMode': mode.toString().split('.').last,
+        'reference': reference,
+        'collectedBy': collectedBy,
+        'collectedByName': collectedBy,
+        'collectedByType': salesmanId != null ? 'salesman' : 'distributor',
+        'salesmanId': salesmanId ?? _currentSalesmanId,
+        'salesmanName': salesmanId != null ? 'Salesman' : null,
+        'remark': remark,
+      };
+      
+      Map<String, dynamic> response;
+      if (paymentPhoto != null && (mode == PaymentMode.upi || mode == PaymentMode.cheque)) {
+        response = await ApiService.recordPaymentWithFile(
+          orderId: orderId,
+          amount: amount,
+          paymentMode: mode.toString().split('.').last,
+          collectedBy: collectedBy ?? '',
+          collectedByName: collectedBy ?? '',
+          collectedByType: salesmanId != null ? 'salesman' : 'distributor',
+          salesmanId: salesmanId,
+          chequeNumber: chequeNumber,
+          chequeDate: chequeDate,
+          bankName: bankName,
+          upiType: upiType,
+          transactionNumber: transactionNumber,
+          remark: remark,
+          paymentPhoto: paymentPhoto,
+        );
+      } else {
+        response = await ApiService.recordPayment(orderId, paymentData);
+      }
+      
+      final index = _orders.indexWhere((o) => o.id == orderId);
+      if (index != -1) {
+        final order = _orders[index];
+        final newPaidAmount = order.paidAmount + amount;
+        _orders[index] = OrderModel(
+          id: order.id,
+          orderNumber: order.orderNumber,
+          customerId: order.customerId,
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          areaName: order.areaName,
+          routeName: order.routeName,
+          salesmanId: order.salesmanId,
+          salesmanName: order.salesmanName,
+          items: order.items,
+          totalAmount: order.totalAmount,
+          paidAmount: newPaidAmount,
+          dueAmount: order.totalAmount - newPaidAmount,
+          status: newPaidAmount >= order.totalAmount ? OrderStatus.delivered : order.status,
+          orderType: order.orderType,
+          paymentMode: mode,
+          scheduledDate: order.scheduledDate,
+          notes: order.notes,
+          internalNotes: order.internalNotes,
+          createdAt: order.createdAt,
+          timeline: order.timeline,
+        );
+        
+        // Update product stock
+        for (var item in order.items) {
+          await ApiService.updateProductStock(item.productId, item.quantity);
+        }
+      }
+    } catch (e) {
+      print('Error recording payment: $e');
+      rethrow;
     }
   }
 }
@@ -884,34 +1483,114 @@ class PdfService {
   }
 }
 
-// Cart Item Data Model for Salesman Dashboard
-class CartItemData {
-  String productId;
-  String productName;
-  String sku;
-  int quantity;
-  double rate;
-  double schPer;
-  double schAmt;
-  double grossAmt;
-  double netAmt;
+// ==================== NOTIFICATION SERVICE ====================
+class NotificationService {
+  int _unreadCount = 0;
+  List<NotificationModel> _notifications = [];
+  Timer? _pollingTimer;
+  Function(int)? _onUnreadCountChanged;
+  String? _currentDistributorId;
 
-  CartItemData({
-    required this.productId,
-    required this.productName,
-    required this.sku,
-    this.quantity = 1,
-    this.rate = 0,
-    this.schPer = 0,
-    this.schAmt = 0,
-    this.grossAmt = 0,
-    this.netAmt = 0,
-  });
+  void init(String distributorId, {Function(int)? onUnreadCountChanged}) {
+    _currentDistributorId = distributorId;
+    _onUnreadCountChanged = onUnreadCountChanged;
+    _startPolling();
+  }
 
-  void calculate() {
-    grossAmt = quantity * rate;
-    schAmt = (schPer / 100) * grossAmt;
-    netAmt = grossAmt - schAmt;
+  void _startPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      _fetchUnreadCount();
+    });
+    _fetchUnreadCount();
+  }
+
+  Future<void> _fetchUnreadCount() async {
+    if (_currentDistributorId == null) return;
+    try {
+      final count = await ApiService.getUnreadNotificationCount(_currentDistributorId!);
+      if (count != _unreadCount) {
+        _unreadCount = count;
+        _onUnreadCountChanged?.call(count);
+      }
+    } catch (e) {
+      print('Error fetching unread count: $e');
+    }
+  }
+
+  Future<List<NotificationModel>> getNotifications() async {
+    if (_currentDistributorId == null) return [];
+    try {
+      final response = await ApiService.getNotifications(_currentDistributorId!);
+      _notifications = response.map((data) {
+        final id = data['_id']?.toString() ?? '';
+        return NotificationModel.fromMap(data, id);
+      }).toList();
+      _unreadCount = _notifications.where((n) => !n.isRead).length;
+      _onUnreadCountChanged?.call(_unreadCount);
+      return _notifications;
+    } catch (e) {
+      print('Error fetching notifications: $e');
+      return [];
+    }
+  }
+
+  Future<void> markAsRead(String notificationId) async {
+    try {
+      await ApiService.markNotificationRead(notificationId);
+      final index = _notifications.indexWhere((n) => n.id == notificationId);
+      if (index != -1) {
+        _notifications[index] = NotificationModel(
+          id: _notifications[index].id,
+          distributorId: _notifications[index].distributorId,
+          orderId: _notifications[index].orderId,
+          orderNumber: _notifications[index].orderNumber,
+          customerName: _notifications[index].customerName,
+          salesmanName: _notifications[index].salesmanName,
+          amount: _notifications[index].amount,
+          message: _notifications[index].message,
+          type: _notifications[index].type,
+          isRead: true,
+          createdAt: _notifications[index].createdAt,
+          readAt: DateTime.now(),
+          orderData: _notifications[index].orderData,
+        );
+        _unreadCount--;
+        _onUnreadCountChanged?.call(_unreadCount);
+      }
+    } catch (e) {
+      print('Error marking notification as read: $e');
+    }
+  }
+
+  Future<void> markAllAsRead() async {
+    if (_currentDistributorId == null) return;
+    try {
+      await ApiService.markAllNotificationsRead(_currentDistributorId!);
+      _notifications = _notifications.map((n) => NotificationModel(
+        id: n.id,
+        distributorId: n.distributorId,
+        orderId: n.orderId,
+        orderNumber: n.orderNumber,
+        customerName: n.customerName,
+        salesmanName: n.salesmanName,
+        amount: n.amount,
+        message: n.message,
+        type: n.type,
+        isRead: true,
+        createdAt: n.createdAt,
+        readAt: DateTime.now(),
+        orderData: n.orderData,
+      )).toList();
+      _unreadCount = 0;
+      _onUnreadCountChanged?.call(0);
+    } catch (e) {
+      print('Error marking all notifications as read: $e');
+    }
+  }
+
+  void dispose() {
+    _pollingTimer?.cancel();
   }
 }
 
@@ -949,6 +1628,7 @@ class _DistributorDashboardEnhancedState
   final ProductService _productService = ProductService();
   final OrderService _orderService = OrderService();
   final SalesmanService _salesmanService = SalesmanService();
+  final NotificationService _notificationService = NotificationService();
 
   // Current distributor - Load from logged in user
   late UserModel _currentDistributor;
@@ -959,12 +1639,14 @@ class _DistributorDashboardEnhancedState
   List<OrderModel> _orders = [];
   List<SalesmanModel> _salesmen = [];
   List<OrderTemplateModel> _orderTemplates = [];
+  List<NotificationModel> _notifications = [];
   bool _isLoading = true;
+  int _unreadNotificationCount = 0;
 
   // Sync from desktop
   final SyncService _syncService = SyncService();
   bool _isSyncing = false;
-  final Map<String, int> _cart = {};
+  final Map<String, CartItemData> _cart = {};
 
   // Order creation state
   int _orderStep = 1;
@@ -975,6 +1657,9 @@ class _DistributorDashboardEnhancedState
   PaymentMode _selectedPaymentMode = PaymentMode.credit;
   String _orderNotes = '';
   String _internalNotes = '';
+
+  // Stock alert tracking - FIXED for multiple alerts issue
+  final Set<String> _stockAlertShown = {};
 
   // Search & Filter
   final TextEditingController _searchController = TextEditingController();
@@ -990,6 +1675,13 @@ class _DistributorDashboardEnhancedState
 
   // Order filter by salesman
   String? _selectedOrderSalesmanId;
+  
+  // Order filter by customer name
+  String _orderCustomerFilter = '';
+  
+  // Order filter by date range
+  DateTime? _orderStartDate;
+  DateTime? _orderEndDate;
 
   // Order selection for posting to desktop
   final Set<String> _selectedOrderIds = {};
@@ -1023,8 +1715,11 @@ class _DistributorDashboardEnhancedState
   final TextEditingController _remarkController = TextEditingController();
 
   // Payment dialog state
-  UpiType? _selectedUpiType;
-  String? _paymentScreenshotPath;
+  String? _selectedUpiType;
+  File? _paymentScreenshotPath;
+  String? _selectedBankName;
+  List<String> _banksList = [];
+  List<String> _upiTypesList = [];
 
   // Analytics time filter
   String _analyticsTimeFilter = 'month';
@@ -1132,23 +1827,71 @@ class _DistributorDashboardEnhancedState
   }
 
   // Get customer outstanding
-  double getCustomerOutstanding(String customerId) {
-    return _orders
-        .where(
-          (o) =>
-              o.customerId == customerId && o.status != OrderStatus.cancelled,
-        )
-        .fold(0.0, (sum, o) => sum + o.dueAmount);
+  Future<double> getCustomerOutstanding(String customerId) async {
+    return await ApiService.getCustomerOutstanding(customerId);
   }
 
   // Get last order for customer
-  OrderModel? getLastOrderForCustomer(String customerId) {
-    final customerOrders = _orders
-        .where((o) => o.customerId == customerId)
-        .toList();
-    if (customerOrders.isEmpty) return null;
-    customerOrders.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    return customerOrders.first;
+  Future<OrderModel?> getLastOrderForCustomer(String customerId) async {
+    try {
+      final response = await ApiService.getLastOrderByCustomer(customerId);
+      if (response.isNotEmpty && response['orderNumber'] != null) {
+        return OrderModel(
+          id: response['_id']?.toString() ?? '',
+          orderNumber: response['orderNumber'] ?? '',
+          customerId: response['customerId'] ?? '',
+          customerName: response['customerName'] ?? '',
+          customerPhone: response['customerPhone'] ?? '',
+          areaName: response['areaName'] ?? '',
+          routeName: response['routeName'] ?? '',
+          salesmanId: response['salesman_id'] ?? '',
+          salesmanName: response['salesmanName'] ?? '',
+          items: (response['items'] as List?)?.map((item) => OrderItemModel(
+            id: item['id'] ?? '',
+            productId: item['productId'] ?? '',
+            productName: item['productName'] ?? '',
+            sku: item['sku'] ?? '',
+            quantity: item['quantity'] ?? 0,
+            rate: (item['rate'] ?? 0).toDouble(),
+            amount: (item['amount'] ?? 0).toDouble(),
+          )).toList() ?? [],
+          totalAmount: (response['grand_total'] ?? 0).toDouble(),
+          paidAmount: (response['paidAmount'] ?? 0).toDouble(),
+          dueAmount: (response['dueAmount'] ?? 0).toDouble(),
+          status: _parseOrderStatus(response['status'] ?? 'pending'),
+          orderType: _parseOrderType(response['orderType'] ?? 'regular'),
+          paymentMode: null,
+          scheduledDate: null,
+          notes: response['notes'],
+          internalNotes: response['internalNotes'],
+          createdAt: response['createdAt'] != null ? DateTime.parse(response['createdAt']) : DateTime.now(),
+          timeline: [],
+        );
+      }
+      return null;
+    } catch (e) {
+      print('Error fetching last order: $e');
+      return null;
+    }
+  }
+
+  OrderStatus _parseOrderStatus(String status) {
+    switch (status.toLowerCase()) {
+      case 'pending': return OrderStatus.pending;
+      case 'taken': return OrderStatus.taken;
+      case 'dispatched': return OrderStatus.dispatched;
+      case 'delivered': return OrderStatus.delivered;
+      case 'cancelled': return OrderStatus.cancelled;
+      default: return OrderStatus.pending;
+    }
+  }
+
+  OrderType _parseOrderType(String type) {
+    switch (type.toLowerCase()) {
+      case 'regular': return OrderType.regular;
+      case 'urgent': return OrderType.urgent;
+      default: return OrderType.regular;
+    }
   }
 
   // Get last order for salesman
@@ -1186,22 +1929,42 @@ class _DistributorDashboardEnhancedState
         .fold(0.0, (sum, o) => sum + o.paidAmount);
   }
 
-  // Get last sale for product
-  OrderModel? getLastSaleForProduct(String productId) {
-    final productOrders = _orders
-        .where((o) => o.items.any((item) => item.productId == productId))
-        .toList();
-    if (productOrders.isEmpty) return null;
-    productOrders.sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    return productOrders.first;
+  // Get last sale for product - only when clicked
+  Future<Map<String, dynamic>?> getLastSaleForProduct(String productId) async {
+    try {
+      final response = await ApiService.getLastSaleForProduct(productId);
+      if (response.isNotEmpty) {
+        return response;
+      }
+      return null;
+    } catch (e) {
+      print('Error fetching last sale: $e');
+      return null;
+    }
   }
 
-  // Get filtered orders by salesman
+  // Get filtered orders by salesman, customer name, and date range
   List<OrderModel> get filteredOrders {
     var orders = _orders;
-    if (_selectedOrderSalesmanId != null) {
+    if (_selectedOrderSalesmanId != null && _selectedOrderSalesmanId!.isNotEmpty && _selectedOrderSalesmanId != 'all') {
       orders = orders
           .where((o) => o.salesmanId == _selectedOrderSalesmanId)
+          .toList();
+    }
+    if (_orderCustomerFilter.isNotEmpty) {
+      final query = _orderCustomerFilter.toLowerCase();
+      orders = orders
+          .where((o) => o.customerName.toLowerCase().contains(query))
+          .toList();
+    }
+    if (_orderStartDate != null) {
+      orders = orders
+          .where((o) => o.createdAt.isAfter(_orderStartDate!) || o.createdAt.isAtSameMomentAs(_orderStartDate!))
+          .toList();
+    }
+    if (_orderEndDate != null) {
+      orders = orders
+          .where((o) => o.createdAt.isBefore(_orderEndDate!) || o.createdAt.isAtSameMomentAs(_orderEndDate!))
           .toList();
     }
     if (_orderSearchQuery.isNotEmpty) {
@@ -1218,10 +1981,26 @@ class _DistributorDashboardEnhancedState
     return orders;
   }
 
-  // Get orders for a specific salesman or all
-  List<OrderModel> getOrdersForSalesman(String? salesmanId) {
-    if (salesmanId == null) return _orders;
-    return _orders.where((o) => o.salesmanId == salesmanId).toList();
+  // Apply order filters
+  Future<void> _applyOrderFilters() async {
+    setState(() => _isLoading = true);
+    await _loadOrders();
+    setState(() => _isLoading = false);
+  }
+
+  // Load orders with filters
+  Future<void> _loadOrders() async {
+    if (_currentDistributor.distributorId != null) {
+      final orders = await _orderService.getOrders(
+        customerName: _orderCustomerFilter.isNotEmpty ? _orderCustomerFilter : null,
+        salesmanId: _selectedOrderSalesmanId,
+        startDate: _orderStartDate,
+        endDate: _orderEndDate,
+      );
+      setState(() {
+        _orders = orders;
+      });
+    }
   }
 
   // Post orders to desktop
@@ -1329,7 +2108,6 @@ class _DistributorDashboardEnhancedState
   @override
   void initState() {
     super.initState();
-    // Initialize current distributor from passed user or create default
     if (widget.loggedInUser != null) {
       _currentDistributor = widget.loggedInUser!;
     } else {
@@ -1341,15 +2119,48 @@ class _DistributorDashboardEnhancedState
         role: UserRole.distributor,
         createdAt: DateTime.now().subtract(const Duration(days: 30)),
         isActive: true,
+        distributorId: 'DIST_DEMO_001',
       );
     }
     
-    // Set distributor info in services
-    _customerService.setDistributorId(_currentDistributor.id);
-    _productService.setDistributorInfo(_currentDistributor.id, _currentDistributor.email);
-    _salesmanService.setDistributorInfo(_currentDistributor.id, _currentDistributor.email);
+    if (_currentDistributor.distributorId != null) {
+      _customerService.setDistributorId(_currentDistributor.distributorId!);
+      _productService.setDistributorInfo(_currentDistributor.distributorId!, _currentDistributor.email);
+      _salesmanService.setDistributorInfo(_currentDistributor.distributorId!, _currentDistributor.email);
+      _orderService.setDistributorId(_currentDistributor.distributorId!);
+      
+      // Initialize notification service
+      _notificationService.init(_currentDistributor.distributorId!, onUnreadCountChanged: (count) {
+        if (mounted) {
+          setState(() {
+            _unreadNotificationCount = count;
+          });
+        }
+      });
+    }
     
     _loadData();
+    _loadBankAndUpiLists();
+    _loadNotifications();
+  }
+
+  Future<void> _loadNotifications() async {
+    if (_currentDistributor.distributorId != null) {
+      final notifications = await _notificationService.getNotifications();
+      setState(() {
+        _notifications = notifications;
+        _unreadNotificationCount = notifications.where((n) => !n.isRead).length;
+      });
+    }
+  }
+
+  Future<void> _loadBankAndUpiLists() async {
+    final banks = await ApiService.getBanks();
+    final upiTypes = await ApiService.getUpiTypes();
+    setState(() {
+      _banksList = banks.cast<String>();
+      _upiTypesList = upiTypes.cast<String>();
+    });
   }
 
   Future<void> _loadData() async {
@@ -1372,30 +2183,273 @@ class _DistributorDashboardEnhancedState
     });
   }
 
-  void _logout() async {
+  Future<void> _logout() async {
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Logout'),
+        content: const Text('Do you want to logout?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context, true);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: errorRed),
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldLogout != true) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      await ApiService.logout();
+    } catch (e) {
+      print('Logout API error (ignored): $e');
+    }
+    
+    _notificationService.dispose();
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
+    
     if (mounted) {
-      Navigator.pushReplacementNamed(context, '/login');
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (context) => const LoginScreen()),
+        (route) => false,
+      );
     }
   }
 
+  void _showNotificationsDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Container(
+            width: double.maxFinite,
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.7,
+              maxWidth: MediaQuery.of(context).size.width * 0.9,
+            ),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Notifications',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: primaryBlue,
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        if (_unreadNotificationCount > 0)
+                          TextButton.icon(
+                            onPressed: () async {
+                              await _notificationService.markAllAsRead();
+                              setDialogState(() {
+                                _notifications = _notifications.map((n) => NotificationModel(
+                                  id: n.id,
+                                  distributorId: n.distributorId,
+                                  orderId: n.orderId,
+                                  orderNumber: n.orderNumber,
+                                  customerName: n.customerName,
+                                  salesmanName: n.salesmanName,
+                                  amount: n.amount,
+                                  message: n.message,
+                                  type: n.type,
+                                  isRead: true,
+                                  createdAt: n.createdAt,
+                                  readAt: DateTime.now(),
+                                  orderData: n.orderData,
+                                )).toList();
+                              });
+                              setState(() {
+                                _unreadNotificationCount = 0;
+                              });
+                            },
+                            icon: const Icon(Icons.done_all, size: 18),
+                            label: const Text('Mark all read'),
+                          ),
+                        IconButton(
+                          icon: const Icon(Icons.close),
+                          onPressed: () => Navigator.pop(context),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const Divider(),
+                Expanded(
+                  child: _notifications.isEmpty
+                      ? const Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.notifications_none, size: 60, color: Colors.grey),
+                              SizedBox(height: 10),
+                              Text('No notifications', style: TextStyle(color: Colors.grey)),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          itemCount: _notifications.length,
+                          itemBuilder: (context, index) {
+                            final notification = _notifications[index];
+                            return GestureDetector(
+                              onTap: () async {
+                                if (!notification.isRead) {
+                                  await _notificationService.markAsRead(notification.id);
+                                  setDialogState(() {
+                                    _notifications[index] = NotificationModel(
+                                      id: notification.id,
+                                      distributorId: notification.distributorId,
+                                      orderId: notification.orderId,
+                                      orderNumber: notification.orderNumber,
+                                      customerName: notification.customerName,
+                                      salesmanName: notification.salesmanName,
+                                      amount: notification.amount,
+                                      message: notification.message,
+                                      type: notification.type,
+                                      isRead: true,
+                                      createdAt: notification.createdAt,
+                                      readAt: DateTime.now(),
+                                      orderData: notification.orderData,
+                                    );
+                                  });
+                                  setState(() {
+                                    _unreadNotificationCount--;
+                                  });
+                                }
+                                if (notification.orderData != null) {
+                                  Navigator.pop(context);
+                                }
+                              },
+                              child: Container(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                padding: const EdgeInsets.all(12),
+                                decoration: BoxDecoration(
+                                  color: notification.isRead
+                                      ? Colors.white
+                                      : accentTeal.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: notification.isRead
+                                        ? Colors.grey.shade200
+                                        : accentTeal,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 40,
+                                      height: 40,
+                                      decoration: BoxDecoration(
+                                        color: notification.isRead
+                                            ? Colors.grey.shade100
+                                            : accentTeal.withOpacity(0.2),
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Icon(
+                                        Icons.shopping_bag,
+                                        color: notification.isRead ? Colors.grey : accentTeal,
+                                        size: 20,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            notification.message,
+                                            style: TextStyle(
+                                              fontWeight: notification.isRead
+                                                  ? FontWeight.normal
+                                                  : FontWeight.bold,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            'Order: ${notification.orderNumber} | ₹${notification.amount.toStringAsFixed(0)}',
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.grey[600],
+                                            ),
+                                          ),
+                                          Text(
+                                            'By: ${notification.salesmanName}',
+                                            style: TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.grey[500],
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    if (!notification.isRead)
+                                      Container(
+                                        width: 10,
+                                        height: 10,
+                                        decoration: const BoxDecoration(
+                                          color: errorRed,
+                                          shape: BoxShape.circle,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   // Cart methods
-  void addToCart(String productId, {int quantity = 1}) {
+  void addToCart(String productId, String productName, String sku, double price, int stock) {
     setState(() {
-      _cart[productId] = (_cart[productId] ?? 0) + quantity;
+      if (_cart.containsKey(productId)) {
+        _cart[productId]!.quantity++;
+        _cart[productId]!.calculate();
+      } else {
+        _cart[productId] = CartItemData(
+          productId: productId,
+          productName: productName,
+          sku: sku,
+          quantity: 1,
+          rate: price,
+          stock: stock,
+          schEnabled: false,
+        );
+        _cart[productId]!.calculate();
+      }
     });
   }
 
   void removeFromCart(String productId) {
     setState(() {
-      final currentQty = _cart[productId];
-      if (currentQty == null) return;
-      if (currentQty > 1) {
-        _cart[productId] = currentQty - 1;
-      } else {
-        _cart.remove(productId);
-      }
+      _cart.remove(productId);
     });
   }
 
@@ -1403,95 +2457,143 @@ class _DistributorDashboardEnhancedState
     setState(() {
       if (quantity <= 0) {
         _cart.remove(productId);
-      } else {
-        _cart[productId] = quantity;
+      } else if (_cart.containsKey(productId)) {
+        final product = _products.firstWhere((p) => p.id == productId);
+        _cart[productId]!.quantity = quantity;
+        _cart[productId]!.calculate();
+        
+        // FIXED: Stock alert appears only once per product
+        if (quantity > product.stock && !_stockAlertShown.contains(productId)) {
+          _stockAlertShown.add(productId);
+          showSafeSnackBar(
+            context,
+            '⚠️ Note: Only ${product.stock} in stock for ${product.name}. Remaining quantity will be fulfilled when stock arrives.',
+            backgroundColor: warningOrange,
+          );
+        }
+      }
+    });
+  }
+
+  void updateCartRate(String productId, double rate) {
+    setState(() {
+      if (_cart.containsKey(productId)) {
+        _cart[productId]!.rate = rate;
+        _cart[productId]!.calculate();
+      }
+    });
+  }
+
+  void updateCartScheme(String productId, double schPer) {
+    setState(() {
+      if (_cart.containsKey(productId)) {
+        _cart[productId]!.schPer = schPer;
+        _cart[productId]!.calculate();
+      }
+    });
+  }
+
+  void toggleCartScheme(String productId) {
+    setState(() {
+      if (_cart.containsKey(productId)) {
+        _cart[productId]!.schEnabled = !_cart[productId]!.schEnabled;
+        _cart[productId]!.calculate();
       }
     });
   }
 
   double get cartTotal {
     double total = 0;
-    _cart.forEach((productId, qty) {
-      try {
-        final product = _products.firstWhere((p) => p.id == productId);
-        total += product.price * qty;
-      } catch (e) {
-        // Product not found
-      }
-    });
+    for (var item in _cart.values) {
+      total += item.netAmt;
+    }
     return total;
   }
 
-  int get cartItemCount => _cart.values.fold(0, (a, b) => a + b);
+  int get cartItemCount => _cart.values.fold(0, (a, b) => a + b.quantity);
+  
+  // FIXED: Get unique product count (not total quantity)
+  int get uniqueProductCount => _cart.length;
 
-  // Submit order
+  // Submit order - FIXED: Close screen after submission
   Future<void> submitOrder() async {
     if (_selectedCustomerId == null || _cart.isEmpty) return;
 
-    final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
-    final salesman = _selectedSalesmanId != null
-        ? _salesmen.firstWhere((s) => s.id == _selectedSalesmanId)
-        : _salesmen.first;
+    setState(() => _isLoading = true);
 
-    final order = OrderModel(
-      id: 'order_${DateTime.now().millisecondsSinceEpoch}',
-      orderNumber:
-          'ORD${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}',
-      customerId: _selectedCustomerId!,
-      customerName: customer.name,
-      customerPhone: customer.phone ?? customer.mobile ?? '',
-      areaName: customer.area,
-      routeName: customer.route ?? '',
-      salesmanId: salesman.id,
-      salesmanName: salesman.name,
-      items: _cart.entries.map((entry) {
-        final product = _products.firstWhere((p) => p.id == entry.key);
-        return OrderItemModel(
-          id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
-          productId: product.id,
-          productName: product.name,
-          sku: product.sku,
-          quantity: entry.value,
-          rate: product.price,
-          amount: product.price * entry.value,
-        );
-      }).toList(),
-      totalAmount: cartTotal,
-      paidAmount:
-          _selectedPaymentMode == PaymentMode.cash ||
-              _selectedPaymentMode == PaymentMode.upi
-          ? cartTotal
-          : 0,
-      dueAmount: _selectedPaymentMode == PaymentMode.credit ? cartTotal : 0,
-      status: OrderStatus.pending,
-      orderType: _selectedOrderType,
-      paymentMode: _selectedPaymentMode,
-      scheduledDate: _scheduledDate,
-      notes: _orderNotes,
-      internalNotes: _internalNotes,
-      createdAt: DateTime.now(),
-      timeline: [
-        OrderTimelineEvent(
-          id: 'timeline_${DateTime.now().millisecondsSinceEpoch}',
-          status: 'pending',
-          message: 'Order created and pending',
-          timestamp: DateTime.now(),
-        ),
-      ],
-    );
+    try {
+      final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
+      final salesman = _selectedSalesmanId != null
+          ? _salesmen.firstWhere((s) => s.id == _selectedSalesmanId)
+          : (_salesmen.isNotEmpty ? _salesmen.first : null);
 
-    await _orderService.createOrder(order);
+      final order = OrderModel(
+        id: 'order_${DateTime.now().millisecondsSinceEpoch}',
+        orderNumber: 'ORD${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}',
+        customerId: _selectedCustomerId!,
+        customerName: customer.name,
+        customerPhone: customer.phone ?? customer.mobile ?? '',
+        areaName: customer.area,
+        routeName: customer.route ?? '',
+        salesmanId: salesman?.id ?? _currentDistributor.id,
+        salesmanName: salesman?.name ?? _currentDistributor.name,
+        items: _cart.entries.map((entry) {
+          final item = entry.value;
+          return OrderItemModel(
+            id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
+            productId: item.productId,
+            productName: item.productName,
+            sku: item.sku,
+            quantity: item.quantity,
+            rate: item.rate,
+            amount: item.netAmt,
+          );
+        }).toList(),
+        totalAmount: cartTotal,
+        paidAmount: _selectedPaymentMode == PaymentMode.cash || _selectedPaymentMode == PaymentMode.upi ? cartTotal : 0,
+        dueAmount: _selectedPaymentMode == PaymentMode.credit ? cartTotal : 0,
+        status: OrderStatus.pending,
+        orderType: _selectedOrderType,
+        paymentMode: _selectedPaymentMode,
+        scheduledDate: _scheduledDate,
+        notes: _orderNotes,
+        internalNotes: _internalNotes,
+        createdAt: DateTime.now(),
+        timeline: [
+          OrderTimelineEvent(
+            id: 'timeline_${DateTime.now().millisecondsSinceEpoch}',
+            status: 'pending',
+            message: 'Order created and pending',
+            timestamp: DateTime.now(),
+          ),
+        ],
+      );
 
-    if (mounted) {
-      showSafeSnackBar(context, '✅ Order submitted successfully!', backgroundColor: successGreen);
-      _clearCart();
-      _loadData();
+      await _orderService.createOrder(order);
+      
+      if (mounted) {
+        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${order.orderNumber}', backgroundColor: successGreen);
+        _clearCart();
+        await _loadData();
+        
+        // FIXED: Close the order tab after successful submission by switching to dashboard
+        setState(() {
+          _selectedIndex = 0; // Switch to dashboard
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Error submitting order: $e', backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   void _clearCart() {
     setState(() {
       _cart.clear();
+      _stockAlertShown.clear();
       _selectedCustomerId = null;
       _selectedSalesmanId = null;
       _orderStep = 1;
@@ -1574,10 +2676,6 @@ class _DistributorDashboardEnhancedState
           await _loadData();
         }
       }
-    } catch (e) {
-      if (mounted) {
-        showSafeSnackBar(context, 'Error: $e', backgroundColor: errorRed);
-      }
     } finally {
       if (mounted) setState(() => _isSyncing = false);
     }
@@ -1587,12 +2685,19 @@ class _DistributorDashboardEnhancedState
     final nameController = TextEditingController();
     final phoneController = TextEditingController();
     final areaController = TextEditingController();
+    final routeController = TextEditingController();
     final addressController = TextEditingController();
 
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Add New Customer'),
+        title: Row(
+          children: [
+            Icon(Icons.person_add, color: primaryBlue),
+            const SizedBox(width: 8),
+            const Text('Add New Customer'),
+          ],
+        ),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1600,25 +2705,42 @@ class _DistributorDashboardEnhancedState
               TextField(
                 controller: nameController,
                 decoration: const InputDecoration(
-                  labelText: 'Name',
+                  labelText: 'Customer Name *',
+                  hintText: 'Enter full name',
                   border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.person),
                 ),
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: phoneController,
                 decoration: const InputDecoration(
-                  labelText: 'Phone',
+                  labelText: 'Phone Number *',
+                  hintText: 'Enter 10 digit mobile number',
                   border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.phone),
                 ),
                 keyboardType: TextInputType.phone,
+                maxLength: 10,
               ),
               const SizedBox(height: 12),
               TextField(
                 controller: areaController,
                 decoration: const InputDecoration(
-                  labelText: 'Area',
+                  labelText: 'Area *',
+                  hintText: 'Enter area/locality',
                   border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.location_city),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: routeController,
+                decoration: const InputDecoration(
+                  labelText: 'Route',
+                  hintText: 'Enter delivery route',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.route),
                 ),
               ),
               const SizedBox(height: 12),
@@ -1626,6 +2748,142 @@ class _DistributorDashboardEnhancedState
                 controller: addressController,
                 decoration: const InputDecoration(
                   labelText: 'Address',
+                  hintText: 'Enter complete address',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.home),
+                ),
+                maxLines: 2,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (nameController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter customer name', backgroundColor: errorRed);
+                return;
+              }
+              if (phoneController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
+                return;
+              }
+              if (phoneController.text.trim().length != 10) {
+                showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
+                return;
+              }
+              if (areaController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter area', backgroundColor: errorRed);
+                return;
+              }
+              
+              final customer = CustomerModel(
+                id: 'cust_${DateTime.now().millisecondsSinceEpoch}',
+                name: nameController.text.trim(),
+                phone: phoneController.text.trim(),
+                area: areaController.text.trim(),
+                route: routeController.text.trim().isNotEmpty ? routeController.text.trim() : null,
+                address: addressController.text.trim().isNotEmpty ? addressController.text.trim() : null,
+                createdAt: DateTime.now(),
+                updatedAt: DateTime.now(),
+                customerId: 'GK${DateTime.now().millisecondsSinceEpoch.toString().substring(8, 13)}',
+                createdBy: _currentDistributor.email,
+                distributorId: _currentDistributor.distributorId,
+              );
+              await _customerService.addCustomer(customer);
+              await _loadData();
+              if (mounted) {
+                Navigator.pop(context);
+                showSafeSnackBar(context, '✅ Customer added successfully!', backgroundColor: successGreen);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+            child: const Text('Add Customer'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAddProductDialog() {
+    final nameController = TextEditingController();
+    final skuController = TextEditingController();
+    final priceController = TextEditingController();
+    final categoryController = TextEditingController();
+    final stockController = TextEditingController();
+    final descriptionController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.add, color: accentTeal),
+            SizedBox(width: 8),
+            Text('Add New Product'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Product Name *',
+                  hintText: 'Enter product name',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: skuController,
+                decoration: const InputDecoration(
+                  labelText: 'SKU *',
+                  hintText: 'Enter unique SKU',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: priceController,
+                decoration: const InputDecoration(
+                  labelText: 'Price *',
+                  hintText: 'Enter selling price',
+                  border: OutlineInputBorder(),
+                  prefixText: '₹ ',
+                ),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: categoryController,
+                decoration: const InputDecoration(
+                  labelText: 'Category *',
+                  hintText: 'Enter product category',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: stockController,
+                decoration: const InputDecoration(
+                  labelText: 'Stock Quantity',
+                  hintText: 'Enter available stock',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: descriptionController,
+                decoration: const InputDecoration(
+                  labelText: 'Description',
+                  hintText: 'Enter product description',
                   border: OutlineInputBorder(),
                 ),
                 maxLines: 2,
@@ -1640,124 +2898,45 @@ class _DistributorDashboardEnhancedState
           ),
           ElevatedButton(
             onPressed: () async {
-              if (nameController.text.isNotEmpty) {
-                final customer = CustomerModel(
-                  id: 'cust_${DateTime.now().millisecondsSinceEpoch}',
-                  name: nameController.text,
-                  phone: phoneController.text,
-                  area: areaController.text,
-                  address: addressController.text,
-                  createdAt: DateTime.now(),
-                  updatedAt: DateTime.now(),
-                  customerId: 'GK${DateTime.now().millisecondsSinceEpoch.toString().substring(8, 13)}',
-                  createdBy: _currentDistributor.email,
-                  distributorId: _currentDistributor.id,
-                );
-                await _customerService.addCustomer(customer);
-                await _loadData();
-                if (mounted) {
-                  Navigator.pop(context);
-                  showSafeSnackBar(context, 'Customer added successfully!', backgroundColor: successGreen);
-                }
+              if (nameController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter product name', backgroundColor: errorRed);
+                return;
+              }
+              if (skuController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter SKU', backgroundColor: errorRed);
+                return;
+              }
+              if (priceController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter price', backgroundColor: errorRed);
+                return;
+              }
+              if (categoryController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter category', backgroundColor: errorRed);
+                return;
+              }
+              
+              final product = ProductModel(
+                id: 'prod_${DateTime.now().millisecondsSinceEpoch}',
+                name: nameController.text.trim(),
+                sku: skuController.text.trim(),
+                price: double.tryParse(priceController.text) ?? 0,
+                category: categoryController.text.trim(),
+                stock: int.tryParse(stockController.text) ?? 0,
+                description: descriptionController.text.trim().isNotEmpty ? descriptionController.text.trim() : null,
+                createdAt: DateTime.now(),
+                updatedAt: DateTime.now(),
+                createdBy: _currentDistributor.email,
+                distributorId: _currentDistributor.distributorId,
+              );
+              await _productService.addProduct(product);
+              await _loadData();
+              if (mounted) {
+                Navigator.pop(context);
+                showSafeSnackBar(context, '✅ Product added successfully!', backgroundColor: successGreen);
               }
             },
-            child: const Text('Add'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showAddProductDialog() {
-    final nameController = TextEditingController();
-    final skuController = TextEditingController();
-    final priceController = TextEditingController();
-    final categoryController = TextEditingController();
-    final stockController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Add New Product'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Product Name',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: skuController,
-                decoration: const InputDecoration(
-                  labelText: 'SKU',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: priceController,
-                decoration: const InputDecoration(
-                  labelText: 'Price',
-                  border: OutlineInputBorder(),
-                  prefixText: '₹ ',
-                ),
-                keyboardType: TextInputType.number,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: categoryController,
-                decoration: const InputDecoration(
-                  labelText: 'Category',
-                  border: OutlineInputBorder(),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: stockController,
-                decoration: const InputDecoration(
-                  labelText: 'Stock',
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (nameController.text.isNotEmpty &&
-                  priceController.text.isNotEmpty) {
-                final product = ProductModel(
-                  id: 'prod_${DateTime.now().millisecondsSinceEpoch}',
-                  name: nameController.text,
-                  sku: skuController.text,
-                  price: double.tryParse(priceController.text) ?? 0,
-                  category: categoryController.text,
-                  stock: int.tryParse(stockController.text) ?? 0,
-                  createdAt: DateTime.now(),
-                  updatedAt: DateTime.now(),
-                  createdBy: _currentDistributor.email,
-                  distributorId: _currentDistributor.id,
-                );
-                await _productService.addProduct(product);
-                await _loadData();
-                if (mounted) {
-                  Navigator.pop(context);
-                  showSafeSnackBar(context, 'Product added successfully!', backgroundColor: successGreen);
-                }
-              }
-            },
-            child: const Text('Add'),
+            style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+            child: const Text('Add Product'),
           ),
         ],
       ),
@@ -1775,7 +2954,13 @@ class _DistributorDashboardEnhancedState
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Add New Salesman'),
+        title: const Row(
+          children: [
+            Icon(Icons.person_add, color: accentTeal),
+            SizedBox(width: 8),
+            Text('Add New Salesman'),
+          ],
+        ),
         content: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1783,7 +2968,7 @@ class _DistributorDashboardEnhancedState
               TextField(
                 controller: nameController,
                 decoration: const InputDecoration(
-                  labelText: 'Name',
+                  labelText: 'Name *',
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -1791,7 +2976,7 @@ class _DistributorDashboardEnhancedState
               TextField(
                 controller: emailController,
                 decoration: const InputDecoration(
-                  labelText: 'Email',
+                  labelText: 'Email *',
                   border: OutlineInputBorder(),
                 ),
                 keyboardType: TextInputType.emailAddress,
@@ -1800,10 +2985,11 @@ class _DistributorDashboardEnhancedState
               TextField(
                 controller: phoneController,
                 decoration: const InputDecoration(
-                  labelText: 'Phone',
+                  labelText: 'Phone * (10 digits)',
                   border: OutlineInputBorder(),
                 ),
                 keyboardType: TextInputType.phone,
+                maxLength: 10,
               ),
               const SizedBox(height: 12),
               TextField(
@@ -1842,34 +3028,169 @@ class _DistributorDashboardEnhancedState
           ),
           ElevatedButton(
             onPressed: () async {
-              if (nameController.text.isNotEmpty &&
-                  emailController.text.isNotEmpty) {
-                final salesman = SalesmanModel(
-                  id: 'salesman_${DateTime.now().millisecondsSinceEpoch}',
-                  salesmanId: 'SM${DateTime.now().millisecondsSinceEpoch.toString().substring(8, 13)}',
-                  name: nameController.text,
-                  email: emailController.text,
-                  phone: phoneController.text,
-                  distributorId: _currentDistributor.id,
-                  createdBy: _currentDistributor.email,
-                  createdAt: DateTime.now(),
-                  updatedAt: DateTime.now(),
-                  areaAssigned: areaController.text,
-                  address: addressController.text,
-                  targetAmount: double.tryParse(targetController.text) ?? 0,
-                  joiningDate: DateTime.now(),
-                );
-                await _salesmanService.addSalesman(salesman);
-                await _loadData();
+              if (nameController.text.isEmpty) {
+                showSafeSnackBar(context, 'Please enter name', backgroundColor: errorRed);
+                return;
+              }
+              if (emailController.text.isEmpty) {
+                showSafeSnackBar(context, 'Please enter email', backgroundColor: errorRed);
+                return;
+              }
+              if (phoneController.text.isEmpty) {
+                showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
+                return;
+              }
+              if (phoneController.text.length != 10) {
+                showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
+                return;
+              }
+              
+              setState(() => _isLoading = true);
+              Navigator.pop(context);
+              
+              final defaultPassword = '${nameController.text.substring(0, 3).toLowerCase()}${phoneController.text.substring(6)}';
+              
+              final salesman = SalesmanModel(
+                id: 'salesman_${DateTime.now().millisecondsSinceEpoch}',
+                salesmanId: 'SM${DateTime.now().millisecondsSinceEpoch.toString().substring(8, 13)}',
+                name: nameController.text,
+                email: emailController.text,
+                phone: phoneController.text,
+                distributorId: _currentDistributor.distributorId!,
+                createdBy: _currentDistributor.email,
+                createdAt: DateTime.now(),
+                updatedAt: DateTime.now(),
+                areaAssigned: areaController.text,
+                address: addressController.text,
+                targetAmount: double.tryParse(targetController.text) ?? 0,
+                joiningDate: DateTime.now(),
+              );
+              
+              final salesmanMap = salesman.toMap();
+              salesmanMap['password'] = defaultPassword;
+              salesmanMap['permissions'] = {
+                'canAddProduct': false,
+                'canEditProduct': false,
+                'canDeleteProduct': false,
+                'canAddCustomer': false,
+                'canEditCustomer': false,
+                'canDeleteCustomer': false,
+                'canViewOrders': true,
+                'canCreateOrder': true,
+                'canCollectPayment': true
+              };
+              
+              try {
+                final response = await ApiService.addSalesman(salesmanMap);
+                final newSalesman = SalesmanModel.fromMap(response, response['_id']?.toString() ?? salesman.id);
+                setState(() {
+                  _salesmen.add(newSalesman);
+                  _isLoading = false;
+                });
                 if (mounted) {
-                  Navigator.pop(context);
-                  showSafeSnackBar(context, 'Salesman added successfully!', backgroundColor: successGreen);
+                  showSafeSnackBar(
+                    context, 
+                    '✅ Salesman added!\nPassword: $defaultPassword',
+                    backgroundColor: successGreen,
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  setState(() => _isLoading = false);
+                  showSafeSnackBar(context, 'Error adding salesman: $e', backgroundColor: errorRed);
                 }
               }
             },
             child: const Text('Add'),
           ),
         ],
+      ),
+    );
+  }
+
+  void _showPermissionsDialog(SalesmanModel salesman) {
+    final permissions = Map<String, bool>.from({
+      'canAddProduct': false,
+      'canEditProduct': false,
+      'canDeleteProduct': false,
+      'canAddCustomer': false,
+      'canEditCustomer': false,
+      'canDeleteCustomer': false,
+      'canViewOrders': true,
+      'canCreateOrder': true,
+      'canCollectPayment': true,
+    });
+    
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Permissions for ${salesman.name}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Product Permissions:', style: TextStyle(fontWeight: FontWeight.bold)),
+                CheckboxListTile(
+                  title: const Text('Add Product'),
+                  value: permissions['canAddProduct'],
+                  onChanged: (val) => setDialogState(() => permissions['canAddProduct'] = val ?? false),
+                ),
+                CheckboxListTile(
+                  title: const Text('Edit Product'),
+                  value: permissions['canEditProduct'],
+                  onChanged: (val) => setDialogState(() => permissions['canEditProduct'] = val ?? false),
+                ),
+                CheckboxListTile(
+                  title: const Text('Delete Product'),
+                  value: permissions['canDeleteProduct'],
+                  onChanged: (val) => setDialogState(() => permissions['canDeleteProduct'] = val ?? false),
+                ),
+                const Divider(),
+                const Text('Customer Permissions:', style: TextStyle(fontWeight: FontWeight.bold)),
+                CheckboxListTile(
+                  title: const Text('Add Customer'),
+                  value: permissions['canAddCustomer'],
+                  onChanged: (val) => setDialogState(() => permissions['canAddCustomer'] = val ?? false),
+                ),
+                CheckboxListTile(
+                  title: const Text('Edit Customer'),
+                  value: permissions['canEditCustomer'],
+                  onChanged: (val) => setDialogState(() => permissions['canEditCustomer'] = val ?? false),
+                ),
+                CheckboxListTile(
+                  title: const Text('Delete Customer'),
+                  value: permissions['canDeleteCustomer'],
+                  onChanged: (val) => setDialogState(() => permissions['canDeleteCustomer'] = val ?? false),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                try {
+                  await ApiService.updateSalesmanPermissions(salesman.salesmanId, permissions);
+                  if (mounted) {
+                    Navigator.pop(context);
+                    showSafeSnackBar(context, 'Permissions updated successfully!', backgroundColor: successGreen);
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    showSafeSnackBar(context, 'Error updating permissions: $e', backgroundColor: errorRed);
+                  }
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+              child: const Text('Save Permissions'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2433,8 +3754,45 @@ class _DistributorDashboardEnhancedState
                 onPressed: _toggleTheme,
                 tooltip: isDark ? 'Light Mode' : 'Dark Mode',
               ),
-              _headerIcon(Icons.notifications_none, "Alerts"),
-              _headerIcon(Icons.logout, "Logout", onTap: _logout),
+              Stack(
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.notifications_none, color: Colors.white),
+                    onPressed: _showNotificationsDialog,
+                    tooltip: 'Alerts',
+                  ),
+                  if (_unreadNotificationCount > 0)
+                    Positioned(
+                      right: 8,
+                      top: 8,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: const BoxDecoration(
+                          color: Colors.red,
+                          shape: BoxShape.circle,
+                        ),
+                        constraints: const BoxConstraints(
+                          minWidth: 16,
+                          minHeight: 16,
+                        ),
+                        child: Text(
+                          '$_unreadNotificationCount',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              IconButton(
+                icon: const Icon(Icons.logout, color: Colors.white),
+                onPressed: _logout,
+                tooltip: 'Logout',
+              ),
             ],
           ),
           const SizedBox(height: 15),
@@ -2470,25 +3828,6 @@ class _DistributorDashboardEnhancedState
             ],
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _headerIcon(IconData icon, String label, {VoidCallback? onTap}) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 15),
-      child: GestureDetector(
-        onTap: onTap,
-        child: Column(
-          children: [
-            Icon(icon, color: Colors.white, size: 24),
-            const SizedBox(height: 2),
-            Text(
-              label,
-              style: const TextStyle(color: Colors.white70, fontSize: 10),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -3353,69 +4692,55 @@ class _DistributorDashboardEnhancedState
         Container(
           padding: const EdgeInsets.all(16),
           color: Colors.white,
-          child: Column(
+          child: Row(
             children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Customers',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: primaryBlue,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: cardPurple.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      '${filteredCustomers.length} Customers',
-                      style: const TextStyle(
-                        color: cardPurple,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.upload_file),
-                    tooltip: 'Import from CSV',
-                    onPressed: _importCustomers,
-                  ),
-                  IconButton(
-                    icon: _isSyncing
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.cloud_download),
-                    tooltip: 'Sync from Desktop',
-                    onPressed: _isSyncing ? null : _syncCustomersFromDesktop,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                decoration: InputDecoration(
-                  hintText: 'Search by name, area, phone...',
-                  prefixIcon: const Icon(Icons.search),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
+              const Expanded(
+                child: Text(
+                  'Customers',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
                   ),
                 ),
-                onChanged: (value) => setState(() => _searchQuery = value),
+              ),
+              IconButton(
+                icon: const Icon(Icons.person_add, color: accentTeal),
+                tooltip: 'Add Customer',
+                onPressed: _showAddCustomerDialog,
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: cardPurple.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${filteredCustomers.length} Customers',
+                  style: const TextStyle(
+                    color: cardPurple,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.upload_file),
+                tooltip: 'Import from CSV',
+                onPressed: _importCustomers,
+              ),
+              IconButton(
+                icon: _isSyncing
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cloud_download),
+                tooltip: 'Sync from Desktop',
+                onPressed: _isSyncing ? null : _syncCustomersFromDesktop,
               ),
             ],
           ),
@@ -3432,6 +4757,11 @@ class _DistributorDashboardEnhancedState
                         'No customers yet',
                         style: TextStyle(color: Colors.grey, fontSize: 16),
                       ),
+                      SizedBox(height: 10),
+                      Text(
+                        'Click "+" to get started',
+                        style: TextStyle(color: Colors.grey, fontSize: 12),
+                      ),
                     ],
                   ),
                 )
@@ -3440,9 +4770,13 @@ class _DistributorDashboardEnhancedState
                   itemCount: filteredCustomers.length,
                   itemBuilder: (context, index) {
                     final customer = filteredCustomers[index];
-                    final outstanding = getCustomerOutstanding(customer.id);
-                    final lastOrder = getLastOrderForCustomer(customer.id);
-                    return _buildCustomerCard(customer, outstanding, lastOrder);
+                    return FutureBuilder<double>(
+                      future: getCustomerOutstanding(customer.id),
+                      builder: (context, outstandingSnapshot) {
+                        final outstanding = outstandingSnapshot.data ?? 0.0;
+                        return _buildCustomerCard(customer, outstanding);
+                      },
+                    );
                   },
                 ),
         ),
@@ -3453,7 +4787,6 @@ class _DistributorDashboardEnhancedState
   Widget _buildCustomerCard(
     CustomerModel customer,
     double outstanding,
-    OrderModel? lastOrder,
   ) {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -3475,6 +4808,11 @@ class _DistributorDashboardEnhancedState
           children: [
             Text('Area: ${customer.area}'),
             Text('Phone: ${customer.phone ?? "N/A"}'),
+            if (outstanding > 0)
+              Text(
+                'Outstanding: ₹${outstanding.toStringAsFixed(0)}',
+                style: const TextStyle(color: errorRed, fontWeight: FontWeight.bold),
+              ),
           ],
         ),
         trailing: outstanding > 0
@@ -3500,94 +4838,105 @@ class _DistributorDashboardEnhancedState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (lastOrder != null) ...[
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.blue[50],
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Row(
-                          children: [
-                            Icon(Icons.receipt, size: 16, color: primaryBlue),
-                            SizedBox(width: 8),
-                            Text(
-                              'Last Billing Status',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: primaryBlue,
-                              ),
+                FutureBuilder<OrderModel?>(
+                  future: getLastOrderForCustomer(customer.id),
+                  builder: (context, snapshot) {
+                    if (snapshot.hasData && snapshot.data != null) {
+                      final lastOrder = snapshot.data!;
+                      return Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.blue[50],
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Order:'),
-                            Text(
-                              lastOrder.orderNumber,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Date:'),
-                            Text(
-                              '${lastOrder.createdAt.day}/${lastOrder.createdAt.month}/${lastOrder.createdAt.year}',
-                            ),
-                          ],
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Amount:'),
-                            Text(
-                              '₹${lastOrder.totalAmount.toStringAsFixed(0)}',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Status:'),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: _getStatusColor(
-                                  lastOrder.status,
-                                ).withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                lastOrder.statusDisplay,
-                                style: TextStyle(
-                                  color: _getStatusColor(lastOrder.status),
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Row(
+                                  children: [
+                                    Icon(Icons.receipt, size: 16, color: primaryBlue),
+                                    SizedBox(width: 8),
+                                    Text(
+                                      'Last Billing Status',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: primaryBlue,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                              ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text('Order:'),
+                                    Text(
+                                      lastOrder.orderNumber,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text('Date:'),
+                                    Text(
+                                      '${lastOrder.createdAt.day}/${lastOrder.createdAt.month}/${lastOrder.createdAt.year}',
+                                    ),
+                                  ],
+                                ),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text('Amount:'),
+                                    Text(
+                                      '₹${lastOrder.totalAmount.toStringAsFixed(0)}',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text('Status:'),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 2,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: _getStatusColor(
+                                          lastOrder.status,
+                                        ).withOpacity(0.1),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        lastOrder.statusDisplay,
+                                        style: TextStyle(
+                                          color: _getStatusColor(lastOrder.status),
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
+                          ),
+                          const SizedBox(height: 12),
+                        ],
+                      );
+                    }
+                    return const SizedBox();
+                  },
+                ),
                 if (customer.address != null &&
                     customer.address!.isNotEmpty) ...[
                   Text('Address: ${customer.address}'),
@@ -3628,87 +4977,91 @@ class _DistributorDashboardEnhancedState
         Container(
           padding: const EdgeInsets.all(16),
           color: Colors.white,
-          child: Column(
+          child: Row(
             children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Products',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: primaryBlue,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: accentTeal.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      '${filteredProducts.length} Items',
-                      style: const TextStyle(
-                        color: accentTeal,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.upload_file),
-                    tooltip: 'Import from CSV',
-                    onPressed: _importProducts,
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.filter_list),
-                    onPressed: () => _showFilterDialog(),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                decoration: InputDecoration(
-                  hintText: 'Search by name, SKU, category...',
-                  prefixIcon: const Icon(Icons.search),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
+              const Expanded(
+                child: Text(
+                  'Products',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
                   ),
                 ),
-                onChanged: (value) => setState(() => _searchQuery = value),
               ),
-              const SizedBox(height: 8),
-              SizedBox(
-                height: 40,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  children: [
-                    _buildCategoryChip('All', null),
-                    ...categories.map((c) => _buildCategoryChip(c, c)),
-                  ],
+              IconButton(
+                icon: const Icon(Icons.add, color: accentTeal),
+                tooltip: 'Add Product',
+                onPressed: _showAddProductDialog,
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
                 ),
+                decoration: BoxDecoration(
+                  color: accentTeal.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${filteredProducts.length} Items',
+                  style: const TextStyle(
+                    color: accentTeal,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.upload_file),
+                tooltip: 'Import from CSV',
+                onPressed: _importProducts,
+              ),
+              IconButton(
+                icon: _isSyncing
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cloud_download),
+                tooltip: 'Sync from Desktop',
+                onPressed: _isSyncing ? null : _syncProductsFromDesktop,
+              ),
+              IconButton(
+                icon: const Icon(Icons.filter_list),
+                onPressed: () => _showFilterDialog(),
               ),
             ],
           ),
         ),
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: filteredProducts.length,
-            itemBuilder: (context, index) {
-              final product = filteredProducts[index];
-              final lastSale = getLastSaleForProduct(product.id);
-              return _buildProductCard(product, lastSale);
-            },
-          ),
+          child: filteredProducts.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.inventory_outlined, size: 60, color: Colors.grey),
+                      SizedBox(height: 10),
+                      Text(
+                        'No products yet',
+                        style: TextStyle(color: Colors.grey, fontSize: 16),
+                      ),
+                      SizedBox(height: 10),
+                      Text(
+                        'Click "+" to get started',
+                        style: TextStyle(color: Colors.grey, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: filteredProducts.length,
+                  itemBuilder: (context, index) {
+                    final product = filteredProducts[index];
+                    return _buildProductCard(product);
+                  },
+                ),
         ),
       ],
     );
@@ -3729,167 +5082,181 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  Widget _buildProductCard(ProductModel product, OrderModel? lastSale) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: ExpansionTile(
-        leading: Container(
-          width: 50,
-          height: 50,
+  // FIXED: Product card now shows last sale only when expanded/tapped
+  Widget _buildProductCard(ProductModel product) {
+    bool _isExpanded = false;
+    
+    return StatefulBuilder(
+      builder: (context, setCardState) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
           decoration: BoxDecoration(
-            color: primaryBlue.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(10),
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
           ),
-          child: const Icon(Icons.inventory_2, color: primaryBlue),
-        ),
-        title: Text(
-          product.name,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('SKU: ${product.sku} | Stock: ${product.stock}'),
-            Text('Category: ${product.category}'),
-          ],
-        ),
-        trailing: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Text(
-              '₹${product.price.toStringAsFixed(0)}',
-              style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                color: primaryBlue,
-                fontSize: 16,
+          child: ExpansionTile(
+            onExpansionChanged: (expanded) {
+              setCardState(() {
+                _isExpanded = expanded;
+              });
+            },
+            leading: Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                color: primaryBlue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
               ),
+              child: const Icon(Icons.inventory_2, color: primaryBlue),
             ),
-            if (product.stock < 10)
-              const Text(
-                'Low Stock',
-                style: TextStyle(fontSize: 10, color: errorRed),
-              ),
-          ],
-        ),
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
+            title: Text(
+              product.name,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            subtitle: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (lastSale != null) ...[
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.green[50],
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                Text('SKU: ${product.sku} | Stock: ${product.stock}'),
+                Text('Category: ${product.category}'),
+              ],
+            ),
+            trailing: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  '₹${product.price.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
+                    fontSize: 16,
+                  ),
+                ),
+                if (product.stock < 10)
+                  const Text(
+                    'Low Stock',
+                    style: TextStyle(fontSize: 10, color: errorRed),
+                  ),
+              ],
+            ),
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // FIXED: Last sale details only shown when expanded
+                    if (_isExpanded)
+                      FutureBuilder<Map<String, dynamic>?>(
+                        future: getLastSaleForProduct(product.id),
+                        builder: (context, snapshot) {
+                          final lastSale = snapshot.data;
+                          if (lastSale != null && lastSale['order'] != null) {
+                            return Column(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green[50],
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Row(
+                                        children: [
+                                          Icon(
+                                            Icons.shopping_bag,
+                                            size: 16,
+                                            color: successGreen,
+                                          ),
+                                          SizedBox(width: 8),
+                                          Text(
+                                            'Last Sale Details',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: successGreen,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text('Customer:'),
+                                          Text(
+                                            lastSale['customerName'] ?? '',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text('Order ID:'),
+                                          Text(
+                                            lastSale['orderNumber'] ?? '',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text('Qty Sold:'),
+                                          Text(
+                                            (lastSale['quantity'] ?? 0).toString(),
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                              ],
+                            );
+                          }
+                          return const SizedBox();
+                        },
+                      ),
+                    if (product.description != null &&
+                        product.description!.isNotEmpty) ...[
+                      Text('Description: ${product.description}'),
+                      const Divider(),
+                    ],
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
-                        const Row(
-                          children: [
-                            Icon(
-                              Icons.shopping_bag,
-                              size: 16,
-                              color: successGreen,
-                            ),
-                            SizedBox(width: 8),
-                            Text(
-                              'Last Sale Details',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: successGreen,
-                              ),
-                            ),
-                          ],
+                        ElevatedButton.icon(
+                          onPressed: () {},
+                          icon: const Icon(Icons.edit, size: 16),
+                          label: const Text('Edit'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryBlue,
+                          ),
                         ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Customer:'),
-                            Text(
-                              lastSale.customerName,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Date:'),
-                            Text(
-                              '${lastSale.createdAt.day}/${lastSale.createdAt.month}/${lastSale.createdAt.year}',
-                            ),
-                          ],
-                        ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Qty Sold:'),
-                            Text(
-                              lastSale.items
-                                  .firstWhere(
-                                    (i) => i.productId == product.id,
-                                    orElse: () => OrderItemModel(
-                                      id: '',
-                                      productId: '',
-                                      productName: '',
-                                      sku: '',
-                                      quantity: 0,
-                                      rate: 0,
-                                      amount: 0,
-                                    ),
-                                  )
-                                  .quantity
-                                  .toString(),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
+                        OutlinedButton.icon(
+                          onPressed: () {},
+                          icon: const Icon(Icons.add, size: 16),
+                          label: const Text('Add Stock'),
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                if (product.description != null &&
-                    product.description!.isNotEmpty) ...[
-                  Text('Description: ${product.description}'),
-                  const Divider(),
-                ],
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ElevatedButton.icon(
-                      onPressed: () {},
-                      icon: const Icon(Icons.edit, size: 16),
-                      label: const Text('Edit'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: primaryBlue,
-                      ),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () {},
-                      icon: const Icon(Icons.add, size: 16),
-                      label: const Text('Add Stock'),
-                    ),
                   ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 
@@ -3988,46 +5355,39 @@ class _DistributorDashboardEnhancedState
         Container(
           padding: const EdgeInsets.all(16),
           color: Colors.white,
-          child: Column(
+          child: Row(
             children: [
-              Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Salesmen',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: primaryBlue,
-                      ),
-                    ),
-                  ),
-                  ElevatedButton.icon(
-                    onPressed: _showAddSalesmanDialog,
-                    icon: const Icon(Icons.add, size: 18),
-                    label: const Text('Add'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: accentTeal,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _salesmanSearchController,
-                decoration: InputDecoration(
-                  hintText: 'Search salesman by name...',
-                  prefixIcon: const Icon(Icons.search),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
+              const Expanded(
+                child: Text(
+                  'Salesmen',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
                   ),
                 ),
-                onChanged: (value) =>
-                    setState(() => _salesmanSearchQuery = value),
+              ),
+              IconButton(
+                icon: const Icon(Icons.person_add, color: accentTeal),
+                tooltip: 'Add Salesman',
+                onPressed: _showAddSalesmanDialog,
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: accentTeal.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${filteredSalesmen.length} Salesmen',
+                  style: const TextStyle(
+                    color: accentTeal,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               ),
             ],
           ),
@@ -4043,6 +5403,11 @@ class _DistributorDashboardEnhancedState
                       Text(
                         'No salesmen yet',
                         style: TextStyle(color: Colors.grey, fontSize: 16),
+                      ),
+                      SizedBox(height: 10),
+                      Text(
+                        'Click "+" to get started',
+                        style: TextStyle(color: Colors.grey, fontSize: 12),
                       ),
                     ],
                   ),
@@ -4087,22 +5452,32 @@ class _DistributorDashboardEnhancedState
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         subtitle: Text(salesman.email),
-        trailing: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(
-            color: salesman.status == 'active'
-                ? successGreen.withOpacity(0.1)
-                : Colors.grey.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Text(
-            salesman.status == 'active' ? 'Active' : 'Inactive',
-            style: TextStyle(
-              color: salesman.status == 'active' ? successGreen : Colors.grey,
-              fontWeight: FontWeight.w600,
-              fontSize: 12,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.security, color: primaryBlue, size: 20),
+              onPressed: () => _showPermissionsDialog(salesman),
+              tooltip: 'Set Permissions',
             ),
-          ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: salesman.status == 'active'
+                    ? successGreen.withOpacity(0.1)
+                    : Colors.grey.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                salesman.status == 'active' ? 'Active' : 'Inactive',
+                style: TextStyle(
+                  color: salesman.status == 'active' ? successGreen : Colors.grey,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
         ),
         children: [
           Padding(
@@ -4276,6 +5651,164 @@ class _DistributorDashboardEnhancedState
         order.paymentMode == PaymentMode.bankTransfer;
   }
 
+  void _showOrderFilterDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Filter Orders'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Customer Name Filter
+                TextField(
+                  decoration: const InputDecoration(
+                    labelText: 'Customer Name',
+                    hintText: 'Search by customer name',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.person),
+                  ),
+                  onChanged: (value) {
+                    setDialogState(() {
+                      _orderCustomerFilter = value;
+                    });
+                  },
+                ),
+                const SizedBox(height: 16),
+                // Salesman Filter
+                DropdownButtonFormField<String?>(
+                  value: _selectedOrderSalesmanId,
+                  decoration: const InputDecoration(
+                    labelText: 'Salesman',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.badge),
+                  ),
+                  items: [
+                    const DropdownMenuItem<String?>(
+                      value: 'all',
+                      child: Text('All Salesmen'),
+                    ),
+                    ..._salesmen.map((salesman) => DropdownMenuItem<String?>(
+                      value: salesman.id,
+                      child: Text(salesman.name),
+                    )),
+                  ],
+                  onChanged: (value) {
+                    setDialogState(() {
+                      _selectedOrderSalesmanId = value == 'all' ? null : value;
+                    });
+                  },
+                ),
+                const SizedBox(height: 16),
+                // Date Range Filter
+                Row(
+                  children: [
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () async {
+                          final date = await showDatePicker(
+                            context: context,
+                            initialDate: _orderStartDate ?? DateTime.now(),
+                            firstDate: DateTime(2020),
+                            lastDate: DateTime.now(),
+                          );
+                          if (date != null) {
+                            setDialogState(() {
+                              _orderStartDate = date;
+                            });
+                          }
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.grey.shade300),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.calendar_today, size: 16),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _orderStartDate != null
+                                      ? '${_orderStartDate!.day}/${_orderStartDate!.month}/${_orderStartDate!.year}'
+                                      : 'Start Date',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () async {
+                          final date = await showDatePicker(
+                            context: context,
+                            initialDate: _orderEndDate ?? DateTime.now(),
+                            firstDate: DateTime(2020),
+                            lastDate: DateTime.now(),
+                          );
+                          if (date != null) {
+                            setDialogState(() {
+                              _orderEndDate = date;
+                            });
+                          }
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.grey.shade300),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.calendar_today, size: 16),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  _orderEndDate != null
+                                      ? '${_orderEndDate!.day}/${_orderEndDate!.month}/${_orderEndDate!.year}'
+                                      : 'End Date',
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setDialogState(() {
+                  _orderCustomerFilter = '';
+                  _selectedOrderSalesmanId = null;
+                  _orderStartDate = null;
+                  _orderEndDate = null;
+                });
+              },
+              child: const Text('Clear'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(context);
+                _applyOrderFilters();
+              },
+              child: const Text('Apply Filters'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildOrdersSection() {
     return Column(
       children: [
@@ -4296,6 +5829,11 @@ class _DistributorDashboardEnhancedState
                         color: primaryBlue,
                       ),
                     ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.filter_list, color: primaryBlue),
+                    onPressed: _showOrderFilterDialog,
+                    tooltip: 'Filter Orders',
                   ),
                   Container(
                     padding: const EdgeInsets.symmetric(
@@ -4332,46 +5870,6 @@ class _DistributorDashboardEnhancedState
                   isDense: true,
                 ),
                 onChanged: (value) => setState(() => _orderSearchQuery = value),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  const Text(
-                    'Filter by Salesman: ',
-                    style: TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.grey.shade300),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String?>(
-                          isExpanded: true,
-                          value: _selectedOrderSalesmanId,
-                          hint: const Text('All Salesmen'),
-                          items: [
-                            const DropdownMenuItem<String?>(
-                              value: null,
-                              child: Text('All Salesmen'),
-                            ),
-                            ..._salesmen.map(
-                              (salesman) => DropdownMenuItem<String?>(
-                                value: salesman.id,
-                                child: Text(salesman.name),
-                              ),
-                            ),
-                          ],
-                          onChanged: (value) =>
-                              setState(() => _selectedOrderSalesmanId = value),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
               ),
               const SizedBox(height: 12),
               Row(
@@ -4673,7 +6171,7 @@ class _DistributorDashboardEnhancedState
           _buildStepIndicator(),
           const SizedBox(height: 20),
           if (_orderStep == 1) _buildCustomerSelectionStep(),
-          if (_orderStep == 2) _buildProductSelectionStep(),
+          if (_orderStep == 2) _buildProductSelectionStepWithScheme(),
           if (_orderStep == 3) _buildReviewStep(),
         ],
       ),
@@ -4757,13 +6255,23 @@ class _DistributorDashboardEnhancedState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Select Customer',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: primaryBlue,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Select Customer',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: primaryBlue,
+                ),
+              ),
+              TextButton.icon(
+                onPressed: _showAddCustomerDialog,
+                icon: const Icon(Icons.person_add, size: 16),
+                label: const Text('Add New Customer'),
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           TextField(
@@ -4785,72 +6293,77 @@ class _DistributorDashboardEnhancedState
             itemBuilder: (context, index) {
               final customer = orderFilteredCustomers[index];
               final isSelected = _selectedCustomerId == customer.id;
-              final outstanding = getCustomerOutstanding(customer.id);
-              return GestureDetector(
-                onTap: () => setState(() {
-                  _selectedCustomerId = customer.id;
-                  _orderStep = 2;
-                }),
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? primaryBlue.withOpacity(0.1)
-                        : Colors.grey[50],
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: isSelected ? primaryBlue : Colors.grey[300]!,
-                      width: isSelected ? 2 : 1,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        backgroundColor: isSelected
-                            ? primaryBlue
-                            : primaryBlue.withOpacity(0.1),
-                        child: Icon(
-                          Icons.person,
-                          color: isSelected ? Colors.white : primaryBlue,
+              return FutureBuilder<double>(
+                future: getCustomerOutstanding(customer.id),
+                builder: (context, outstandingSnapshot) {
+                  final outstanding = outstandingSnapshot.data ?? 0.0;
+                  return GestureDetector(
+                    onTap: () => setState(() {
+                      _selectedCustomerId = customer.id;
+                      _orderStep = 2;
+                    }),
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isSelected
+                            ? primaryBlue.withOpacity(0.1)
+                            : Colors.grey[50],
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: isSelected ? primaryBlue : Colors.grey[300]!,
+                          width: isSelected ? 2 : 1,
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              customer.name,
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: isSelected ? primaryBlue : Colors.black,
-                              ),
+                      child: Row(
+                        children: [
+                          CircleAvatar(
+                            backgroundColor: isSelected
+                                ? primaryBlue
+                                : primaryBlue.withOpacity(0.1),
+                            child: Icon(
+                              Icons.person,
+                              color: isSelected ? Colors.white : primaryBlue,
                             ),
-                            Text(
-                              'Area: ${customer.area}',
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 12,
-                              ),
-                            ),
-                            if (outstanding > 0)
-                              Text(
-                                'Outstanding: ₹${outstanding.toStringAsFixed(0)}',
-                                style: const TextStyle(
-                                  color: errorRed,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  customer.name,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: isSelected ? primaryBlue : Colors.black,
+                                  ),
                                 ),
-                              ),
-                          ],
-                        ),
+                                Text(
+                                  'Area: ${customer.area}',
+                                  style: TextStyle(
+                                    color: Colors.grey[600],
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                if (outstanding > 0)
+                                  Text(
+                                    'Outstanding: ₹${outstanding.toStringAsFixed(0)}',
+                                    style: const TextStyle(
+                                      color: errorRed,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                          if (isSelected)
+                            const Icon(Icons.check_circle, color: primaryBlue),
+                        ],
                       ),
-                      if (isSelected)
-                        const Icon(Icons.check_circle, color: primaryBlue),
-                    ],
-                  ),
-                ),
+                    ),
+                  );
+                },
               );
             },
           ),
@@ -4859,125 +6372,324 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  Widget _buildProductSelectionStep() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: primaryBlue.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.shopping_cart, color: primaryBlue),
-              const SizedBox(width: 8),
-              Text(
-                '$cartItemCount items in cart',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: primaryBlue,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                'Total: ₹${cartTotal.toStringAsFixed(0)}',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: accentTeal,
-                  fontSize: 16,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        ListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: _products.length,
-          itemBuilder: (context, index) {
-            final product = _products[index];
-            final inCart = _cart[product.id] ?? 0;
-            return Container(
-              margin: const EdgeInsets.only(bottom: 10),
+  // FIXED: Quantity input properly handles numeric input without reversing digits
+  Widget _buildProductSelectionStepWithScheme() {
+    final Map<String, TextEditingController> quantityControllers = {};
+    final Map<String, TextEditingController> rateControllers = {};
+    final Map<String, TextEditingController> schemeControllers = {};
+    
+    for (var product in orderFilteredProducts) {
+      if (_cart.containsKey(product.id)) {
+        quantityControllers[product.id] = TextEditingController(text: _cart[product.id]!.quantity.toString());
+        rateControllers[product.id] = TextEditingController(text: _cart[product.id]!.rate.toStringAsFixed(0));
+        schemeControllers[product.id] = TextEditingController(text: _cart[product.id]!.schPer.toString());
+      } else {
+        quantityControllers[product.id] = TextEditingController(text: '0');
+        rateControllers[product.id] = TextEditingController(text: product.price.toStringAsFixed(0));
+        schemeControllers[product.id] = TextEditingController(text: '0');
+      }
+    }
+
+    return StatefulBuilder(
+      builder: (context, setDialogState) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: inCart > 0
-                    ? accentTeal.withOpacity(0.1)
-                    : Colors.grey[50],
+                color: primaryBlue.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Row(
                 children: [
-                  Expanded(
+                  const Icon(Icons.shopping_cart, color: primaryBlue),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${cartItemCount} items in cart',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: primaryBlue,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    'Total: ₹${cartTotal.toStringAsFixed(0)}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: accentTeal,
+                      fontSize: 16,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _productSearchController,
+              decoration: InputDecoration(
+                hintText: 'Search products...',
+                prefixIcon: const Icon(Icons.search),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              onChanged: (value) => setState(() => _productSearchQuery = value),
+            ),
+            const SizedBox(height: 16),
+            if (_cart.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.only(bottom: 16),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: accentTeal.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: accentTeal),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '${uniqueProductCount} unique products', // FIXED: Show unique product count
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      'Total Qty: ${cartItemCount}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: accentTeal,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Container(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.5,
+              ),
+              child: ListView.builder(
+                shrinkWrap: true,
+                physics: const AlwaysScrollableScrollPhysics(),
+                itemCount: orderFilteredProducts.length,
+                itemBuilder: (context, index) {
+                  final product = orderFilteredProducts[index];
+                  final inCart = _cart.containsKey(product.id);
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: inCart ? accentTeal.withOpacity(0.1) : Colors.grey[50],
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: inCart ? accentTeal : Colors.grey[300]!,
+                        width: inCart ? 2 : 1,
+                      ),
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          product.name,
-                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    product.name,
+                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  Text(
+                                    'SKU: ${product.sku} | Stock: ${product.stock}',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                  Row(
+                                    children: [
+                                      const Text(
+                                        'Rate: ',
+                                        style: TextStyle(fontSize: 12),
+                                      ),
+                                      SizedBox(
+                                        width: 80,
+                                        child: TextFormField(
+                                          controller: rateControllers[product.id],
+                                          decoration: const InputDecoration(
+                                            isDense: true,
+                                            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            border: OutlineInputBorder(),
+                                          ),
+                                          keyboardType: TextInputType.number,
+                                          onChanged: (value) {
+                                            final rate = double.tryParse(value);
+                                            if (rate != null && rate > 0) {
+                                              if (inCart) {
+                                                updateCartRate(product.id, rate);
+                                              } else if (int.tryParse(quantityControllers[product.id]?.text ?? '0') != null && int.parse(quantityControllers[product.id]!.text) > 0) {
+                                                addToCart(product.id, product.name, product.sku, rate, product.stock);
+                                                updateCartRate(product.id, rate);
+                                              }
+                                              setDialogState(() {});
+                                            }
+                                          },
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      if (inCart && _cart[product.id]!.schEnabled)
+                                        Row(
+                                          children: [
+                                            const Text(
+                                              'Sch: ',
+                                              style: TextStyle(fontSize: 12),
+                                            ),
+                                            SizedBox(
+                                              width: 60,
+                                              child: TextFormField(
+                                                controller: schemeControllers[product.id],
+                                                decoration: const InputDecoration(
+                                                  isDense: true,
+                                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                  border: OutlineInputBorder(),
+                                                  suffixText: '%',
+                                                ),
+                                                keyboardType: TextInputType.number,
+                                                onChanged: (value) {
+                                                  final schPer = double.tryParse(value);
+                                                  if (schPer != null && schPer >= 0 && schPer <= 100) {
+                                                    updateCartScheme(product.id, schPer);
+                                                    setDialogState(() {});
+                                                  }
+                                                },
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Row(
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.local_offer, size: 18),
+                                  onPressed: () => toggleCartScheme(product.id),
+                                  color: _cart.containsKey(product.id) && _cart[product.id]!.schEnabled
+                                      ? accentTeal
+                                      : Colors.grey,
+                                  tooltip: 'Toggle Scheme',
+                                ),
+                                const SizedBox(width: 4),
+                                SizedBox(
+                                  width: 80,
+                                  child: TextFormField(
+                                    controller: quantityControllers[product.id],
+                                    decoration: const InputDecoration(
+                                      labelText: 'Qty',
+                                      border: OutlineInputBorder(),
+                                      isDense: true,
+                                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                    ),
+                                    keyboardType: TextInputType.number,
+                                    onChanged: (value) {
+                                      // FIXED: Properly parse integer without reversing digits
+                                      final qty = int.tryParse(value ?? '0');
+                                      if (qty != null && qty >= 0) {
+                                        if (qty > product.stock && !_stockAlertShown.contains(product.id)) {
+                                          _stockAlertShown.add(product.id);
+                                          showSafeSnackBar(
+                                            context,
+                                            '⚠️ Note: Only ${product.stock} in stock for ${product.name}. Remaining quantity will be fulfilled when stock arrives.',
+                                            backgroundColor: warningOrange,
+                                          );
+                                        }
+                                        
+                                        if (qty == 0) {
+                                          removeFromCart(product.id);
+                                          setState(() {});
+                                          setDialogState(() {});
+                                        } else {
+                                          final currentRate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString());
+                                          if (!inCart) {
+                                            addToCart(product.id, product.name, product.sku, currentRate ?? product.price, product.stock);
+                                          }
+                                          updateCartQuantity(product.id, qty);
+                                          setState(() {});
+                                          setDialogState(() {});
+                                        }
+                                      }
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                        Text(
-                          '₹${product.price.toStringAsFixed(0)}',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: primaryBlue,
+                        if (inCart && _cart[product.id]!.quantity > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Row(
+                              children: [
+                                Text(
+                                  'In cart: ${_cart[product.id]!.quantity} × ₹${_cart[product.id]!.rate.toStringAsFixed(0)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: accentTeal,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Text(
+                                  '= ₹${_cart[product.id]!.netAmt.toStringAsFixed(0)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: accentTeal,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
                       ],
                     ),
-                  ),
-                  if (inCart > 0)
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.remove, size: 16),
-                          onPressed: () => removeFromCart(product.id),
-                        ),
-                        Text(
-                          '$inCart',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.add, size: 16),
-                          onPressed: () => addToCart(product.id),
-                        ),
-                      ],
-                    )
-                  else
-                    ElevatedButton(
-                      onPressed: () => addToCart(product.id),
-                      child: const Text('Add'),
-                    ),
-                ],
-              ),
-            );
-          },
-        ),
-        const SizedBox(height: 20),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: () => setState(() => _orderStep = 1),
-                child: const Text('← Back'),
+                  );
+                },
               ),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: ElevatedButton(
-                onPressed: _cart.isNotEmpty
-                    ? () => setState(() => _orderStep = 3)
-                    : null,
-                style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-                child: Text(_cart.isEmpty ? 'Add items' : 'Review →'),
-              ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () {
+                      setState(() {
+                        _orderStep = 1;
+                        _cart.clear();
+                        _stockAlertShown.clear();
+                      });
+                    },
+                    child: const Text('← Back'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _cart.isNotEmpty
+                        ? () {
+                            setState(() => _orderStep = 3);
+                          }
+                        : null,
+                    style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+                    child: Text(_cart.isEmpty ? 'Add items' : 'Review →'),
+                  ),
+                ),
+              ],
             ),
           ],
-        ),
-      ],
+        );
+      },
     );
   }
 
@@ -5069,6 +6781,12 @@ class _DistributorDashboardEnhancedState
                     onSelected: (_) =>
                         setState(() => _selectedPaymentMode = PaymentMode.upi),
                   ),
+                  ChoiceChip(
+                    label: const Text('Cheque'),
+                    selected: _selectedPaymentMode == PaymentMode.cheque,
+                    onSelected: (_) =>
+                        setState(() => _selectedPaymentMode = PaymentMode.cheque),
+                  ),
                 ],
               ),
             ],
@@ -5088,7 +6806,7 @@ class _DistributorDashboardEnhancedState
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    '$cartItemCount items',
+                    '${uniqueProductCount} unique products', // FIXED: Show unique product count
                     style: TextStyle(color: Colors.grey[600]),
                   ),
                   Text(
@@ -5100,6 +6818,11 @@ class _DistributorDashboardEnhancedState
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Total Quantity: ${cartItemCount}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
             ],
           ),
@@ -5113,7 +6836,7 @@ class _DistributorDashboardEnhancedState
                 child: const Text('← Edit'),
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 12),
             Expanded(
               child: ElevatedButton(
                 onPressed: submitOrder,
@@ -5189,59 +6912,74 @@ class _DistributorDashboardEnhancedState
                   itemCount: ordersWithDue.length,
                   itemBuilder: (context, index) {
                     final order = ordersWithDue[index];
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    return FutureBuilder<double>(
+                      future: getCustomerOutstanding(order.customerId),
+                      builder: (context, outstandingSnapshot) {
+                        final customerOutstanding = outstandingSnapshot.data ?? 0.0;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    order.orderNumber,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: warningOrange.withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Text(
+                                      '₹${order.dueAmount.toStringAsFixed(0)} due',
+                                      style: const TextStyle(
+                                        color: warningOrange,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              Text('Customer: ${order.customerName}'),
                               Text(
-                                order.orderNumber,
+                                'Total: ₹${order.totalAmount.toStringAsFixed(0)} | Paid: ₹${order.paidAmount.toStringAsFixed(0)}',
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Customer Outstanding Balance: ₹${customerOutstanding.toStringAsFixed(0)}',
                                 style: const TextStyle(
+                                  fontSize: 12,
+                                  color: errorRed,
                                   fontWeight: FontWeight.bold,
                                 ),
                               ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: warningOrange.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Text(
-                                  '₹${order.dueAmount.toStringAsFixed(0)} due',
-                                  style: const TextStyle(
-                                    color: warningOrange,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                              const SizedBox(height: 12),
+                              ElevatedButton.icon(
+                                onPressed: () => _showEnhancedPaymentDialog(order, customerOutstanding),
+                                icon: const Icon(Icons.payment, size: 16),
+                                label: const Text('Collect Payment'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: successGreen,
                                 ),
                               ),
                             ],
                           ),
-                          Text('Customer: ${order.customerName}'),
-                          Text(
-                            'Total: ₹${order.totalAmount.toStringAsFixed(0)} | Paid: ₹${order.paidAmount.toStringAsFixed(0)}',
-                          ),
-                          const SizedBox(height: 12),
-                          ElevatedButton.icon(
-                            onPressed: () => _showPaymentDialog(order),
-                            icon: const Icon(Icons.payment, size: 16),
-                            label: const Text('Collect Payment'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: successGreen,
-                            ),
-                          ),
-                        ],
-                      ),
+                        );
+                      },
                     );
                   },
                 ),
@@ -5250,9 +6988,29 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  void _showPaymentDialog(OrderModel order) {
-    _paymentAmountController.text = order.dueAmount.toStringAsFixed(0);
+  void _showEnhancedPaymentDialog(OrderModel order, double customerOutstanding) {
+    final paymentAmountController = TextEditingController(text: order.dueAmount.toStringAsFixed(0));
     PaymentMode selectedMode = PaymentMode.cash;
+    String? selectedBank;
+    String? selectedUpiApp;
+    final chequeNumberController = TextEditingController();
+    final chequeDateController = TextEditingController();
+    final transactionNumberController = TextEditingController();
+    final remarkController = TextEditingController();
+    File? paymentPhoto;
+    double balanceAfterPayment = order.dueAmount;
+    
+    Future<void> selectDate(BuildContext context, TextEditingController controller) async {
+      final DateTime? picked = await showDatePicker(
+        context: context,
+        initialDate: DateTime.now(),
+        firstDate: DateTime(2000),
+        lastDate: DateTime(2100),
+      );
+      if (picked != null) {
+        controller.text = picked.toIso8601String().split('T')[0];
+      }
+    }
 
     showDialog(
       context: context,
@@ -5275,15 +7033,37 @@ class _DistributorDashboardEnhancedState
                     color: warningOrange,
                   ),
                 ),
+                const SizedBox(height: 8),
+                Text(
+                  'Customer Outstanding: ₹${customerOutstanding.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: errorRed,
+                  ),
+                ),
                 const SizedBox(height: 16),
                 TextField(
-                  controller: _paymentAmountController,
+                  controller: paymentAmountController,
                   decoration: const InputDecoration(
                     labelText: 'Amount to Collect',
                     border: OutlineInputBorder(),
                     prefixText: '₹ ',
                   ),
                   keyboardType: TextInputType.number,
+                  onChanged: (value) {
+                    final amount = double.tryParse(value) ?? 0;
+                    setDialogState(() {
+                      balanceAfterPayment = order.dueAmount - amount;
+                    });
+                  },
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Balance after payment: ₹${balanceAfterPayment.toStringAsFixed(0)}',
+                  style: TextStyle(
+                    color: balanceAfterPayment <= 0 ? successGreen : warningOrange,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 12),
                 const Text(
@@ -5297,20 +7077,121 @@ class _DistributorDashboardEnhancedState
                     ChoiceChip(
                       label: const Text('Cash'),
                       selected: selectedMode == PaymentMode.cash,
-                      onSelected: (_) =>
-                          setDialogState(() => selectedMode = PaymentMode.cash),
+                      onSelected: (_) => setDialogState(() => selectedMode = PaymentMode.cash),
                     ),
                     ChoiceChip(
                       label: const Text('UPI'),
                       selected: selectedMode == PaymentMode.upi,
-                      onSelected: (_) =>
-                          setDialogState(() => selectedMode = PaymentMode.upi),
+                      onSelected: (_) => setDialogState(() => selectedMode = PaymentMode.upi),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Cheque'),
+                      selected: selectedMode == PaymentMode.cheque,
+                      onSelected: (_) => setDialogState(() => selectedMode = PaymentMode.cheque),
                     ),
                   ],
                 ),
                 const SizedBox(height: 16),
+                if (selectedMode == PaymentMode.cheque) ...[
+                  const Text(
+                    'Cheque Details:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: chequeNumberController,
+                    decoration: const InputDecoration(
+                      labelText: 'Cheque Number *',
+                      border: OutlineInputBorder(),
+                    ),
+                    keyboardType: TextInputType.number,
+                  ),
+                  const SizedBox(height: 8),
+                  GestureDetector(
+                    onTap: () => selectDate(context, chequeDateController),
+                    child: AbsorbPointer(
+                      child: TextField(
+                        controller: chequeDateController,
+                        decoration: const InputDecoration(
+                          labelText: 'Cheque Date *',
+                          border: OutlineInputBorder(),
+                          suffixIcon: Icon(Icons.calendar_today),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    value: selectedBank,
+                    decoration: const InputDecoration(
+                      labelText: 'Bank Name *',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('Select Bank')),
+                      ..._banksList.map((bank) => DropdownMenuItem(
+                        value: bank,
+                        child: Text(bank),
+                      )),
+                    ],
+                    onChanged: (value) => setDialogState(() => selectedBank = value),
+                  ),
+                ],
+                if (selectedMode == PaymentMode.upi) ...[
+                  const Text(
+                    'UPI Details:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    value: selectedUpiApp,
+                    decoration: const InputDecoration(
+                      labelText: 'UPI App *',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('Select UPI App')),
+                      ..._upiTypesList.map((app) => DropdownMenuItem(
+                        value: app,
+                        child: Text(app),
+                      )),
+                    ],
+                    onChanged: (value) => setDialogState(() => selectedUpiApp = value),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: transactionNumberController,
+                    decoration: const InputDecoration(
+                      labelText: 'Transaction Number *',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          paymentPhoto == null ? 'No photo selected' : 'Photo selected',
+                          style: TextStyle(color: paymentPhoto == null ? Colors.grey : successGreen),
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          final ImagePicker picker = ImagePicker();
+                          final XFile? image = await picker.pickImage(source: ImageSource.gallery);
+                          if (image != null) {
+                            setDialogState(() => paymentPhoto = File(image.path));
+                          }
+                        },
+                        icon: const Icon(Icons.photo_camera, size: 16),
+                        label: const Text('Add Photo'),
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 16),
                 TextField(
-                  controller: _remarkController,
+                  controller: remarkController,
                   decoration: const InputDecoration(
                     labelText: 'Remark (Optional)',
                     border: OutlineInputBorder(),
@@ -5327,19 +7208,70 @@ class _DistributorDashboardEnhancedState
             ),
             ElevatedButton(
               onPressed: () async {
-                final amount = double.tryParse(_paymentAmountController.text);
-                if (amount != null && amount > 0) {
+                final amount = double.tryParse(paymentAmountController.text);
+                if (amount == null || amount <= 0) {
+                  showSafeSnackBar(context, 'Please enter valid amount', backgroundColor: errorRed);
+                  return;
+                }
+                
+                if (amount > order.dueAmount) {
+                  showSafeSnackBar(context, 'Amount cannot exceed due amount', backgroundColor: errorRed);
+                  return;
+                }
+                
+                if (selectedMode == PaymentMode.cheque) {
+                  if (chequeNumberController.text.isEmpty) {
+                    showSafeSnackBar(context, 'Please enter cheque number', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (chequeDateController.text.isEmpty) {
+                    showSafeSnackBar(context, 'Please select cheque date', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (selectedBank == null) {
+                    showSafeSnackBar(context, 'Please select bank name', backgroundColor: errorRed);
+                    return;
+                  }
+                } else if (selectedMode == PaymentMode.upi) {
+                  if (selectedUpiApp == null) {
+                    showSafeSnackBar(context, 'Please select UPI app', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (transactionNumberController.text.isEmpty) {
+                    showSafeSnackBar(context, 'Please enter transaction number', backgroundColor: errorRed);
+                    return;
+                  }
+                }
+                
+                setState(() => _isLoading = true);
+                Navigator.pop(context);
+                
+                try {
                   await _orderService.recordPayment(
                     order.id,
                     amount,
                     selectedMode,
-                    reference: _referenceController.text,
+                    collectedBy: _currentDistributor.email,
+                    salesmanId: order.salesmanId,
+                    chequeNumber: selectedMode == PaymentMode.cheque ? chequeNumberController.text : null,
+                    chequeDate: selectedMode == PaymentMode.cheque ? chequeDateController.text : null,
+                    bankName: selectedMode == PaymentMode.cheque ? selectedBank : null,
+                    upiType: selectedMode == PaymentMode.upi ? selectedUpiApp : null,
+                    transactionNumber: selectedMode == PaymentMode.upi ? transactionNumberController.text : null,
+                    remark: remarkController.text.isNotEmpty ? remarkController.text : null,
+                    paymentPhoto: paymentPhoto,
                   );
                   await _loadData();
+                  // Refresh outstanding balance immediately
                   if (mounted) {
-                    Navigator.pop(context);
-                    showSafeSnackBar(context, 'Payment collected successfully!', backgroundColor: successGreen);
+                    showSafeSnackBar(context, 'Payment collected successfully! Outstanding balance updated.', backgroundColor: successGreen);
                   }
+                } catch (e) {
+                  if (mounted) {
+                    showSafeSnackBar(context, 'Error collecting payment: $e', backgroundColor: errorRed);
+                  }
+                } finally {
+                  if (mounted) setState(() => _isLoading = false);
                 }
               },
               child: const Text('Collect'),
@@ -5373,27 +7305,38 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   bool _isSidebarOpen = false;
   bool _isLoading = true;
   
-  // Current salesman
   late UserModel _currentSalesman;
 
-  // Data
-  List<Map<String, dynamic>> _customers = [];
-  List<Map<String, dynamic>> _products = [];
-  List<Map<String, dynamic>> _orders = [];
+  List<CustomerModel> _customers = [];
+  List<ProductModel> _products = [];
+  List<OrderModel> _orders = [];
+  Map<String, dynamic> _permissions = {};
 
-  // Cart
   final Map<String, CartItemData> _cart = {};
 
-  // Order creation state
   int _orderStep = 1;
   String? _selectedCustomerId;
+  PaymentMode _selectedPaymentMode = PaymentMode.credit;
+  String _orderNotes = '';
+
+  final TextEditingController _productSearchController = TextEditingController();
+  String _productSearchQuery = '';
+  
+  List<String> _banksList = [];
+  List<String> _upiTypesList = [];
+
+  final OrderService _orderService = OrderService();
+  final Map<String, Map<String, dynamic>> _lastSaleCache = {};
+  
+  // Stock alert tracking
+  final Set<String> _stockAlertShown = {};
 
   @override
   void initState() {
     super.initState();
-    // Initialize current salesman from passed user or create default
     if (widget.loggedInUser != null) {
       _currentSalesman = widget.loggedInUser!;
+      _orderService.setSalesmanId(_currentSalesman.salesmanId ?? _currentSalesman.id);
     } else {
       _currentSalesman = UserModel(
         id: 'salesman_001',
@@ -5403,22 +7346,249 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         role: UserRole.salesman,
         createdAt: DateTime.now().subtract(const Duration(days: 15)),
         isActive: true,
+        salesmanId: 'SM0001',
       );
+      _orderService.setSalesmanId('SM0001');
     }
     _loadData();
+    _loadBankAndUpiLists();
+  }
+
+  Future<void> _loadBankAndUpiLists() async {
+    final banks = await ApiService.getBanks();
+    final upiTypes = await ApiService.getUpiTypes();
+    setState(() {
+      _banksList = banks.cast<String>();
+      _upiTypesList = upiTypes.cast<String>();
+    });
   }
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
-    await Future.delayed(const Duration(milliseconds: 500));
-    setState(() => _isLoading = false);
+    
+    try {
+      if (_currentSalesman.salesmanId != null) {
+        final data = await ApiService.getSalesmanData(_currentSalesman.salesmanId!);
+        
+        print('Salesman data loaded: ${data['customers']?.length ?? 0} customers, ${data['products']?.length ?? 0} products');
+        
+        setState(() {
+          _customers = (data['customers'] as List?)?.map((c) {
+            final id = c['_id']?.toString() ?? '';
+            return CustomerModel.fromMap(c, id);
+          }).toList() ?? [];
+          
+          _products = (data['products'] as List?)?.map((p) {
+            final id = p['_id']?.toString() ?? '';
+            return ProductModel.fromMap(p, id);
+          }).toList() ?? [];
+          
+          print('Loaded ${_products.length} products for salesman');
+          
+          _orders = (data['orders'] as List?)?.map((o) {
+            final id = o['_id']?.toString() ?? '';
+            return OrderModel(
+              id: id,
+              orderNumber: o['orderNumber'] ?? '',
+              customerId: o['customerId'] ?? '',
+              customerName: o['customerName'] ?? '',
+              customerPhone: o['customerPhone'] ?? '',
+              areaName: o['areaName'] ?? '',
+              routeName: o['routeName'] ?? '',
+              salesmanId: o['salesman_id'] ?? o['salesmanId'] ?? '',
+              salesmanName: o['salesmanName'] ?? '',
+              items: (o['items'] as List?)?.map((item) => OrderItemModel(
+                id: item['id'] ?? '',
+                productId: item['productId'] ?? '',
+                productName: item['productName'] ?? '',
+                sku: item['sku'] ?? '',
+                quantity: item['quantity'] ?? 0,
+                rate: (item['rate'] ?? 0).toDouble(),
+                amount: (item['amount'] ?? 0).toDouble(),
+              )).toList() ?? [],
+              totalAmount: (o['grand_total'] ?? o['totalAmount'] ?? 0).toDouble(),
+              paidAmount: (o['paidAmount'] ?? 0).toDouble(),
+              dueAmount: (o['dueAmount'] ?? 0).toDouble(),
+              status: _parseOrderStatus(o['status'] ?? 'pending'),
+              orderType: _parseOrderType(o['orderType'] ?? 'regular'),
+              paymentMode: o['paymentMode'] != null ? _parsePaymentMode(o['paymentMode']) : null,
+              scheduledDate: o['scheduledDate'] != null ? DateTime.tryParse(o['scheduledDate']) : null,
+              notes: o['notes'],
+              internalNotes: o['internalNotes'],
+              createdAt: o['createdAt'] != null ? DateTime.parse(o['createdAt']) : DateTime.now(),
+              timeline: [],
+            );
+          }).toList() ?? [];
+          
+          _permissions = data['permissions'] ?? {
+            'canAddProduct': false,
+            'canEditProduct': false,
+            'canDeleteProduct': false,
+            'canAddCustomer': false,
+            'canEditCustomer': false,
+            'canDeleteCustomer': false,
+            'canViewOrders': true,
+            'canCreateOrder': true,
+            'canCollectPayment': true,
+          };
+        });
+      }
+    } catch (e) {
+      print('Error loading salesman data: $e');
+      setState(() {
+        _customers = [];
+        _products = [];
+        _orders = [];
+        _permissions = {
+          'canAddProduct': false,
+          'canEditProduct': false,
+          'canDeleteProduct': false,
+          'canAddCustomer': false,
+          'canEditCustomer': false,
+          'canDeleteCustomer': false,
+          'canViewOrders': true,
+          'canCreateOrder': true,
+          'canCollectPayment': true,
+        };
+      });
+    } finally {
+      setState(() => _isLoading = false);
+    }
   }
 
-  void _logout() async {
+  OrderStatus _parseOrderStatus(String status) {
+    switch (status.toLowerCase()) {
+      case 'pending': return OrderStatus.pending;
+      case 'taken': return OrderStatus.taken;
+      case 'dispatched': return OrderStatus.dispatched;
+      case 'delivered': return OrderStatus.delivered;
+      case 'cancelled': return OrderStatus.cancelled;
+      default: return OrderStatus.pending;
+    }
+  }
+
+  OrderType _parseOrderType(String type) {
+    switch (type.toLowerCase()) {
+      case 'regular': return OrderType.regular;
+      case 'urgent': return OrderType.urgent;
+      default: return OrderType.regular;
+    }
+  }
+
+  PaymentMode _parsePaymentMode(String mode) {
+    switch (mode.toLowerCase()) {
+      case 'cash': return PaymentMode.cash;
+      case 'upi': return PaymentMode.upi;
+      case 'banktransfer': return PaymentMode.bankTransfer;
+      case 'credit': return PaymentMode.credit;
+      case 'partial': return PaymentMode.partial;
+      case 'cheque': return PaymentMode.cheque;
+      case 'chequewithcash': return PaymentMode.chequeWithCash;
+      default: return PaymentMode.credit;
+    }
+  }
+
+  Future<Map<String, dynamic>?> getLastSaleForProduct(String productId) async {
+    if (_lastSaleCache.containsKey(productId)) {
+      return _lastSaleCache[productId];
+    }
+    try {
+      final response = await ApiService.getLastSaleForProduct(productId);
+      if (response.isNotEmpty) {
+        _lastSaleCache[productId] = response;
+        return response;
+      }
+      return null;
+    } catch (e) {
+      print('Error fetching last sale: $e');
+      return null;
+    }
+  }
+
+  Future<OrderModel?> getLastOrderForCustomer(String customerId) async {
+    try {
+      final response = await ApiService.getLastOrderByCustomer(customerId);
+      if (response.isNotEmpty && response['orderNumber'] != null) {
+        return OrderModel(
+          id: response['_id']?.toString() ?? '',
+          orderNumber: response['orderNumber'] ?? '',
+          customerId: response['customerId'] ?? '',
+          customerName: response['customerName'] ?? '',
+          customerPhone: response['customerPhone'] ?? '',
+          areaName: response['areaName'] ?? '',
+          routeName: response['routeName'] ?? '',
+          salesmanId: response['salesman_id'] ?? '',
+          salesmanName: response['salesmanName'] ?? '',
+          items: (response['items'] as List?)?.map((item) => OrderItemModel(
+            id: item['id'] ?? '',
+            productId: item['productId'] ?? '',
+            productName: item['productName'] ?? '',
+            sku: item['sku'] ?? '',
+            quantity: item['quantity'] ?? 0,
+            rate: (item['rate'] ?? 0).toDouble(),
+            amount: (item['amount'] ?? 0).toDouble(),
+          )).toList() ?? [],
+          totalAmount: (response['grand_total'] ?? 0).toDouble(),
+          paidAmount: (response['paidAmount'] ?? 0).toDouble(),
+          dueAmount: (response['dueAmount'] ?? 0).toDouble(),
+          status: _parseOrderStatus(response['status'] ?? 'pending'),
+          orderType: _parseOrderType(response['orderType'] ?? 'regular'),
+          paymentMode: null,
+          scheduledDate: null,
+          notes: response['notes'],
+          internalNotes: response['internalNotes'],
+          createdAt: response['createdAt'] != null ? DateTime.parse(response['createdAt']) : DateTime.now(),
+          timeline: [],
+        );
+      }
+      return null;
+    } catch (e) {
+      print('Error fetching last order: $e');
+      return null;
+    }
+  }
+
+  Future<void> _logout() async {
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Logout'),
+        content: const Text('Do you want to logout?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context, true);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: errorRed),
+            child: const Text('Logout'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldLogout != true) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      await ApiService.logout();
+    } catch (e) {
+      print('Logout API error (ignored): $e');
+    }
+    
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
+    
     if (mounted) {
-      Navigator.pushReplacementNamed(context, '/login');
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (context) => const LoginScreen()),
+        (route) => false,
+      );
     }
   }
 
@@ -5430,9 +7600,30 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     return total;
   }
 
-  int get cartItemCount => _cart.length;
+  int get cartItemCount => _cart.values.fold(0, (a, b) => a + b.quantity);
+  
+  int get uniqueProductCount => _cart.length;
 
-  void addToCart(String productId, String productName, String sku, double price) {
+  bool get canAddProduct => _permissions['canAddProduct'] ?? false;
+  bool get canEditProduct => _permissions['canEditProduct'] ?? false;
+  bool get canDeleteProduct => _permissions['canDeleteProduct'] ?? false;
+  bool get canAddCustomer => _permissions['canAddCustomer'] ?? false;
+  bool get canEditCustomer => _permissions['canEditCustomer'] ?? false;
+  bool get canDeleteCustomer => _permissions['canDeleteCustomer'] ?? false;
+  bool get canViewOrders => _permissions['canViewOrders'] ?? true;
+  bool get canCreateOrder => _permissions['canCreateOrder'] ?? true;
+  bool get canCollectPayment => _permissions['canCollectPayment'] ?? true;
+
+  List<ProductModel> get filteredProducts {
+    if (_productSearchQuery.isEmpty) return _products;
+    final query = _productSearchQuery.toLowerCase();
+    return _products.where((p) => 
+      p.name.toLowerCase().contains(query) || 
+      p.sku.toLowerCase().contains(query)
+    ).toList();
+  }
+
+  void addToCart(String productId, String productName, String sku, double price, int stock) {
     setState(() {
       if (_cart.containsKey(productId)) {
         _cart[productId]!.quantity++;
@@ -5444,6 +7635,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
           sku: sku,
           quantity: 1,
           rate: price,
+          stock: stock,
+          schEnabled: false,
         );
         _cart[productId]!.calculate();
       }
@@ -5461,7 +7654,43 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       if (quantity <= 0) {
         _cart.remove(productId);
       } else if (_cart.containsKey(productId)) {
+        final product = _products.firstWhere((p) => p.id == productId);
+        if (quantity > product.stock && !_stockAlertShown.contains(productId)) {
+          _stockAlertShown.add(productId);
+          showSafeSnackBar(
+            context,
+            '⚠️ Note: Only ${product.stock} in stock for ${product.name}. Remaining quantity will be fulfilled when stock arrives.',
+            backgroundColor: warningOrange,
+          );
+        }
         _cart[productId]!.quantity = quantity;
+        _cart[productId]!.calculate();
+      }
+    });
+  }
+
+  void updateCartRate(String productId, double rate) {
+    setState(() {
+      if (_cart.containsKey(productId)) {
+        _cart[productId]!.rate = rate;
+        _cart[productId]!.calculate();
+      }
+    });
+  }
+
+  void updateCartScheme(String productId, double schPer) {
+    setState(() {
+      if (_cart.containsKey(productId)) {
+        _cart[productId]!.schPer = schPer;
+        _cart[productId]!.calculate();
+      }
+    });
+  }
+
+  void toggleCartScheme(String productId) {
+    setState(() {
+      if (_cart.containsKey(productId)) {
+        _cart[productId]!.schEnabled = !_cart[productId]!.schEnabled;
         _cart[productId]!.calculate();
       }
     });
@@ -5470,9 +7699,327 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   void clearCart() {
     setState(() {
       _cart.clear();
+      _stockAlertShown.clear();
       _selectedCustomerId = null;
       _orderStep = 1;
+      _selectedPaymentMode = PaymentMode.credit;
+      _orderNotes = '';
     });
+  }
+
+  Future<void> submitOrder() async {
+    if (_selectedCustomerId == null || _cart.isEmpty) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
+
+      final order = OrderModel(
+        id: 'order_${DateTime.now().millisecondsSinceEpoch}',
+        orderNumber: 'ORD${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}',
+        customerId: _selectedCustomerId!,
+        customerName: customer.name,
+        customerPhone: customer.phone ?? customer.mobile ?? '',
+        areaName: customer.area,
+        routeName: customer.route ?? '',
+        salesmanId: _currentSalesman.salesmanId ?? _currentSalesman.id,
+        salesmanName: _currentSalesman.name,
+        items: _cart.entries.map((entry) {
+          final item = entry.value;
+          return OrderItemModel(
+            id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
+            productId: item.productId,
+            productName: item.productName,
+            sku: item.sku,
+            quantity: item.quantity,
+            rate: item.rate,
+            amount: item.netAmt,
+          );
+        }).toList(),
+        totalAmount: cartTotal,
+        paidAmount: _selectedPaymentMode == PaymentMode.cash || _selectedPaymentMode == PaymentMode.upi ? cartTotal : 0,
+        dueAmount: _selectedPaymentMode == PaymentMode.credit ? cartTotal : 0,
+        status: OrderStatus.pending,
+        orderType: OrderType.regular,
+        paymentMode: _selectedPaymentMode,
+        scheduledDate: null,
+        notes: _orderNotes,
+        internalNotes: null,
+        createdAt: DateTime.now(),
+        timeline: [
+          OrderTimelineEvent(
+            id: 'timeline_${DateTime.now().millisecondsSinceEpoch}',
+            status: 'pending',
+            message: 'Order created and pending',
+            timestamp: DateTime.now(),
+          ),
+        ],
+      );
+
+      await _orderService.createOrder(order);
+      
+      if (mounted) {
+        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${order.orderNumber}', backgroundColor: successGreen);
+        clearCart();
+        await _loadData();
+        
+        // FIXED: Close the order tab after successful submission by switching to dashboard
+        setState(() {
+          _selectedIndex = 0; // Switch to dashboard
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Error submitting order: $e', backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _showAddCustomerDialog() {
+    if (!canAddCustomer) {
+      showSafeSnackBar(context, 'You don\'t have permission to add customers', backgroundColor: errorRed);
+      return;
+    }
+    
+    final nameController = TextEditingController();
+    final phoneController = TextEditingController();
+    final areaController = TextEditingController();
+    final routeController = TextEditingController();
+    final addressController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add New Customer'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Customer Name *',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: phoneController,
+                decoration: const InputDecoration(
+                  labelText: 'Phone Number * (10 digits)',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.phone,
+                maxLength: 10,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: areaController,
+                decoration: const InputDecoration(
+                  labelText: 'Area *',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: routeController,
+                decoration: const InputDecoration(
+                  labelText: 'Route',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: addressController,
+                decoration: const InputDecoration(
+                  labelText: 'Address',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (nameController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter customer name', backgroundColor: errorRed);
+                return;
+              }
+              if (phoneController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
+                return;
+              }
+              if (phoneController.text.trim().length != 10) {
+                showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
+                return;
+              }
+              if (areaController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter area', backgroundColor: errorRed);
+                return;
+              }
+              
+              final customer = CustomerModel(
+                id: 'cust_${DateTime.now().millisecondsSinceEpoch}',
+                name: nameController.text.trim(),
+                phone: phoneController.text.trim(),
+                area: areaController.text.trim(),
+                route: routeController.text.trim().isNotEmpty ? routeController.text.trim() : null,
+                address: addressController.text.trim().isNotEmpty ? addressController.text.trim() : null,
+                createdAt: DateTime.now(),
+                updatedAt: DateTime.now(),
+                customerId: 'GK${DateTime.now().millisecondsSinceEpoch.toString().substring(8, 13)}',
+                createdBy: _currentSalesman.email,
+                distributorId: _currentSalesman.distributorId,
+              );
+              
+              try {
+                await ApiService.addCustomer(customer.toMap());
+                await _loadData();
+                if (mounted) {
+                  Navigator.pop(context);
+                  showSafeSnackBar(context, '✅ Customer added successfully!', backgroundColor: successGreen);
+                }
+              } catch (e) {
+                showSafeSnackBar(context, 'Error adding customer: $e', backgroundColor: errorRed);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+            child: const Text('Add Customer'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAddProductDialog() {
+    if (!canAddProduct) {
+      showSafeSnackBar(context, 'You don\'t have permission to add products', backgroundColor: errorRed);
+      return;
+    }
+    
+    final nameController = TextEditingController();
+    final skuController = TextEditingController();
+    final priceController = TextEditingController();
+    final categoryController = TextEditingController();
+    final stockController = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Add New Product'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Product Name *',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: skuController,
+                decoration: const InputDecoration(
+                  labelText: 'SKU *',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: priceController,
+                decoration: const InputDecoration(
+                  labelText: 'Price *',
+                  border: OutlineInputBorder(),
+                  prefixText: '₹ ',
+                ),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: categoryController,
+                decoration: const InputDecoration(
+                  labelText: 'Category *',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: stockController,
+                decoration: const InputDecoration(
+                  labelText: 'Stock Quantity',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.number,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (nameController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter product name', backgroundColor: errorRed);
+                return;
+              }
+              if (skuController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter SKU', backgroundColor: errorRed);
+                return;
+              }
+              if (priceController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter price', backgroundColor: errorRed);
+                return;
+              }
+              if (categoryController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter category', backgroundColor: errorRed);
+                return;
+              }
+              
+              final product = ProductModel(
+                id: 'prod_${DateTime.now().millisecondsSinceEpoch}',
+                name: nameController.text.trim(),
+                sku: skuController.text.trim(),
+                price: double.tryParse(priceController.text) ?? 0,
+                category: categoryController.text.trim(),
+                stock: int.tryParse(stockController.text) ?? 0,
+                description: null,
+                createdAt: DateTime.now(),
+                updatedAt: DateTime.now(),
+                createdBy: _currentSalesman.email,
+                distributorId: _currentSalesman.distributorId,
+              );
+              
+              try {
+                await ApiService.addProduct(product.toMap());
+                await _loadData();
+                if (mounted) {
+                  Navigator.pop(context);
+                  showSafeSnackBar(context, '✅ Product added successfully!', backgroundColor: successGreen);
+                }
+              } catch (e) {
+                showSafeSnackBar(context, 'Error adding product: $e', backgroundColor: errorRed);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+            child: const Text('Add Product'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -5590,14 +8137,15 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                     color: Colors.white.withOpacity(0.2),
                     borderRadius: BorderRadius.circular(20),
                   ),
-                  child: const TextField(
-                    style: TextStyle(color: Colors.white),
-                    decoration: InputDecoration(
+                  child: TextField(
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(
                       hintText: 'Search products, customers...',
                       hintStyle: TextStyle(color: Colors.white70),
                       border: InputBorder.none,
                       icon: Icon(Icons.search, color: Colors.white70),
                     ),
+                    onChanged: (value) => setState(() {}),
                   ),
                 ),
               ),
@@ -5653,19 +8201,19 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                 ),
                               ),
                               const SizedBox(width: 12),
-                              const Expanded(
+                              Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      'Salesman',
-                                      style: TextStyle(
+                                      _currentSalesman.name,
+                                      style: const TextStyle(
                                         color: Colors.white,
                                         fontWeight: FontWeight.bold,
                                         fontSize: 16,
                                       ),
                                     ),
-                                    Text(
+                                    const Text(
                                       'Salesman',
                                       style: TextStyle(
                                         color: Colors.white70,
@@ -5695,29 +8243,32 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                 'Dashboard',
                                 0,
                               ),
+                              if (canViewOrders)
+                                _buildSidebarItem(
+                                  Icons.receipt_long,
+                                  'My Orders',
+                                  1,
+                                ),
+                              if (canCreateOrder)
+                                _buildSidebarItem(
+                                  Icons.add_shopping_cart,
+                                  'Create Order',
+                                  2,
+                                ),
+                              if (canCollectPayment)
+                                _buildSidebarItem(
+                                  Icons.payment,
+                                  'Collect Payment',
+                                  3,
+                                ),
                               _buildSidebarItem(
                                 Icons.inventory_2,
                                 'Products',
-                                1,
+                                4,
                               ),
                               _buildSidebarItem(
                                 Icons.people,
                                 'Customers',
-                                2,
-                              ),
-                              _buildSidebarItem(
-                                Icons.add_shopping_cart,
-                                'Create Order',
-                                3,
-                              ),
-                              _buildSidebarItem(
-                                Icons.receipt_long,
-                                'My Orders',
-                                4,
-                              ),
-                              _buildSidebarItem(
-                                Icons.payment,
-                                'Payments',
                                 5,
                               ),
                               const Divider(height: 32),
@@ -5786,183 +8337,173 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       case 0:
         return _buildDashboard();
       case 1:
-        return _buildProductsSection();
-      case 2:
-        return _buildCustomersSection();
-      case 3:
-        return _buildCreateOrderSection();
-      case 4:
         return _buildOrdersSection();
-      case 5:
+      case 2:
+        return _buildCreateOrderSection();
+      case 3:
         return _buildPaymentsSection();
+      case 4:
+        return _buildProductsSection();
+      case 5:
+        return _buildCustomersSection();
       default:
         return _buildDashboard();
     }
   }
 
   Widget _buildDashboard() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [accentTeal, Color(0xFF00D9C0)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
+    final totalRevenue = _orders
+        .where((o) => o.status == OrderStatus.delivered)
+        .fold<double>(0, (sum, o) => sum + o.totalAmount);
+    final totalCollection = _orders.fold<double>(0, (sum, o) => sum + o.paidAmount);
+    final totalPending = _orders.fold<double>(0, (sum, o) => sum + o.dueAmount);
+
+    return RefreshIndicator(
+      onRefresh: _loadData,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [accentTeal, Color(0xFF00D9C0)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(16),
               ),
-              borderRadius: BorderRadius.circular(16),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Welcome to',
+                          style: TextStyle(
+                            color: Colors.white70,
+                            fontSize: 14,
+                          ),
+                        ),
+                        Text(
+                          _currentSalesman.name,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          'Track your sales and grow your business! 💪',
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.7),
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    width: 60,
+                    height: 60,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.person,
+                      color: Colors.white,
+                      size: 30,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            child: Row(
+            const SizedBox(height: 20),
+            Row(
               children: [
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Welcome to',
-                        style: TextStyle(
-                          color: Colors.white70,
-                          fontSize: 14,
-                        ),
-                      ),
-                      Text(
-                        _currentSalesman.name,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 22,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      Text(
-                        'Track your sales and grow your business! 💪',
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.7),
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
+                  child: _buildStatCard(
+                    'Total Orders',
+                    '${_orders.length}',
+                    Icons.shopping_bag,
+                    primaryBlue,
                   ),
                 ),
-                Container(
-                  width: 60,
-                  height: 60,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.person,
-                    color: Colors.white,
-                    size: 30,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildStatCard(
+                    'Total Sales',
+                    '₹${(totalRevenue / 1000).toStringAsFixed(1)}K',
+                    Icons.currency_rupee,
+                    successGreen,
                   ),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: _buildStatCard(
-                  'Today\'s Orders',
-                  '0',
-                  Icons.shopping_bag,
-                  primaryBlue,
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildStatCard(
+                    'Collection',
+                    '₹${(totalCollection / 1000).toStringAsFixed(1)}K',
+                    Icons.account_balance_wallet,
+                    accentTeal,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _buildStatCard(
-                  'Today Collection',
-                  '₹0',
-                  Icons.currency_rupee,
-                  successGreen,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildStatCard(
+                    'Pending Dues',
+                    '₹${(totalPending / 1000).toStringAsFixed(1)}K',
+                    Icons.pending_actions,
+                    warningOrange,
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: _buildStatCard(
-                  'Pending Dues',
-                  '₹0',
-                  Icons.pending_actions,
-                  warningOrange,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _buildStatCard(
-                  'Total Sales',
-                  '₹0',
-                  Icons.trending_up,
-                  accentTeal,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          const Text(
-            'Quick Actions',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: primaryBlue,
+              ],
             ),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: _buildActionCard(
-                  'New Order',
-                  Icons.add_shopping_cart,
-                  Colors.orange,
-                  () => setState(() => _selectedIndex = 3),
-                ),
+            const SizedBox(height: 20),
+            const Text(
+              'Quick Actions',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: primaryBlue,
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _buildActionCard(
-                  'Collect Payment',
-                  Icons.payment,
-                  successGreen,
-                  () => setState(() => _selectedIndex = 5),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Expanded(
-                child: _buildActionCard(
-                  'Products',
-                  Icons.inventory_2,
-                  accentTeal,
-                  () => setState(() => _selectedIndex = 1),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _buildActionCard(
-                  'Customers',
-                  Icons.people,
-                  primaryBlue,
-                  () => setState(() => _selectedIndex = 2),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
-          _buildRecentOrders(),
-        ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                if (canCreateOrder)
+                  Expanded(
+                    child: _buildActionCard(
+                      'New Order',
+                      Icons.add_shopping_cart,
+                      Colors.orange,
+                      () => setState(() => _selectedIndex = 2),
+                    ),
+                  ),
+                if (canCollectPayment) ...[
+                  if (canCreateOrder) const SizedBox(width: 10),
+                  Expanded(
+                    child: _buildActionCard(
+                      'Collect Payment',
+                      Icons.payment,
+                      successGreen,
+                      () => setState(() => _selectedIndex = 3),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 20),
+            _buildRecentOrders(),
+          ],
+        ),
       ),
     );
   }
@@ -6020,71 +8561,553 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   Widget _buildRecentOrders() {
+    final recentOrders = _orders.take(5).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Recent Orders',
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: primaryBlue,
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              'Recent Orders',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: primaryBlue,
+              ),
+            ),
+            if (canViewOrders)
+              TextButton(
+                onPressed: () => setState(() => _selectedIndex = 1),
+                child: const Text('View All'),
+              ),
+          ],
         ),
         const SizedBox(height: 8),
-        Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
+        if (recentOrders.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Center(
+              child: Column(
+                children: [
+                  Icon(Icons.receipt_long, size: 40, color: Colors.grey),
+                  SizedBox(height: 8),
+                  Text('No orders yet', style: TextStyle(color: Colors.grey)),
+                ],
+              ),
+            ),
+          )
+        else
+          ...recentOrders.map((order) => _buildOrderCard(order)),
+      ],
+    );
+  }
+
+  Widget _buildOrderCard(OrderModel order) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: _getStatusColor(order.status).withOpacity(0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              Icons.receipt,
+              color: _getStatusColor(order.status),
+              size: 20,
+            ),
           ),
-          child: const Center(
+          const SizedBox(width: 12),
+          Expanded(
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.receipt_long, size: 40, color: Colors.grey),
-                SizedBox(height: 8),
-                Text('No orders yet', style: TextStyle(color: Colors.grey)),
+                Text(
+                  order.orderNumber,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Text(
+                  '${order.customerName} • ${order.items.length} items',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
               ],
             ),
           ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                '₹${order.totalAmount.toStringAsFixed(0)}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: primaryBlue,
+                  fontSize: 16,
+                ),
+              ),
+              if (order.dueAmount > 0)
+                Text(
+                  'Due: ₹${order.dueAmount.toStringAsFixed(0)}',
+                  style: const TextStyle(fontSize: 10, color: warningOrange),
+                ),
+              Text(
+                order.statusDisplay,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: _getStatusColor(order.status),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _getStatusColor(OrderStatus status) {
+    switch (status) {
+      case OrderStatus.pending:
+        return warningOrange;
+      case OrderStatus.taken:
+        return Colors.blue;
+      case OrderStatus.dispatched:
+        return Colors.purple;
+      case OrderStatus.delivered:
+        return successGreen;
+      case OrderStatus.cancelled:
+        return errorRed;
+    }
+  }
+
+  Widget _buildOrdersSection() {
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: Colors.white,
+          child: const Text(
+            'My Orders',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: primaryBlue,
+            ),
+          ),
+        ),
+        Expanded(
+          child: _orders.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.receipt_long_outlined, size: 60, color: Colors.grey),
+                      SizedBox(height: 10),
+                      Text('No orders yet', style: TextStyle(color: Colors.grey)),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _orders.length,
+                  itemBuilder: (context, index) {
+                    return _buildOrderCard(_orders[index]);
+                  },
+                ),
         ),
       ],
     );
   }
 
   Widget _buildProductsSection() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.inventory_2, size: 60, color: Colors.grey[400]),
-          const SizedBox(height: 16),
-          Text(
-            'Products Section',
-            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: Colors.white,
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Products',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
+                  ),
+                ),
+              ),
+              if (canAddProduct)
+                IconButton(
+                  icon: const Icon(Icons.add, color: accentTeal),
+                  tooltip: 'Add Product',
+                  onPressed: _showAddProductDialog,
+                ),
+            ],
           ),
-          const SizedBox(height: 8),
-          Text('Feature coming soon...', style: TextStyle(color: Colors.grey[500])),
-        ],
-      ),
+        ),
+        Expanded(
+          child: _products.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.inventory_outlined, size: 60, color: Colors.grey),
+                      SizedBox(height: 10),
+                      Text('No products available', style: TextStyle(color: Colors.grey)),
+                      SizedBox(height: 10),
+                      Text('Contact your distributor to add products', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _products.length,
+                  itemBuilder: (context, index) {
+                    final product = _products[index];
+                    return _buildProductCard(product);
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  // FIXED: Product card for salesman - shows details only when clicked
+  Widget _buildProductCard(ProductModel product) {
+    bool _isExpanded = false;
+    
+    return StatefulBuilder(
+      builder: (context, setCardState) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: ExpansionTile(
+            onExpansionChanged: (expanded) {
+              setCardState(() {
+                _isExpanded = expanded;
+              });
+            },
+            leading: Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                color: primaryBlue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.inventory_2, color: primaryBlue),
+            ),
+            title: Text(
+              product.name,
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'SKU: ${product.sku} | Stock: ${product.stock}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                ),
+                Text(
+                  '₹${product.price.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
+                  ),
+                ),
+              ],
+            ),
+            trailing: canCreateOrder
+                ? ElevatedButton(
+                    onPressed: () {
+                      setState(() => _selectedIndex = 2);
+                    },
+                    child: const Text('Order'),
+                  )
+                : null,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_isExpanded)
+                      FutureBuilder<Map<String, dynamic>?>(
+                        future: getLastSaleForProduct(product.id),
+                        builder: (context, snapshot) {
+                          final lastSale = snapshot.data;
+                          if (lastSale != null && lastSale['order'] != null) {
+                            return Column(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.green[50],
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Row(
+                                        children: [
+                                          Icon(
+                                            Icons.shopping_bag,
+                                            size: 16,
+                                            color: successGreen,
+                                          ),
+                                          SizedBox(width: 8),
+                                          Text(
+                                            'Last Sale Details',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                              color: successGreen,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text('Customer:'),
+                                          Text(
+                                            lastSale['customerName'] ?? '',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text('Order ID:'),
+                                          Text(
+                                            lastSale['orderNumber'] ?? '',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text('Qty Sold:'),
+                                          Text(
+                                            (lastSale['quantity'] ?? 0).toString(),
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(height: 12),
+                              ],
+                            );
+                          }
+                          return const SizedBox();
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
   Widget _buildCustomersSection() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.people, size: 60, color: Colors.grey[400]),
-          const SizedBox(height: 16),
-          Text(
-            'Customers Section',
-            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: Colors.white,
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Customers',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
+                  ),
+                ),
+              ),
+              if (canAddCustomer)
+                IconButton(
+                  icon: const Icon(Icons.person_add, color: accentTeal),
+                  tooltip: 'Add Customer',
+                  onPressed: _showAddCustomerDialog,
+                ),
+            ],
           ),
-          const SizedBox(height: 8),
-          Text('Feature coming soon...', style: TextStyle(color: Colors.grey[500])),
-        ],
-      ),
+        ),
+        Expanded(
+          child: _customers.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.people_outline, size: 60, color: Colors.grey),
+                      SizedBox(height: 10),
+                      Text('No customers available', style: TextStyle(color: Colors.grey)),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _customers.length,
+                  itemBuilder: (context, index) {
+                    final customer = _customers[index];
+                    final outstanding = _orders
+                        .where((o) => o.customerId == customer.id && o.status != OrderStatus.cancelled)
+                        .fold(0.0, (sum, o) => sum + o.dueAmount);
+                    return FutureBuilder<OrderModel?>(
+                      future: getLastOrderForCustomer(customer.id),
+                      builder: (context, snapshot) {
+                        final lastOrder = snapshot.data;
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  CircleAvatar(
+                                    backgroundColor: primaryBlue.withOpacity(0.1),
+                                    child: const Icon(Icons.person, color: primaryBlue),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          customer.name,
+                                          style: const TextStyle(fontWeight: FontWeight.bold),
+                                        ),
+                                        Text(
+                                          'Area: ${customer.area}',
+                                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                        ),
+                                        Text(
+                                          'Phone: ${customer.phone ?? "N/A"}',
+                                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                        ),
+                                        if (outstanding > 0)
+                                          Text(
+                                            'Outstanding: ₹${outstanding.toStringAsFixed(0)}',
+                                            style: const TextStyle(
+                                              fontSize: 11,
+                                              color: errorRed,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (canCreateOrder)
+                                    ElevatedButton(
+                                      onPressed: () {
+                                        setState(() {
+                                          _selectedCustomerId = customer.id;
+                                          _selectedIndex = 2;
+                                        });
+                                      },
+                                      child: const Text('Order'),
+                                    ),
+                                ],
+                              ),
+                              if (lastOrder != null) ...[
+                                const SizedBox(height: 8),
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue[50],
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'Last Order:',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                          color: primaryBlue,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text('Order ID:', style: TextStyle(fontSize: 11)),
+                                          Text(
+                                            lastOrder.orderNumber,
+                                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                          ),
+                                        ],
+                                      ),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text('Amount:', style: TextStyle(fontSize: 11)),
+                                          Text(
+                                            '₹${lastOrder.totalAmount.toStringAsFixed(0)}',
+                                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                          ),
+                                        ],
+                                      ),
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          const Text('Date:', style: TextStyle(fontSize: 11)),
+                                          Text(
+                                            '${lastOrder.createdAt.day}/${lastOrder.createdAt.month}/${lastOrder.createdAt.year}',
+                                            style: const TextStyle(fontSize: 11),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 
@@ -6097,7 +9120,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
           _buildStepIndicator(),
           const SizedBox(height: 20),
           if (_orderStep == 1) _buildCustomerSelectionStep(),
-          if (_orderStep == 2) _buildProductSelectionStep(),
+          if (_orderStep == 2) _buildProductSelectionStepWithScheme(),
           if (_orderStep == 3) _buildReviewStep(),
         ],
       ),
@@ -6181,43 +9204,64 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Select Customer',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: primaryBlue,
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Choose a customer for this order',
-            style: TextStyle(color: Colors.grey, fontSize: 13),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Select Customer',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: primaryBlue,
+                ),
+              ),
+              if (canAddCustomer)
+                TextButton.icon(
+                  onPressed: _showAddCustomerDialog,
+                  icon: const Icon(Icons.person_add, size: 16),
+                  label: const Text('Add New Customer'),
+                ),
+            ],
           ),
           const SizedBox(height: 16),
           ListView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
-            itemCount: 3,
+            itemCount: _customers.length,
             itemBuilder: (context, index) {
+              final customer = _customers[index];
+              final isSelected = _selectedCustomerId == customer.id;
+              final outstanding = _orders
+                  .where((o) => o.customerId == customer.id && o.status != OrderStatus.cancelled)
+                  .fold(0.0, (sum, o) => sum + o.dueAmount);
               return GestureDetector(
                 onTap: () => setState(() {
-                  _selectedCustomerId = 'cust_$index';
+                  _selectedCustomerId = customer.id;
                   _orderStep = 2;
                 }),
                 child: Container(
                   margin: const EdgeInsets.only(bottom: 10),
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: Colors.grey[50],
+                    color: isSelected
+                        ? primaryBlue.withOpacity(0.1)
+                        : Colors.grey[50],
                     borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.grey[300]!),
+                    border: Border.all(
+                      color: isSelected ? primaryBlue : Colors.grey[300]!,
+                      width: isSelected ? 2 : 1,
+                    ),
                   ),
                   child: Row(
                     children: [
                       CircleAvatar(
-                        backgroundColor: primaryBlue.withOpacity(0.1),
-                        child: const Icon(Icons.person, color: primaryBlue),
+                        backgroundColor: isSelected
+                            ? primaryBlue
+                            : primaryBlue.withOpacity(0.1),
+                        child: Icon(
+                          Icons.person,
+                          color: isSelected ? Colors.white : primaryBlue,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -6225,19 +9269,33 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Customer ${index + 1}',
-                              style: const TextStyle(fontWeight: FontWeight.bold),
+                              customer.name,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: isSelected ? primaryBlue : Colors.black,
+                              ),
                             ),
                             Text(
-                              'Area: Area ${index + 1}',
+                              'Area: ${customer.area}',
                               style: TextStyle(
                                 color: Colors.grey[600],
                                 fontSize: 12,
                               ),
                             ),
+                            if (outstanding > 0)
+                              Text(
+                                'Outstanding: ₹${outstanding.toStringAsFixed(0)}',
+                                style: const TextStyle(
+                                  color: errorRed,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
                           ],
                         ),
                       ),
+                      if (isSelected)
+                        const Icon(Icons.check_circle, color: primaryBlue),
                     ],
                   ),
                 ),
@@ -6249,148 +9307,330 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     );
   }
 
-  Widget _buildProductSelectionStep() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: primaryBlue.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.shopping_cart, color: primaryBlue),
-              const SizedBox(width: 8),
-              Text(
-                '$cartItemCount items in cart',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: primaryBlue,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                'Total: ₹${cartTotal.toStringAsFixed(0)}',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: accentTeal,
-                  fontSize: 16,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        ListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: 4,
-          itemBuilder: (context, index) {
-            final productId = 'prod_$index';
-            final inCart = _cart.containsKey(productId);
-            return Container(
-              margin: const EdgeInsets.only(bottom: 10),
+  Widget _buildProductSelectionStepWithScheme() {
+    final Map<String, TextEditingController> quantityControllers = {};
+    final Map<String, TextEditingController> rateControllers = {};
+    final Map<String, TextEditingController> schemeControllers = {};
+    
+    for (var product in filteredProducts) {
+      if (_cart.containsKey(product.id)) {
+        quantityControllers[product.id] = TextEditingController(text: _cart[product.id]!.quantity.toString());
+        rateControllers[product.id] = TextEditingController(text: _cart[product.id]!.rate.toStringAsFixed(0));
+        schemeControllers[product.id] = TextEditingController(text: _cart[product.id]!.schPer.toString());
+      } else {
+        quantityControllers[product.id] = TextEditingController(text: '0');
+        rateControllers[product.id] = TextEditingController(text: product.price.toStringAsFixed(0));
+        schemeControllers[product.id] = TextEditingController(text: '0');
+      }
+    }
+
+    return StatefulBuilder(
+      builder: (context, setDialogState) {
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: inCart ? accentTeal.withOpacity(0.1) : Colors.grey[50],
+                color: primaryBlue.withOpacity(0.1),
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: inCart ? accentTeal : Colors.grey[300]!,
-                  width: inCart ? 2 : 1,
-                ),
               ),
               child: Row(
                 children: [
-                  Expanded(
+                  const Icon(Icons.shopping_cart, color: primaryBlue),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${cartItemCount} items in cart',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: primaryBlue,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    'Total: ₹${cartTotal.toStringAsFixed(0)}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: accentTeal,
+                      fontSize: 16,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _productSearchController,
+              decoration: InputDecoration(
+                hintText: 'Search products...',
+                prefixIcon: const Icon(Icons.search),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              onChanged: (value) => setState(() => _productSearchQuery = value),
+            ),
+            const SizedBox(height: 16),
+            if (_cart.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.only(bottom: 16),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: accentTeal.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: accentTeal),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '${uniqueProductCount} unique products',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      'Total Qty: ${cartItemCount}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: accentTeal,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            Container(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.5,
+              ),
+              child: ListView.builder(
+                shrinkWrap: true,
+                physics: const AlwaysScrollableScrollPhysics(),
+                itemCount: filteredProducts.length,
+                itemBuilder: (context, index) {
+                  final product = filteredProducts[index];
+                  final inCart = _cart.containsKey(product.id);
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: inCart ? accentTeal.withOpacity(0.1) : Colors.grey[50],
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: inCart ? accentTeal : Colors.grey[300]!,
+                        width: inCart ? 2 : 1,
+                      ),
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          'Product ${index + 1}',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    product.name,
+                                    style: const TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  Text(
+                                    'SKU: ${product.sku} | Stock: ${product.stock}',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                  Row(
+                                    children: [
+                                      const Text(
+                                        'Rate: ',
+                                        style: TextStyle(fontSize: 12),
+                                      ),
+                                      SizedBox(
+                                        width: 80,
+                                        child: TextFormField(
+                                          controller: rateControllers[product.id],
+                                          decoration: const InputDecoration(
+                                            isDense: true,
+                                            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                            border: OutlineInputBorder(),
+                                          ),
+                                          keyboardType: TextInputType.number,
+                                          onChanged: (value) {
+                                            final rate = double.tryParse(value);
+                                            if (rate != null && rate > 0) {
+                                              if (inCart) {
+                                                updateCartRate(product.id, rate);
+                                              } else if (int.tryParse(quantityControllers[product.id]?.text ?? '0') != null && int.parse(quantityControllers[product.id]!.text) > 0) {
+                                                addToCart(product.id, product.name, product.sku, rate, product.stock);
+                                                updateCartRate(product.id, rate);
+                                              }
+                                              setDialogState(() {});
+                                            }
+                                          },
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      if (inCart && _cart[product.id]!.schEnabled)
+                                        Row(
+                                          children: [
+                                            const Text(
+                                              'Sch: ',
+                                              style: TextStyle(fontSize: 12),
+                                            ),
+                                            SizedBox(
+                                              width: 60,
+                                              child: TextFormField(
+                                                controller: schemeControllers[product.id],
+                                                decoration: const InputDecoration(
+                                                  isDense: true,
+                                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                  border: OutlineInputBorder(),
+                                                  suffixText: '%',
+                                                ),
+                                                keyboardType: TextInputType.number,
+                                                onChanged: (value) {
+                                                  final schPer = double.tryParse(value);
+                                                  if (schPer != null && schPer >= 0 && schPer <= 100) {
+                                                    updateCartScheme(product.id, schPer);
+                                                    setDialogState(() {});
+                                                  }
+                                                },
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Row(
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.local_offer, size: 18),
+                                  onPressed: () => toggleCartScheme(product.id),
+                                  color: _cart.containsKey(product.id) && _cart[product.id]!.schEnabled
+                                      ? accentTeal
+                                      : Colors.grey,
+                                  tooltip: 'Toggle Scheme',
+                                ),
+                                const SizedBox(width: 4),
+                                SizedBox(
+                                  width: 80,
+                                  child: TextFormField(
+                                    controller: quantityControllers[product.id],
+                                    decoration: const InputDecoration(
+                                      labelText: 'Qty',
+                                      border: OutlineInputBorder(),
+                                      isDense: true,
+                                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                    ),
+                                    keyboardType: TextInputType.number,
+                                    onChanged: (value) {
+                                      // FIXED: Properly parse integer without reversing digits
+                                      final qty = int.tryParse(value ?? '0');
+                                      if (qty != null && qty >= 0) {
+                                        if (qty > product.stock && !_stockAlertShown.contains(product.id)) {
+                                          _stockAlertShown.add(product.id);
+                                          showSafeSnackBar(
+                                            context,
+                                            '⚠️ Note: Only ${product.stock} in stock for ${product.name}. Remaining quantity will be fulfilled when stock arrives.',
+                                            backgroundColor: warningOrange,
+                                          );
+                                        }
+                                        
+                                        if (qty == 0) {
+                                          removeFromCart(product.id);
+                                          setState(() {});
+                                          setDialogState(() {});
+                                        } else {
+                                          final currentRate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString());
+                                          if (!inCart) {
+                                            addToCart(product.id, product.name, product.sku, currentRate ?? product.price, product.stock);
+                                          }
+                                          updateCartQuantity(product.id, qty);
+                                          setState(() {});
+                                          setDialogState(() {});
+                                        }
+                                      }
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                        Text(
-                          'SKU: PRD00${index + 1}',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: Colors.grey[600],
+                        if (inCart && _cart[product.id]!.quantity > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Row(
+                              children: [
+                                Text(
+                                  'In cart: ${_cart[product.id]!.quantity} × ₹${_cart[product.id]!.rate.toStringAsFixed(0)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: accentTeal,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Text(
+                                  '= ₹${_cart[product.id]!.netAmt.toStringAsFixed(0)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: accentTeal,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        Text(
-                          '₹${(index + 1) * 100}',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: primaryBlue,
-                          ),
-                        ),
                       ],
                     ),
-                  ),
-                  if (inCart)
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.remove, size: 16),
-                          onPressed: () => removeFromCart(productId),
-                        ),
-                        Text(
-                          '${_cart[productId]?.quantity ?? 0}',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.add, size: 16),
-                          onPressed: () => addToCart(
-                            productId,
-                            'Product ${index + 1}',
-                            'PRD00${index + 1}',
-                            (index + 1) * 100.0,
-                          ),
-                        ),
-                      ],
-                    )
-                  else
-                    ElevatedButton(
-                      onPressed: () => addToCart(
-                        productId,
-                        'Product ${index + 1}',
-                        'PRD00${index + 1}',
-                        (index + 1) * 100.0,
-                      ),
-                      child: const Text('Add'),
-                    ),
-                ],
-              ),
-            );
-          },
-        ),
-        const SizedBox(height: 20),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: () => setState(() => _orderStep = 1),
-                child: const Text('← Back'),
+                  );
+                },
               ),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: ElevatedButton(
-                onPressed: _cart.isNotEmpty
-                    ? () => setState(() => _orderStep = 3)
-                    : null,
-                style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-                child: Text(_cart.isEmpty ? 'Add items' : 'Review →'),
-              ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () {
+                      setState(() {
+                        _orderStep = 1;
+                        _cart.clear();
+                        _stockAlertShown.clear();
+                      });
+                    },
+                    child: const Text('← Back'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _cart.isNotEmpty
+                        ? () {
+                            setState(() => _orderStep = 3);
+                          }
+                        : null,
+                    style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+                    child: Text(_cart.isEmpty ? 'Add items' : 'Review →'),
+                  ),
+                ),
+              ],
             ),
           ],
-        ),
-      ],
+        );
+      },
     );
   }
 
   Widget _buildReviewStep() {
+    if (_selectedCustomerId == null) return const SizedBox();
+    final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -6404,59 +9644,119 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Order Items',
+                'Customer Details',
                 style: TextStyle(
-                  fontSize: 16,
                   fontWeight: FontWeight.bold,
                   color: primaryBlue,
                 ),
               ),
               const Divider(),
-              ..._cart.entries.map((entry) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          entry.value.productName,
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                      Text(
-                        '${entry.value.quantity} x ₹${entry.value.rate.toStringAsFixed(0)}',
-                        style: TextStyle(color: Colors.grey[600]),
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        '₹${entry.value.netAmt.toStringAsFixed(0)}',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ],
+              Row(
+                children: [
+                  const Icon(Icons.person, color: primaryBlue),
+                  const SizedBox(width: 8),
+                  Text(
+                    customer.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
-                );
-              }),
-              const Divider(),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Icon(Icons.location_on, color: Colors.grey, size: 16),
+                  const SizedBox(width: 8),
+                  Text(
+                    customer.area,
+                    style: TextStyle(color: Colors.grey[600]),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Payment Mode',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: primaryBlue,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: const Text('Credit'),
+                    selected: _selectedPaymentMode == PaymentMode.credit,
+                    onSelected: (_) => setState(
+                      () => _selectedPaymentMode = PaymentMode.credit,
+                    ),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Cash'),
+                    selected: _selectedPaymentMode == PaymentMode.cash,
+                    onSelected: (_) =>
+                        setState(() => _selectedPaymentMode = PaymentMode.cash),
+                  ),
+                  ChoiceChip(
+                    label: const Text('UPI'),
+                    selected: _selectedPaymentMode == PaymentMode.upi,
+                    onSelected: (_) =>
+                        setState(() => _selectedPaymentMode = PaymentMode.upi),
+                  ),
+                  ChoiceChip(
+                    label: const Text('Cheque'),
+                    selected: _selectedPaymentMode == PaymentMode.cheque,
+                    onSelected: (_) =>
+                        setState(() => _selectedPaymentMode = PaymentMode.cheque),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
-                    'Total',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: primaryBlue,
-                    ),
+                  Text(
+                    '${uniqueProductCount} unique products',
+                    style: TextStyle(color: Colors.grey[600]),
                   ),
                   Text(
-                    '₹${cartTotal.toStringAsFixed(0)}',
+                    'Total: ₹${cartTotal.toStringAsFixed(0)}',
                     style: const TextStyle(
-                      fontSize: 22,
+                      fontSize: 18,
                       fontWeight: FontWeight.bold,
                       color: accentTeal,
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Total Quantity: ${cartItemCount}',
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
             ],
           ),
@@ -6473,11 +9773,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             const SizedBox(width: 12),
             Expanded(
               child: ElevatedButton(
-                onPressed: () {
-                  showSafeSnackBar(context, '✅ Order submitted successfully!', backgroundColor: successGreen);
-                  clearCart();
-                  setState(() => _selectedIndex = 0);
-                },
+                onPressed: submitOrder,
                 style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
                 child: const Text('Submit ✅'),
               ),
@@ -6488,38 +9784,409 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     );
   }
 
-  Widget _buildOrdersSection() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.receipt_long, size: 60, color: Colors.grey[400]),
-          const SizedBox(height: 16),
-          Text(
-            'My Orders',
-            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+  Widget _buildPaymentsSection() {
+    final ordersWithDue = _orders
+        .where((o) => o.dueAmount > 0 && o.status != OrderStatus.cancelled)
+        .toList();
+
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: Colors.white,
+          child: const Text(
+            'Collect Payment',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: primaryBlue,
+            ),
           ),
-          const SizedBox(height: 8),
-          Text('Feature coming soon...', style: TextStyle(color: Colors.grey[500])),
-        ],
-      ),
+        ),
+        Expanded(
+          child: ordersWithDue.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.check_circle, size: 60, color: successGreen),
+                      SizedBox(height: 10),
+                      Text(
+                        'All payments collected!',
+                        style: TextStyle(color: Colors.grey, fontSize: 16),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: ordersWithDue.length,
+                  itemBuilder: (context, index) {
+                    final order = ordersWithDue[index];
+                    final customerOutstanding = _orders
+                        .where((o) => o.customerId == order.customerId && o.status != OrderStatus.cancelled)
+                        .fold(0.0, (sum, o) => sum + o.dueAmount);
+                    final paymentAmountController = TextEditingController();
+                    paymentAmountController.text = order.dueAmount.toStringAsFixed(0);
+                    
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                order.orderNumber,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: warningOrange.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(
+                                  '₹${order.dueAmount.toStringAsFixed(0)} due',
+                                  style: const TextStyle(
+                                    color: warningOrange,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          Text('Customer: ${order.customerName}'),
+                          Text(
+                            'Total: ₹${order.totalAmount.toStringAsFixed(0)} | Paid: ₹${order.paidAmount.toStringAsFixed(0)}',
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Customer Outstanding: ₹${customerOutstanding.toStringAsFixed(0)}',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: errorRed,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          ElevatedButton.icon(
+                            onPressed: () => _showEnhancedPaymentDialogForSalesman(order, paymentAmountController, customerOutstanding),
+                            icon: const Icon(Icons.payment, size: 16),
+                            label: const Text('Collect Payment'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: successGreen,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 
-  Widget _buildPaymentsSection() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.payment, size: 60, color: Colors.grey[400]),
-          const SizedBox(height: 16),
-          Text(
-            'Payment Collection',
-            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
+  void _showEnhancedPaymentDialogForSalesman(OrderModel order, TextEditingController paymentAmountController, double customerOutstanding) {
+    PaymentMode selectedMode = PaymentMode.cash;
+    String? selectedBank;
+    String? selectedUpiApp;
+    final chequeNumberController = TextEditingController();
+    final chequeDateController = TextEditingController();
+    final transactionNumberController = TextEditingController();
+    final remarkController = TextEditingController();
+    File? paymentPhoto;
+    double balanceAfterPayment = order.dueAmount;
+    
+    Future<void> selectDate(BuildContext context, TextEditingController controller) async {
+      final DateTime? picked = await showDatePicker(
+        context: context,
+        initialDate: DateTime.now(),
+        firstDate: DateTime(2000),
+        lastDate: DateTime(2100),
+      );
+      if (picked != null) {
+        controller.text = picked.toIso8601String().split('T')[0];
+      }
+    }
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Collect Payment - ${order.orderNumber}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Total: ₹${order.totalAmount.toStringAsFixed(0)} | Paid: ₹${order.paidAmount.toStringAsFixed(0)}',
+                ),
+                Text(
+                  'Balance Due: ₹${order.dueAmount.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: warningOrange,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Customer Outstanding: ₹${customerOutstanding.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    color: errorRed,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: paymentAmountController,
+                  decoration: const InputDecoration(
+                    labelText: 'Amount to Collect',
+                    border: OutlineInputBorder(),
+                    prefixText: '₹ ',
+                  ),
+                  keyboardType: TextInputType.number,
+                  onChanged: (value) {
+                    final amount = double.tryParse(value) ?? 0;
+                    setDialogState(() {
+                      balanceAfterPayment = order.dueAmount - amount;
+                    });
+                  },
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Balance after payment: ₹${balanceAfterPayment.toStringAsFixed(0)}',
+                  style: TextStyle(
+                    color: balanceAfterPayment <= 0 ? successGreen : warningOrange,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  'Payment Mode:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    ChoiceChip(
+                      label: const Text('Cash'),
+                      selected: selectedMode == PaymentMode.cash,
+                      onSelected: (_) => setDialogState(() => selectedMode = PaymentMode.cash),
+                    ),
+                    ChoiceChip(
+                      label: const Text('UPI'),
+                      selected: selectedMode == PaymentMode.upi,
+                      onSelected: (_) => setDialogState(() => selectedMode = PaymentMode.upi),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Cheque'),
+                      selected: selectedMode == PaymentMode.cheque,
+                      onSelected: (_) => setDialogState(() => selectedMode = PaymentMode.cheque),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                if (selectedMode == PaymentMode.cheque) ...[
+                  const Text(
+                    'Cheque Details:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: chequeNumberController,
+                    decoration: const InputDecoration(
+                      labelText: 'Cheque Number *',
+                      border: OutlineInputBorder(),
+                    ),
+                    keyboardType: TextInputType.number,
+                  ),
+                  const SizedBox(height: 8),
+                  GestureDetector(
+                    onTap: () => selectDate(context, chequeDateController),
+                    child: AbsorbPointer(
+                      child: TextField(
+                        controller: chequeDateController,
+                        decoration: const InputDecoration(
+                          labelText: 'Cheque Date *',
+                          border: OutlineInputBorder(),
+                          suffixIcon: Icon(Icons.calendar_today),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    value: selectedBank,
+                    decoration: const InputDecoration(
+                      labelText: 'Bank Name *',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('Select Bank')),
+                      ..._banksList.map((bank) => DropdownMenuItem(
+                        value: bank,
+                        child: Text(bank),
+                      )),
+                    ],
+                    onChanged: (value) => setDialogState(() => selectedBank = value),
+                  ),
+                ],
+                if (selectedMode == PaymentMode.upi) ...[
+                  const Text(
+                    'UPI Details:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<String>(
+                    value: selectedUpiApp,
+                    decoration: const InputDecoration(
+                      labelText: 'UPI App *',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('Select UPI App')),
+                      ..._upiTypesList.map((app) => DropdownMenuItem(
+                        value: app,
+                        child: Text(app),
+                      )),
+                    ],
+                    onChanged: (value) => setDialogState(() => selectedUpiApp = value),
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: transactionNumberController,
+                    decoration: const InputDecoration(
+                      labelText: 'Transaction Number *',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          paymentPhoto == null ? 'No photo selected' : 'Photo selected',
+                          style: TextStyle(color: paymentPhoto == null ? Colors.grey : successGreen),
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          final ImagePicker picker = ImagePicker();
+                          final XFile? image = await picker.pickImage(source: ImageSource.gallery);
+                          if (image != null) {
+                            setDialogState(() => paymentPhoto = File(image.path));
+                          }
+                        },
+                        icon: const Icon(Icons.photo_camera, size: 16),
+                        label: const Text('Add Photo'),
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 16),
+                TextField(
+                  controller: remarkController,
+                  decoration: const InputDecoration(
+                    labelText: 'Remark (Optional)',
+                    border: OutlineInputBorder(),
+                  ),
+                  maxLines: 2,
+                ),
+              ],
+            ),
           ),
-          const SizedBox(height: 8),
-          Text('Feature coming soon...', style: TextStyle(color: Colors.grey[500])),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                final amount = double.tryParse(paymentAmountController.text);
+                if (amount == null || amount <= 0) {
+                  showSafeSnackBar(context, 'Please enter valid amount', backgroundColor: errorRed);
+                  return;
+                }
+                
+                if (amount > order.dueAmount) {
+                  showSafeSnackBar(context, 'Amount cannot exceed due amount', backgroundColor: errorRed);
+                  return;
+                }
+                
+                if (selectedMode == PaymentMode.cheque) {
+                  if (chequeNumberController.text.isEmpty) {
+                    showSafeSnackBar(context, 'Please enter cheque number', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (chequeDateController.text.isEmpty) {
+                    showSafeSnackBar(context, 'Please select cheque date', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (selectedBank == null) {
+                    showSafeSnackBar(context, 'Please select bank name', backgroundColor: errorRed);
+                    return;
+                  }
+                } else if (selectedMode == PaymentMode.upi) {
+                  if (selectedUpiApp == null) {
+                    showSafeSnackBar(context, 'Please select UPI app', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (transactionNumberController.text.isEmpty) {
+                    showSafeSnackBar(context, 'Please enter transaction number', backgroundColor: errorRed);
+                    return;
+                  }
+                }
+                
+                setState(() => _isLoading = true);
+                Navigator.pop(context);
+                
+                try {
+                  await _orderService.recordPayment(
+                    order.id,
+                    amount,
+                    selectedMode,
+                    collectedBy: _currentSalesman.email,
+                    salesmanId: _currentSalesman.salesmanId ?? _currentSalesman.id,
+                    chequeNumber: selectedMode == PaymentMode.cheque ? chequeNumberController.text : null,
+                    chequeDate: selectedMode == PaymentMode.cheque ? chequeDateController.text : null,
+                    bankName: selectedMode == PaymentMode.cheque ? selectedBank : null,
+                    upiType: selectedMode == PaymentMode.upi ? selectedUpiApp : null,
+                    transactionNumber: selectedMode == PaymentMode.upi ? transactionNumberController.text : null,
+                    remark: remarkController.text.isNotEmpty ? remarkController.text : null,
+                    paymentPhoto: paymentPhoto,
+                  );
+                  await _loadData();
+                  if (mounted) {
+                    showSafeSnackBar(context, 'Payment collected successfully!', backgroundColor: successGreen);
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    showSafeSnackBar(context, 'Error collecting payment: $e', backgroundColor: errorRed);
+                  }
+                } finally {
+                  if (mounted) setState(() => _isLoading = false);
+                }
+              },
+              child: const Text('Collect'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -6675,7 +10342,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                   child: ElevatedButton(
                     onPressed: () {
                       Navigator.pop(context);
-                      setState(() => _selectedIndex = 3);
+                      setState(() => _selectedIndex = 2);
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: primaryBlue,
@@ -6707,7 +10374,6 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
 
-  // Registration form controllers
   final _regNameController = TextEditingController();
   final _regEmailController = TextEditingController();
   final _regPhoneController = TextEditingController();
@@ -6720,7 +10386,6 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _errorMessage;
   String? _successMessage;
 
-  // API endpoint
   static String get apiUrl {
     if (kIsWeb) {
       return 'http://localhost:3000/api';
@@ -6798,6 +10463,11 @@ class _LoginScreenState extends State<LoginScreen> {
     return phoneRegex.hasMatch(phone);
   }
 
+  bool _isValidName(String name) {
+    final nameRegex = RegExp(r'^[a-zA-Z\s]+$');
+    return nameRegex.hasMatch(name);
+  }
+
   Future<void> _handleLogin() async {
     if (!_loginFormKey.currentState!.validate()) return;
 
@@ -6823,14 +10493,12 @@ class _LoginScreenState extends State<LoginScreen> {
           final userData = data['user'];
           final backendRoleStr = userData['role'];
           
-          // Save user data to SharedPreferences
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('user_email', userData['email'] ?? '');
           await prefs.setString('user_role', backendRoleStr);
           await prefs.setBool('is_logged_in', true);
           await prefs.setString('user_json', json.encode(userData));
           
-          // Create UserModel from response
           final user = UserModel.fromMap(userData, userData['_id'] ?? userData['id'] ?? '');
           
           if (mounted) {
@@ -6839,7 +10507,6 @@ class _LoginScreenState extends State<LoginScreen> {
             });
           }
 
-          // Navigate based on ACTUAL backend role
           if (mounted) {
             if (backendRoleStr == 'distributor') {
               Navigator.pushReplacement(
@@ -6906,6 +10573,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     final email = _regEmailController.text.trim();
     final phone = _regPhoneController.text.trim();
+    final name = _regNameController.text.trim();
 
     if (!_isValidEmail(email)) {
       setState(() {
@@ -6921,6 +10589,13 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
+    if (!_isValidName(name)) {
+      setState(() {
+        _errorMessage = 'Name should contain only alphabets and spaces';
+      });
+      return;
+    }
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -6929,7 +10604,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final registrationData = {
-        'fullName': _regNameController.text.trim(),
+        'fullName': name,
         'email': email,
         'phoneNumber': phone,
         'password': _regPasswordController.text,
@@ -7365,6 +11040,9 @@ class _LoginScreenState extends State<LoginScreen> {
                 }
                 if (value.length < 2) {
                   return 'Name must be at least 2 characters';
+                }
+                if (!_isValidName(value)) {
+                  return 'Name should contain only alphabets and spaces';
                 }
                 return null;
               },

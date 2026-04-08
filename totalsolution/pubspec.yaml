@@ -13,6 +13,9 @@ dependencies:
   # Added for mobile preview
   device_preview: ^1.2.0
   qr_flutter: ^4.1.0
+  image_picker: ^1.1.2
+  file_picker: ^8.0.0  # Update to a newer version
+  mime: ^1.0.4
   
   
   # Firebase dependencies (uncomment when ready to deploy)
@@ -29,7 +32,6 @@ dependencies:
   percent_indicator: ^4.2.3
   
   # For file picking (CSV/Excel import)
-  file_picker: ^6.1.1
   csv: ^6.0.0
   
   # For PDF generation and sharing
