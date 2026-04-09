@@ -1,7 +1,7 @@
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs'); // Changed from 'bcrypt' to 'bcryptjs'
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -36,7 +36,7 @@ app.use(express.json());
 app.use('/uploads', express.static('uploads'));
 
 // MongoDB connection
-const MONGODB_URI = 'mongodb://localhost:27017';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
 const DB_NAME = 'TotalApp';
 
 // Collection names
@@ -56,7 +56,7 @@ let collections = {};
 
 async function connectToMongoDB() {
     try {
-        const client = await MongoClient.connect(process.env.MONGODB_URI, {
+        const client = await MongoClient.connect(MONGODB_URI, {
             useNewUrlParser: true,
             useUnifiedTopology: true
         });
@@ -584,7 +584,7 @@ app.post('/api/salesmen', async (req, res) => {
         // Generate a default password (first 6 characters of name + phone last 4 digits)
         const defaultPassword = `${salesmanData.name.substring(0, 3).toLowerCase()}${salesmanData.phone.substring(6)}`;
         
-        // Hash password for login
+        // Hash password for login (using bcryptjs)
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(defaultPassword, saltRounds);
         
@@ -1412,7 +1412,7 @@ app.post('/api/register', async (req, res) => {
             });
         }
 
-        // Hash the password
+        // Hash the password (using bcryptjs)
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
         
@@ -1495,7 +1495,7 @@ app.post('/api/login', async (req, res) => {
             return res.status(401).json({ message: 'Account is deactivated. Please contact administrator.' });
         }
         
-        // Verify password
+        // Verify password (using bcryptjs)
         const isValidPassword = await bcrypt.compare(password, user.password);
         
         if (!isValidPassword) {
