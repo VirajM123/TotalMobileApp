@@ -8,7 +8,7 @@ const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -1546,10 +1546,10 @@ app.get('/api/health', (req, res) => {
 });
 
 // Start server
-app.listen(PORT, async () => {
+app.listen(process.env.PORT, async () => {
     await connectToMongoDB();
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`API endpoints available at http://localhost:${PORT}/api`);
+    console.log(`Server running on http://localhost:${process.env.PORT}`);
+    console.log(`API endpoints available at http://localhost:${process.env.PORT}/api`);
     console.log(`\nAPI Endpoints:`);
     console.log(`\nAuth:`);
     console.log(`  POST /api/login - User login`);
