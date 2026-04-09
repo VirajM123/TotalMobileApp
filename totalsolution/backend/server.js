@@ -5,6 +5,7 @@ const bcrypt = require('bcrypt');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+require('dotenv').config();
 
 const app = express();
 const PORT = 3000;
@@ -55,7 +56,7 @@ let collections = {};
 
 async function connectToMongoDB() {
     try {
-        const client = await MongoClient.connect(MONGODB_URI, {
+        const client = await MongoClient.connect(process.env.MONGODB_URI, {
             useNewUrlParser: true,
             useUnifiedTopology: true
         });
