@@ -565,16 +565,16 @@ class CartItemData {
 class ApiService {
   static String get apiUrl {
     if (kIsWeb) {
-      return 'http://localhost:3000/api';
+      return 'https://totalmobileapp.onrender.com/api';
     }
     
     if (Platform.isAndroid) {
       return 'http://10.0.2.2:3000/api';
     } else if (Platform.isIOS) {
-      return 'http://localhost:3000/api';
+      return 'https://totalmobileapp.onrender.com/api';
     }
     
-    return 'http://localhost:3000/api';
+    return 'https://totalmobileapp.onrender.com/api';
   }
 
   // Customer APIs
@@ -10388,16 +10388,16 @@ class _LoginScreenState extends State<LoginScreen> {
 
   static String get apiUrl {
     if (kIsWeb) {
-      return 'http://localhost:3000/api';
+      return 'https://totalmobileapp.onrender.com/api';
     }
     
     if (Platform.isAndroid) {
       return 'http://10.0.2.2:3000/api';
     } else if (Platform.isIOS) {
-      return 'http://localhost:3000/api';
+      return 'https://totalmobileapp.onrender.com/api';
     }
     
-    return 'http://localhost:3000/api';
+    return 'https://totalmobileapp.onrender.com/api';
   }
 
   static const Color primaryBlue = Color(0xFF1A3B70);
