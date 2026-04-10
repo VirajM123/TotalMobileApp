@@ -1053,6 +1053,94 @@ class ApiService {
       throw Exception('Error updating product stock: $e');
     }
   }
+
+  // ==================== PASSWORD CHANGE APIs ====================
+  static Future<Map<String, dynamic>> changePassword({
+    required String userId,
+    String? currentPassword,
+    required String newPassword,
+    required String requestingUserId,
+    required String requestingUserRole,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$apiUrl/change-password'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'userId': userId,
+          'currentPassword': currentPassword,
+          'newPassword': newPassword,
+          'requestingUserId': requestingUserId,
+          'requestingUserRole': requestingUserRole,
+        }),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      final errorData = json.decode(response.body);
+      throw Exception(errorData['error'] ?? 'Failed to change password');
+    } catch (e) {
+      throw Exception('Error changing password: $e');
+    }
+  }
+
+  static Future<List<dynamic>> getUsersUnderDistributor(String distributorId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/users-under-distributor/$distributorId'),
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return data['users'] ?? [];
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching users: $e');
+      return [];
+    }
+  }
+
+  // ==================== AREA AND ROUTE APIs (Free) ====================
+  static Future<List<String>> getAreas({String? city}) async {
+    try {
+      final uri = city != null && city.isNotEmpty 
+          ? Uri.parse('$apiUrl/areas?city=$city')
+          : Uri.parse('$apiUrl/areas');
+      final response = await http.get(uri);
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final areas = data['areas'] as List?;
+        if (areas != null) {
+          return areas.map((a) => a.toString()).toList();
+        }
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching areas: $e');
+      return [];
+    }
+  }
+
+  static Future<List<String>> getSubAreas({required String area}) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/sub-areas?area=$area'),
+      );
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final routes = data['routes'] as List?;
+        if (routes != null) {
+          return routes.map((r) => r.toString()).toList();
+        }
+      }
+      return [];
+    } catch (e) {
+      print('Error fetching sub-areas: $e');
+      return [];
+    }
+  }
 }
 
 // Services using API
@@ -1090,6 +1178,28 @@ class CustomerService {
     } catch (e) {
       print('Error adding customer: $e');
       _customers.add(customer);
+    }
+  }
+
+  Future<void> updateCustomer(CustomerModel customer) async {
+    try {
+      final response = await http.put(
+        Uri.parse('${ApiService.apiUrl}/customers/${customer.id}'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(customer.toMap()),
+      );
+      
+      if (response.statusCode == 200) {
+        final index = _customers.indexWhere((c) => c.id == customer.id);
+        if (index != -1) {
+          _customers[index] = customer;
+        }
+      } else {
+        throw Exception('Failed to update customer');
+      }
+    } catch (e) {
+      print('Error updating customer: $e');
+      throw e;
     }
   }
 
@@ -1134,6 +1244,60 @@ class ProductService {
     } catch (e) {
       print('Error adding product: $e');
       _products.add(product);
+    }
+  }
+
+  Future<void> updateProduct(ProductModel product) async {
+    try {
+      final response = await http.put(
+        Uri.parse('${ApiService.apiUrl}/products/${product.id}'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(product.toMap()),
+      );
+      
+      if (response.statusCode == 200) {
+        final index = _products.indexWhere((p) => p.id == product.id);
+        if (index != -1) {
+          _products[index] = product;
+        }
+      } else {
+        throw Exception('Failed to update product');
+      }
+    } catch (e) {
+      print('Error updating product: $e');
+      throw e;
+    }
+  }
+
+  Future<void> updateProductStock(String productId, int newStock) async {
+    try {
+      final response = await http.put(
+        Uri.parse('${ApiService.apiUrl}/products/$productId/stock'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'newStock': newStock}),
+      );
+      
+      if (response.statusCode == 200) {
+        final index = _products.indexWhere((p) => p.id == productId);
+        if (index != -1) {
+          _products[index] = ProductModel(
+            id: _products[index].id,
+            name: _products[index].name,
+            sku: _products[index].sku,
+            price: _products[index].price,
+            category: _products[index].category,
+            stock: newStock,
+            description: _products[index].description,
+            createdAt: _products[index].createdAt,
+            updatedAt: DateTime.now(),
+            createdBy: _products[index].createdBy,
+            distributorId: _products[index].distributorId,
+          );
+        }
+      }
+    } catch (e) {
+      print('Error updating product stock: $e');
+      throw e;
     }
   }
 
@@ -1182,6 +1346,28 @@ class SalesmanService {
     } catch (e) {
       print('Error adding salesman: $e');
       _salesmen.add(salesman);
+    }
+  }
+
+  Future<void> updateSalesman(SalesmanModel salesman) async {
+    try {
+      final response = await http.put(
+        Uri.parse('${ApiService.apiUrl}/salesmen/${salesman.id}'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(salesman.toMap()),
+      );
+      
+      if (response.statusCode == 200) {
+        final index = _salesmen.indexWhere((s) => s.id == salesman.id);
+        if (index != -1) {
+          _salesmen[index] = salesman;
+        }
+      } else {
+        throw Exception('Failed to update salesman');
+      }
+    } catch (e) {
+      print('Error updating salesman: $e');
+      throw e;
     }
   }
 }
@@ -1334,7 +1520,8 @@ class OrderService {
           'customer_id': order.customerId,
           'name': order.customerName,
           'phone': order.customerPhone,
-        }
+        },
+        'created_by_type': _currentSalesmanId != null ? 'salesman' : 'distributor',
       };
       
       final response = await ApiService.createOrder(orderMap);
@@ -1594,6 +1781,189 @@ class NotificationService {
   }
 }
 
+// ==================== PASSWORD CHANGE DIALOG ====================
+class ChangePasswordDialog extends StatefulWidget {
+  final UserModel currentUser;
+  final bool isDistributor;
+  final List<Map<String, dynamic>>? users;
+
+  const ChangePasswordDialog({
+    super.key,
+    required this.currentUser,
+    this.isDistributor = false,
+    this.users,
+  });
+
+  @override
+  State<ChangePasswordDialog> createState() => _ChangePasswordDialogState();
+}
+
+class _ChangePasswordDialogState extends State<ChangePasswordDialog> {
+  String? _selectedUserId;
+  final _currentPasswordController = TextEditingController();
+  final _newPasswordController = TextEditingController();
+  final _confirmPasswordController = TextEditingController();
+  bool _isLoading = false;
+  bool _obscureCurrent = true;
+  bool _obscureNew = true;
+  bool _obscureConfirm = true;
+
+  @override
+  void dispose() {
+    _currentPasswordController.dispose();
+    _newPasswordController.dispose();
+    _confirmPasswordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _changePassword() async {
+    final userId = widget.isDistributor && _selectedUserId != null
+        ? _selectedUserId!
+        : widget.currentUser.id;
+    
+    if (_newPasswordController.text.isEmpty) {
+      showSafeSnackBar(context, 'Please enter new password', backgroundColor: Colors.red);
+      return;
+    }
+    
+    if (_newPasswordController.text.length < 4) {
+      showSafeSnackBar(context, 'Password must be at least 4 characters', backgroundColor: Colors.red);
+      return;
+    }
+    
+    if (_newPasswordController.text != _confirmPasswordController.text) {
+      showSafeSnackBar(context, 'New passwords do not match', backgroundColor: Colors.red);
+      return;
+    }
+    
+    if (!widget.isDistributor && _currentPasswordController.text.isEmpty) {
+      showSafeSnackBar(context, 'Please enter current password', backgroundColor: Colors.red);
+      return;
+    }
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      final response = await ApiService.changePassword(
+        userId: userId,
+        currentPassword: widget.isDistributor ? null : _currentPasswordController.text,
+        newPassword: _newPasswordController.text,
+        requestingUserId: widget.currentUser.id,
+        requestingUserRole: widget.currentUser.role == UserRole.distributor ? 'distributor' : 'salesman',
+      );
+      
+      if (response['success'] == true) {
+        if (mounted) {
+          showSafeSnackBar(context, '✅ Password changed successfully!', backgroundColor: Colors.green);
+          Navigator.pop(context);
+        }
+      } else {
+        showSafeSnackBar(context, response['error'] ?? 'Failed to change password', backgroundColor: Colors.red);
+      }
+    } catch (e) {
+      showSafeSnackBar(context, 'Error: $e', backgroundColor: Colors.red);
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(
+        children: [
+          Icon(Icons.lock_reset, color: const Color(0xFF1A3B70)),
+          const SizedBox(width: 8),
+          Text(widget.isDistributor ? 'Change Password' : 'Change Your Password'),
+        ],
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.isDistributor && widget.users != null && widget.users!.isNotEmpty)
+              Column(
+                children: [
+                  DropdownButtonFormField<String>(
+                    value: _selectedUserId,
+                    decoration: const InputDecoration(
+                      labelText: 'Select User',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      const DropdownMenuItem(value: null, child: Text('Select a user')),
+                      ...widget.users!.map((user) => DropdownMenuItem(
+                        value: user['id'],
+                        child: Text('${user['name']} (${user['role']})'),
+                      )),
+                    ],
+                    onChanged: (value) => setState(() => _selectedUserId = value),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+              ),
+            if (!widget.isDistributor)
+              TextField(
+                controller: _currentPasswordController,
+                obscureText: _obscureCurrent,
+                decoration: InputDecoration(
+                  labelText: 'Current Password',
+                  prefixIcon: const Icon(Icons.lock_outline),
+                  suffixIcon: IconButton(
+                    icon: Icon(_obscureCurrent ? Icons.visibility_off : Icons.visibility),
+                    onPressed: () => setState(() => _obscureCurrent = !_obscureCurrent),
+                  ),
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            if (!widget.isDistributor) const SizedBox(height: 16),
+            TextField(
+              controller: _newPasswordController,
+              obscureText: _obscureNew,
+              decoration: InputDecoration(
+                labelText: 'New Password',
+                prefixIcon: const Icon(Icons.lock_outline),
+                suffixIcon: IconButton(
+                  icon: Icon(_obscureNew ? Icons.visibility_off : Icons.visibility),
+                  onPressed: () => setState(() => _obscureNew = !_obscureNew),
+                ),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _confirmPasswordController,
+              obscureText: _obscureConfirm,
+              decoration: InputDecoration(
+                labelText: 'Confirm New Password',
+                prefixIcon: const Icon(Icons.lock_outline),
+                suffixIcon: IconButton(
+                  icon: Icon(_obscureConfirm ? Icons.visibility_off : Icons.visibility),
+                  onPressed: () => setState(() => _obscureConfirm = !_obscureConfirm),
+                ),
+                border: const OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: _isLoading ? null : _changePassword,
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00A68A)),
+          child: _isLoading
+              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('Change Password'),
+        ),
+      ],
+    );
+  }
+}
+
 // ==================== DISTRIBUTOR DASHBOARD (FULL FEATURED) ====================
 class DistributorDashboardEnhanced extends StatefulWidget {
   final UserModel? loggedInUser;
@@ -1729,6 +2099,19 @@ class _DistributorDashboardEnhancedState
 
   // Draft orders
   List<OrderModel> _draftOrders = [];
+
+  // Area and route selection for customer add
+  List<String> _availableAreas = [];
+  List<String> _availableRoutes = [];
+  String? _selectedArea;
+  String? _selectedRoute;
+  bool _isLoadingAreas = false;
+  final TextEditingController _areaSearchController = TextEditingController();
+  final TextEditingController _routeSearchController = TextEditingController();
+
+  // Password change
+  List<Map<String, dynamic>> _usersUnderDistributor = [];
+  bool _isLoadingUsers = false;
 
   // Get filtered products
   List<ProductModel> get filteredProducts {
@@ -2137,11 +2520,42 @@ class _DistributorDashboardEnhancedState
           });
         }
       });
+      
+      // Load users for password change
+      _loadUsersUnderDistributor();
     }
     
     _loadData();
     _loadBankAndUpiLists();
     _loadNotifications();
+  }
+
+  Future<void> _loadUsersUnderDistributor() async {
+    if (_currentDistributor.distributorId == null) return;
+    setState(() => _isLoadingUsers = true);
+    try {
+      final users = await ApiService.getUsersUnderDistributor(_currentDistributor.distributorId!);
+      setState(() {
+        _usersUnderDistributor = users.map((u) => Map<String, dynamic>.from(u)).toList();
+        _isLoadingUsers = false;
+      });
+    } catch (e) {
+      print('Error loading users: $e');
+      setState(() => _isLoadingUsers = false);
+    }
+  }
+
+  Future<void> _showChangePasswordDialog() async {
+    await _loadUsersUnderDistributor();
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (context) => ChangePasswordDialog(
+        currentUser: _currentDistributor,
+        isDistributor: true,
+        users: _usersUnderDistributor,
+      ),
+    );
   }
 
   Future<void> _loadNotifications() async {
@@ -2161,6 +2575,32 @@ class _DistributorDashboardEnhancedState
       _banksList = banks.cast<String>();
       _upiTypesList = upiTypes.cast<String>();
     });
+  }
+
+  Future<void> _loadAreas() async {
+    setState(() => _isLoadingAreas = true);
+    try {
+      final areas = await ApiService.getAreas();
+      setState(() {
+        _availableAreas = areas;
+        _isLoadingAreas = false;
+      });
+    } catch (e) {
+      setState(() => _isLoadingAreas = false);
+    }
+  }
+
+  Future<void> _loadRoutesForArea(String area) async {
+    setState(() => _isLoadingAreas = true);
+    try {
+      final routes = await ApiService.getSubAreas(area: area);
+      setState(() {
+        _availableRoutes = routes;
+        _isLoadingAreas = false;
+      });
+    } catch (e) {
+      setState(() => _isLoadingAreas = false);
+    }
   }
 
   Future<void> _loadData() async {
@@ -2515,7 +2955,7 @@ class _DistributorDashboardEnhancedState
   // FIXED: Get unique product count (not total quantity)
   int get uniqueProductCount => _cart.length;
 
-  // Submit order - FIXED: Close screen after submission
+  // Submit order - FIXED: Close screen after submission and show order ID
   Future<void> submitOrder() async {
     if (_selectedCustomerId == null || _cart.isEmpty) return;
 
@@ -2527,9 +2967,11 @@ class _DistributorDashboardEnhancedState
           ? _salesmen.firstWhere((s) => s.id == _selectedSalesmanId)
           : (_salesmen.isNotEmpty ? _salesmen.first : null);
 
+      final orderNumber = 'ORD${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}';
+      
       final order = OrderModel(
         id: 'order_${DateTime.now().millisecondsSinceEpoch}',
-        orderNumber: 'ORD${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}',
+        orderNumber: orderNumber,
         customerId: _selectedCustomerId!,
         customerName: customer.name,
         customerPhone: customer.phone ?? customer.mobile ?? '',
@@ -2569,10 +3011,48 @@ class _DistributorDashboardEnhancedState
         ],
       );
 
-      await _orderService.createOrder(order);
+      final response = await ApiService.createOrder({
+        'orderNumber': order.orderNumber,
+        'customerId': order.customerId,
+        'customerName': order.customerName,
+        'customerPhone': order.customerPhone,
+        'areaName': order.areaName,
+        'routeName': order.routeName,
+        'salesman_id': order.salesmanId,
+        'salesmanName': order.salesmanName,
+        'distributor_id': _currentDistributor.distributorId,
+        'distributorId': _currentDistributor.distributorId,
+        'items': order.items.map((item) => {
+          'productId': item.productId,
+          'productName': item.productName,
+          'sku': item.sku,
+          'quantity': item.quantity,
+          'rate': item.rate,
+          'amount': item.amount,
+        }).toList(),
+        'totalAmount': order.totalAmount,
+        'paidAmount': order.paidAmount,
+        'dueAmount': order.dueAmount,
+        'grand_total': order.totalAmount,
+        'order_total': order.totalAmount,
+        'status': 'pending',
+        'orderType': 'regular',
+        'paymentMode': _selectedPaymentMode.toString().split('.').last,
+        'payment_method': _selectedPaymentMode.toString().split('.').last,
+        'payment_status': order.paidAmount >= order.totalAmount ? 'paid' : 'pending',
+        'scheduledDate': order.scheduledDate?.toIso8601String(),
+        'notes': order.notes,
+        'internalNotes': order.internalNotes,
+        'customer': {
+          'customer_id': order.customerId,
+          'name': order.customerName,
+          'phone': order.customerPhone,
+        },
+        'created_by_type': 'distributor',
+      });
       
       if (mounted) {
-        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${order.orderNumber}', backgroundColor: successGreen);
+        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${response['orderNumber'] ?? order.orderNumber}', backgroundColor: successGreen);
         _clearCart();
         await _loadData();
         
@@ -2684,127 +3164,160 @@ class _DistributorDashboardEnhancedState
   void _showAddCustomerDialog() {
     final nameController = TextEditingController();
     final phoneController = TextEditingController();
-    final areaController = TextEditingController();
-    final routeController = TextEditingController();
     final addressController = TextEditingController();
+    
+    // Reset area/route selection
+    _selectedArea = null;
+    _selectedRoute = null;
+    _availableAreas = [];
+    _availableRoutes = [];
+    _loadAreas();
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Row(
-          children: [
-            Icon(Icons.person_add, color: primaryBlue),
-            const SizedBox(width: 8),
-            const Text('Add New Customer'),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Row(
             children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Customer Name *',
-                  hintText: 'Enter full name',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.person),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: phoneController,
-                decoration: const InputDecoration(
-                  labelText: 'Phone Number *',
-                  hintText: 'Enter 10 digit mobile number',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.phone),
-                ),
-                keyboardType: TextInputType.phone,
-                maxLength: 10,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: areaController,
-                decoration: const InputDecoration(
-                  labelText: 'Area *',
-                  hintText: 'Enter area/locality',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.location_city),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: routeController,
-                decoration: const InputDecoration(
-                  labelText: 'Route',
-                  hintText: 'Enter delivery route',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.route),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: addressController,
-                decoration: const InputDecoration(
-                  labelText: 'Address',
-                  hintText: 'Enter complete address',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.home),
-                ),
-                maxLines: 2,
-              ),
+              Icon(Icons.person_add, color: primaryBlue),
+              const SizedBox(width: 8),
+              const Text('Add New Customer'),
             ],
           ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Customer Name *',
+                    hintText: 'Enter full name',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.person),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: phoneController,
+                  decoration: const InputDecoration(
+                    labelText: 'Phone Number *',
+                    hintText: 'Enter 10 digit mobile number',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.phone),
+                  ),
+                  keyboardType: TextInputType.phone,
+                  maxLength: 10,
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: _selectedArea,
+                  decoration: const InputDecoration(
+                    labelText: 'Area / City *',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.location_city),
+                  ),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Select Area')),
+                    ..._availableAreas.map((area) => DropdownMenuItem(
+                      value: area,
+                      child: Text(area),
+                    )),
+                  ],
+                  onChanged: (value) async {
+                    setDialogState(() {
+                      _selectedArea = value;
+                      _selectedRoute = null;
+                      _availableRoutes = [];
+                    });
+                    if (value != null && value.isNotEmpty) {
+                      final routes = await ApiService.getSubAreas(area: value);
+                      setDialogState(() {
+                        _availableRoutes = routes;
+                      });
+                    }
+                  },
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: _selectedRoute,
+                  decoration: const InputDecoration(
+                    labelText: 'Route / Sub-Area',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.route),
+                  ),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Select Route (Optional)')),
+                    ..._availableRoutes.map((route) => DropdownMenuItem(
+                      value: route,
+                      child: Text(route),
+                    )),
+                  ],
+                  onChanged: (value) => setDialogState(() => _selectedRoute = value),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: addressController,
+                  decoration: const InputDecoration(
+                    labelText: 'Address',
+                    hintText: 'Enter complete address',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.home),
+                  ),
+                  maxLines: 2,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (nameController.text.trim().isEmpty) {
+                  showSafeSnackBar(context, 'Please enter customer name', backgroundColor: errorRed);
+                  return;
+                }
+                if (phoneController.text.trim().isEmpty) {
+                  showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
+                  return;
+                }
+                if (phoneController.text.trim().length != 10) {
+                  showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
+                  return;
+                }
+                if (_selectedArea == null || _selectedArea!.isEmpty) {
+                  showSafeSnackBar(context, 'Please select area', backgroundColor: errorRed);
+                  return;
+                }
+                
+                final customer = CustomerModel(
+                  id: 'cust_${DateTime.now().millisecondsSinceEpoch}',
+                  name: nameController.text.trim(),
+                  phone: phoneController.text.trim(),
+                  area: _selectedArea!,
+                  route: _selectedRoute,
+                  address: addressController.text.trim().isNotEmpty ? addressController.text.trim() : null,
+                  createdAt: DateTime.now(),
+                  updatedAt: DateTime.now(),
+                  customerId: 'GK${DateTime.now().millisecondsSinceEpoch.toString().substring(8, 13)}',
+                  createdBy: _currentDistributor.email,
+                  distributorId: _currentDistributor.distributorId,
+                );
+                await _customerService.addCustomer(customer);
+                await _loadData();
+                if (mounted) {
+                  Navigator.pop(context);
+                  showSafeSnackBar(context, '✅ Customer added successfully!', backgroundColor: successGreen);
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+              child: const Text('Add Customer'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              if (nameController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter customer name', backgroundColor: errorRed);
-                return;
-              }
-              if (phoneController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
-                return;
-              }
-              if (phoneController.text.trim().length != 10) {
-                showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
-                return;
-              }
-              if (areaController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter area', backgroundColor: errorRed);
-                return;
-              }
-              
-              final customer = CustomerModel(
-                id: 'cust_${DateTime.now().millisecondsSinceEpoch}',
-                name: nameController.text.trim(),
-                phone: phoneController.text.trim(),
-                area: areaController.text.trim(),
-                route: routeController.text.trim().isNotEmpty ? routeController.text.trim() : null,
-                address: addressController.text.trim().isNotEmpty ? addressController.text.trim() : null,
-                createdAt: DateTime.now(),
-                updatedAt: DateTime.now(),
-                customerId: 'GK${DateTime.now().millisecondsSinceEpoch.toString().substring(8, 13)}',
-                createdBy: _currentDistributor.email,
-                distributorId: _currentDistributor.distributorId,
-              );
-              await _customerService.addCustomer(customer);
-              await _loadData();
-              if (mounted) {
-                Navigator.pop(context);
-                showSafeSnackBar(context, '✅ Customer added successfully!', backgroundColor: successGreen);
-              }
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-            child: const Text('Add Customer'),
-          ),
-        ],
       ),
     );
   }
@@ -3093,6 +3606,7 @@ class _DistributorDashboardEnhancedState
                     '✅ Salesman added!\nPassword: $defaultPassword',
                     backgroundColor: successGreen,
                   );
+                  await _loadUsersUnderDistributor();
                 }
               } catch (e) {
                 if (mounted) {
@@ -3191,6 +3705,516 @@ class _DistributorDashboardEnhancedState
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  void _showEditCustomerDialog(CustomerModel customer) {
+    final nameController = TextEditingController(text: customer.name);
+    final phoneController = TextEditingController(text: customer.phone ?? '');
+    final addressController = TextEditingController(text: customer.address ?? '');
+    
+    String? selectedArea = customer.area;
+    String? selectedRoute = customer.route;
+    List<String> availableRoutes = [];
+
+    _loadAreas().then((_) {
+      if (selectedArea != null) {
+        ApiService.getSubAreas(area: selectedArea!).then((routes) {
+          if (mounted) {
+            setState(() {
+              availableRoutes = routes;
+            });
+          }
+        });
+      }
+    });
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Row(
+            children: [
+              Icon(Icons.edit, color: primaryBlue),
+              const SizedBox(width: 8),
+              const Text('Edit Customer'),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Customer Name *',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.person),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: phoneController,
+                  decoration: const InputDecoration(
+                    labelText: 'Phone Number *',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.phone),
+                  ),
+                  keyboardType: TextInputType.phone,
+                  maxLength: 10,
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: selectedArea,
+                  decoration: const InputDecoration(
+                    labelText: 'Area / City *',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.location_city),
+                  ),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Select Area')),
+                    ..._availableAreas.map((area) => DropdownMenuItem(
+                      value: area,
+                      child: Text(area),
+                    )),
+                  ],
+                  onChanged: (value) async {
+                    setDialogState(() {
+                      selectedArea = value;
+                      selectedRoute = null;
+                      availableRoutes = [];
+                    });
+                    if (value != null && value.isNotEmpty) {
+                      final routes = await ApiService.getSubAreas(area: value);
+                      setDialogState(() {
+                        availableRoutes = routes;
+                      });
+                    }
+                  },
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: selectedRoute,
+                  decoration: const InputDecoration(
+                    labelText: 'Route / Sub-Area',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.route),
+                  ),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('Select Route (Optional)')),
+                    ...availableRoutes.map((route) => DropdownMenuItem(
+                      value: route,
+                      child: Text(route),
+                    )),
+                  ],
+                  onChanged: (value) => setDialogState(() => selectedRoute = value),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: addressController,
+                  decoration: const InputDecoration(
+                    labelText: 'Address',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.home),
+                  ),
+                  maxLines: 2,
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (nameController.text.trim().isEmpty) {
+                  showSafeSnackBar(context, 'Please enter customer name', backgroundColor: errorRed);
+                  return;
+                }
+                if (phoneController.text.trim().isEmpty) {
+                  showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
+                  return;
+                }
+                if (phoneController.text.trim().length != 10) {
+                  showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
+                  return;
+                }
+                if (selectedArea == null || selectedArea!.isEmpty) {
+                  showSafeSnackBar(context, 'Please select area', backgroundColor: errorRed);
+                  return;
+                }
+                
+                final updatedCustomer = CustomerModel(
+                  id: customer.id,
+                  name: nameController.text.trim(),
+                  phone: phoneController.text.trim(),
+                  area: selectedArea!,
+                  route: selectedRoute,
+                  address: addressController.text.trim().isNotEmpty ? addressController.text.trim() : null,
+                  createdAt: customer.createdAt,
+                  updatedAt: DateTime.now(),
+                  customerId: customer.customerId,
+                  createdBy: customer.createdBy,
+                  distributorId: customer.distributorId,
+                );
+                
+                try {
+                  await _customerService.updateCustomer(updatedCustomer);
+                  await _loadData();
+                  if (mounted) {
+                    Navigator.pop(context);
+                    showSafeSnackBar(context, '✅ Customer updated successfully!', backgroundColor: successGreen);
+                  }
+                } catch (e) {
+                  showSafeSnackBar(context, 'Error updating customer: $e', backgroundColor: errorRed);
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+              child: const Text('Update Customer'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showEditProductDialog(ProductModel product) {
+    final nameController = TextEditingController(text: product.name);
+    final skuController = TextEditingController(text: product.sku);
+    final priceController = TextEditingController(text: product.price.toStringAsFixed(0));
+    final categoryController = TextEditingController(text: product.category);
+    final stockController = TextEditingController(text: product.stock.toString());
+    final descriptionController = TextEditingController(text: product.description ?? '');
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.edit, color: accentTeal),
+            SizedBox(width: 8),
+            Text('Edit Product'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Product Name *',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: skuController,
+                decoration: const InputDecoration(
+                  labelText: 'SKU *',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: priceController,
+                decoration: const InputDecoration(
+                  labelText: 'Price *',
+                  border: OutlineInputBorder(),
+                  prefixText: '₹ ',
+                ),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: categoryController,
+                decoration: const InputDecoration(
+                  labelText: 'Category *',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: stockController,
+                decoration: const InputDecoration(
+                  labelText: 'Stock Quantity',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: descriptionController,
+                decoration: const InputDecoration(
+                  labelText: 'Description',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (nameController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter product name', backgroundColor: errorRed);
+                return;
+              }
+              if (skuController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter SKU', backgroundColor: errorRed);
+                return;
+              }
+              if (priceController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter price', backgroundColor: errorRed);
+                return;
+              }
+              if (categoryController.text.trim().isEmpty) {
+                showSafeSnackBar(context, 'Please enter category', backgroundColor: errorRed);
+                return;
+              }
+              
+              final updatedProduct = ProductModel(
+                id: product.id,
+                name: nameController.text.trim(),
+                sku: skuController.text.trim(),
+                price: double.tryParse(priceController.text) ?? 0,
+                category: categoryController.text.trim(),
+                stock: int.tryParse(stockController.text) ?? 0,
+                description: descriptionController.text.trim().isNotEmpty ? descriptionController.text.trim() : null,
+                createdAt: product.createdAt,
+                updatedAt: DateTime.now(),
+                createdBy: product.createdBy,
+                distributorId: product.distributorId,
+              );
+              
+              try {
+                await _productService.updateProduct(updatedProduct);
+                await _loadData();
+                if (mounted) {
+                  Navigator.pop(context);
+                  showSafeSnackBar(context, '✅ Product updated successfully!', backgroundColor: successGreen);
+                }
+              } catch (e) {
+                showSafeSnackBar(context, 'Error updating product: $e', backgroundColor: errorRed);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+            child: const Text('Update Product'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showUpdateStockDialog(ProductModel product) {
+    final stockController = TextEditingController(text: product.stock.toString());
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.inventory, color: accentTeal),
+            const SizedBox(width: 8),
+            Text('Update Stock: ${product.name}'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Current Stock: ${product.stock}'),
+            const SizedBox(height: 16),
+            TextField(
+              controller: stockController,
+              decoration: const InputDecoration(
+                labelText: 'New Stock Quantity',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.numbers),
+              ),
+              keyboardType: TextInputType.number,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final newStock = int.tryParse(stockController.text);
+              if (newStock == null || newStock < 0) {
+                showSafeSnackBar(context, 'Please enter a valid stock quantity', backgroundColor: errorRed);
+                return;
+              }
+              
+              try {
+                await _productService.updateProductStock(product.id, newStock);
+                await _loadData();
+                if (mounted) {
+                  Navigator.pop(context);
+                  showSafeSnackBar(context, '✅ Stock updated to $newStock!', backgroundColor: successGreen);
+                }
+              } catch (e) {
+                showSafeSnackBar(context, 'Error updating stock: $e', backgroundColor: errorRed);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+            child: const Text('Update Stock'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEditSalesmanDialog(SalesmanModel salesman) {
+    final nameController = TextEditingController(text: salesman.name);
+    final emailController = TextEditingController(text: salesman.email);
+    final phoneController = TextEditingController(text: salesman.phone);
+    final areaController = TextEditingController(text: salesman.areaAssigned);
+    final addressController = TextEditingController(text: salesman.address);
+    final targetController = TextEditingController(text: salesman.targetAmount.toString());
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.edit, color: accentTeal),
+            SizedBox(width: 8),
+            Text('Edit Salesman'),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(
+                  labelText: 'Name *',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: emailController,
+                decoration: const InputDecoration(
+                  labelText: 'Email *',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.emailAddress,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: phoneController,
+                decoration: const InputDecoration(
+                  labelText: 'Phone * (10 digits)',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.phone,
+                maxLength: 10,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: areaController,
+                decoration: const InputDecoration(
+                  labelText: 'Area Assigned',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: addressController,
+                decoration: const InputDecoration(
+                  labelText: 'Address',
+                  border: OutlineInputBorder(),
+                ),
+                maxLines: 2,
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: targetController,
+                decoration: const InputDecoration(
+                  labelText: 'Target Amount',
+                  border: OutlineInputBorder(),
+                  prefixText: '₹ ',
+                ),
+                keyboardType: TextInputType.number,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (nameController.text.isEmpty) {
+                showSafeSnackBar(context, 'Please enter name', backgroundColor: errorRed);
+                return;
+              }
+              if (emailController.text.isEmpty) {
+                showSafeSnackBar(context, 'Please enter email', backgroundColor: errorRed);
+                return;
+              }
+              if (phoneController.text.isEmpty) {
+                showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
+                return;
+              }
+              if (phoneController.text.length != 10) {
+                showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
+                return;
+              }
+              
+              final updatedSalesman = SalesmanModel(
+                id: salesman.id,
+                salesmanId: salesman.salesmanId,
+                name: nameController.text,
+                email: emailController.text,
+                phone: phoneController.text,
+                distributorId: salesman.distributorId,
+                createdBy: salesman.createdBy,
+                createdAt: salesman.createdAt,
+                updatedAt: DateTime.now(),
+                status: salesman.status,
+                targetAmount: double.tryParse(targetController.text) ?? 0,
+                achievedAmount: salesman.achievedAmount,
+                commissionRate: salesman.commissionRate,
+                areaAssigned: areaController.text,
+                address: addressController.text,
+                joiningDate: salesman.joiningDate,
+                performanceMetrics: salesman.performanceMetrics,
+                bankDetails: salesman.bankDetails,
+                documents: salesman.documents,
+                notes: salesman.notes,
+              );
+              
+              try {
+                await _salesmanService.updateSalesman(updatedSalesman);
+                await _loadData();
+                if (mounted) {
+                  Navigator.pop(context);
+                  showSafeSnackBar(context, '✅ Salesman updated successfully!', backgroundColor: successGreen);
+                  await _loadUsersUnderDistributor();
+                }
+              } catch (e) {
+                showSafeSnackBar(context, 'Error updating salesman: $e', backgroundColor: errorRed);
+              }
+            },
+            child: const Text('Update Salesman'),
+          ),
+        ],
       ),
     );
   }
@@ -3316,6 +4340,11 @@ class _DistributorDashboardEnhancedState
                               ),
                               const Divider(height: 32),
                               _buildSidebarItem(
+                                Icons.lock_reset,
+                                'Change Password',
+                                -2,
+                              ),
+                              _buildSidebarItem(
                                 Icons.logout,
                                 'Logout',
                                 -1,
@@ -3365,6 +4394,9 @@ class _DistributorDashboardEnhancedState
         if (isLogout) {
           setState(() => _isSidebarOpen = false);
           _logout();
+        } else if (index == -2) {
+          setState(() => _isSidebarOpen = false);
+          _showChangePasswordDialog();
         } else {
           setState(() {
             _selectedIndex = index;
@@ -4120,7 +5152,7 @@ class _DistributorDashboardEnhancedState
                     'Add Customer',
                     Icons.person_add,
                     Colors.blue,
-                    () => _showAddCustomerDialog(),
+                    _showAddCustomerDialog,
                   ),
                 ),
               ],
@@ -4133,7 +5165,7 @@ class _DistributorDashboardEnhancedState
                     'Add Product',
                     Icons.inventory_2,
                     accentTeal,
-                    () => _showAddProductDialog(),
+                    _showAddProductDialog,
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -4142,7 +5174,7 @@ class _DistributorDashboardEnhancedState
                     'Add Salesman',
                     Icons.person_add_alt,
                     cardPurple,
-                    () => _showAddSalesmanDialog(),
+                    _showAddSalesmanDialog,
                   ),
                 ),
               ],
@@ -4957,7 +5989,7 @@ class _DistributorDashboardEnhancedState
                       ),
                     ),
                     OutlinedButton.icon(
-                      onPressed: () {},
+                      onPressed: () => _showEditCustomerDialog(customer),
                       icon: const Icon(Icons.edit, size: 16),
                       label: const Text('Edit'),
                     ),
@@ -5120,23 +6152,31 @@ class _DistributorDashboardEnhancedState
                 Text('Category: ${product.category}'),
               ],
             ),
-            trailing: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '₹${product.price.toStringAsFixed(0)}',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: primaryBlue,
-                    fontSize: 16,
-                  ),
-                ),
                 if (product.stock < 10)
-                  const Text(
-                    'Low Stock',
-                    style: TextStyle(fontSize: 10, color: errorRed),
-                  ),
+                  const Icon(Icons.warning, color: errorRed, size: 16),
+                const SizedBox(width: 8),
+                Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '₹${product.price.toStringAsFixed(0)}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: primaryBlue,
+                        fontSize: 16,
+                      ),
+                    ),
+                    if (product.stock < 10)
+                      const Text(
+                        'Low Stock',
+                        style: TextStyle(fontSize: 10, color: errorRed),
+                      ),
+                  ],
+                ),
               ],
             ),
             children: [
@@ -5236,7 +6276,7 @@ class _DistributorDashboardEnhancedState
                       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                       children: [
                         ElevatedButton.icon(
-                          onPressed: () {},
+                          onPressed: () => _showEditProductDialog(product),
                           icon: const Icon(Icons.edit, size: 16),
                           label: const Text('Edit'),
                           style: ElevatedButton.styleFrom(
@@ -5244,7 +6284,7 @@ class _DistributorDashboardEnhancedState
                           ),
                         ),
                         OutlinedButton.icon(
-                          onPressed: () {},
+                          onPressed: () => _showUpdateStockDialog(product),
                           icon: const Icon(Icons.add, size: 16),
                           label: const Text('Add Stock'),
                         ),
@@ -5592,12 +6632,17 @@ class _DistributorDashboardEnhancedState
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     ElevatedButton.icon(
-                      onPressed: () {},
+                      onPressed: () => _showEditSalesmanDialog(salesman),
                       icon: const Icon(Icons.edit, size: 16),
                       label: const Text('Edit'),
                     ),
                     OutlinedButton.icon(
-                      onPressed: () {},
+                      onPressed: () {
+                        setState(() {
+                          _selectedOrderSalesmanId = salesman.id;
+                          _selectedIndex = 5;
+                        });
+                      },
                       icon: const Icon(Icons.visibility, size: 16),
                       label: const Text('View Orders'),
                     ),
@@ -5810,6 +6855,13 @@ class _DistributorDashboardEnhancedState
   }
 
   Widget _buildOrdersSection() {
+    // FIXED: Today's orders displayed in dashboard - all orders appear here
+    final todayOrders = _orders.where((o) => 
+      o.createdAt.day == DateTime.now().day &&
+      o.createdAt.month == DateTime.now().month &&
+      o.createdAt.year == DateTime.now().year
+    ).toList();
+    
     return Column(
       children: [
         Container(
@@ -5854,7 +6906,39 @@ class _DistributorDashboardEnhancedState
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
+              // Today's orders summary
+              if (todayOrders.isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: accentTeal.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.today, color: accentTeal, size: 16),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Today\'s Orders: ${todayOrders.length}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: accentTeal,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '₹${todayOrders.fold<double>(0, (sum, o) => sum + o.totalAmount).toStringAsFixed(0)}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: accentTeal,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 4),
               TextField(
                 controller: _orderSearchController,
                 decoration: InputDecoration(
@@ -7592,6 +8676,16 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     }
   }
 
+  void _showChangePasswordDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => ChangePasswordDialog(
+        currentUser: _currentSalesman,
+        isDistributor: false,
+      ),
+    );
+  }
+
   double get cartTotal {
     double total = 0;
     for (var item in _cart.values) {
@@ -7715,9 +8809,11 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     try {
       final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
 
+      final orderNumber = 'ORD${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}';
+      
       final order = OrderModel(
         id: 'order_${DateTime.now().millisecondsSinceEpoch}',
-        orderNumber: 'ORD${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}',
+        orderNumber: orderNumber,
         customerId: _selectedCustomerId!,
         customerName: customer.name,
         customerPhone: customer.phone ?? customer.mobile ?? '',
@@ -7757,10 +8853,49 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         ],
       );
 
-      await _orderService.createOrder(order);
+      final response = await ApiService.createOrder({
+        'orderNumber': order.orderNumber,
+        'customerId': order.customerId,
+        'customerName': order.customerName,
+        'customerPhone': order.customerPhone,
+        'areaName': order.areaName,
+        'routeName': order.routeName,
+        'salesman_id': order.salesmanId,
+        'salesmanName': order.salesmanName,
+        'distributor_id': _currentSalesman.distributorId,
+        'distributorId': _currentSalesman.distributorId,
+        'items': order.items.map((item) => ({
+          'productId': item.productId,
+          'productName': item.productName,
+          'sku': item.sku,
+          'quantity': item.quantity,
+          'rate': item.rate,
+          'amount': item.amount,
+        })).toList(),
+        'totalAmount': order.totalAmount,
+        'paidAmount': order.paidAmount,
+        'dueAmount': order.dueAmount,
+        'grand_total': order.totalAmount,
+        'order_total': order.totalAmount,
+        'status': 'pending',
+        'orderType': 'regular',
+        'paymentMode': _selectedPaymentMode.toString().split('.').last,
+        'payment_method': _selectedPaymentMode.toString().split('.').last,
+        'payment_status': order.paidAmount >= order.totalAmount ? 'paid' : 'pending',
+        'scheduledDate': order.scheduledDate?.toIso8601String(),
+        'notes': order.notes,
+        'internalNotes': order.internalNotes,
+        'customer': {
+          'customer_id': order.customerId,
+          'name': order.customerName,
+          'phone': order.customerPhone,
+        },
+        'created_by_type': 'salesman',
+        'salesmanName': _currentSalesman.name,
+      });
       
       if (mounted) {
-        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${order.orderNumber}', backgroundColor: successGreen);
+        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${response['orderNumber'] ?? order.orderNumber}', backgroundColor: successGreen);
         clearCart();
         await _loadData();
         
@@ -8273,6 +9408,11 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                               ),
                               const Divider(height: 32),
                               _buildSidebarItem(
+                                Icons.lock_reset,
+                                'Change Password',
+                                -2,
+                              ),
+                              _buildSidebarItem(
                                 Icons.logout,
                                 'Logout',
                                 -1,
@@ -8322,6 +9462,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         if (isLogout) {
           setState(() => _isSidebarOpen = false);
           _logout();
+        } else if (index == -2) {
+          setState(() => _isSidebarOpen = false);
+          _showChangePasswordDialog();
         } else {
           setState(() {
             _selectedIndex = index;
@@ -11142,7 +12285,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   borderSide: BorderSide(color: Colors.grey[300]!),
                 ),
                 focusedBorder: const OutlineInputBorder(
-                  borderRadius: BorderRadius.all(Radius.circular(12)),
+                  borderRadius: BorderRadius.all(Radius.cicular(12)),
                   borderSide: BorderSide(color: primaryBlue, width: 2),
                 ),
               ),
