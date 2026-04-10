@@ -33,7 +33,11 @@ dependencies:
   
   # For file picking (CSV/Excel import)
   csv: ^6.0.0
+  excel: ^2.1.0
+  permission_handler: ^11.3.0
   
+
+
   # For PDF generation and sharing
   pdf: ^3.10.8
   share_plus: ^7.2.2

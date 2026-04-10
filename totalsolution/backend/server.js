@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs'); // Changed from 'bcrypt' to 'bcryptjs'
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const XLSX = require('xlsx');
 require('dotenv').config();
 
 const app = express();
@@ -215,40 +216,35 @@ app.get('/api/areas', async (req, res) => {
     }
 });
 
-// Get sub-areas based on selected area
+// FIXED #4: Get sub-areas based on selected area with real route names
 app.get('/api/sub-areas', async (req, res) => {
     try {
         const { area } = req.query;
         
-        // Free API for routes/sub-areas
-        // Using static mapping for demo
+        // Real sub-areas/routes for Pune areas
         const routeMap = {
-            'pune': {
-                'Shivajinagar': ['FC Road', 'Jangli Maharaj Road', 'Shanipar', 'Laxmi Road'],
-                'Kothrud': ['Karve Road', 'Paud Road', 'Mayur Colony', 'Ideal Colony'],
-                'Hinjewadi': ['Phase 1', 'Phase 2', 'Phase 3', 'Maan Road'],
-                'Pimpri-Chinchwad': ['Pimpri Camp', 'Chinchwad Station', 'Akurdi', 'Ravet'],
-                'Hadapsar': ['Magarpatta', 'Mundhwa', 'Kharadi', 'Keshav Nagar'],
-                'Viman Nagar': ['Airport Road', 'Kalyani Nagar', 'Nagar Road'],
-                'Koregaon Park': ['North Main Road', 'Lane 5', 'Lane 7', 'Mundhwa Road'],
-                'Baner': ['Balewadi High Street', 'Baner Road', 'Pashan', 'Sus Road'],
-                'Aundh': ['DP Road', 'ITI Road', 'Medipoint', 'Sangvi'],
-                'Wakad': ['Datta Mandir Road', 'Bhumkar Chowk', 'Mhalunge']
-            },
-            'mumbai': {
-                'Andheri': ['Marol', 'Versova', 'Jogeshwari', 'Azad Nagar', 'Chakala'],
-                'Bandra': ['Bandra West', 'Bandra East', 'Khar', 'Santacruz'],
-                'Dadar': ['Shivaji Park', 'Matunga', 'Prabhadevi', 'Mahim']
-            }
+            'Shivajinagar': ['FC Road', 'Jangli Maharaj Road', 'Shanipar', 'Laxmi Road', 'Tilak Road'],
+            'Kothrud': ['Karve Road', 'Paud Road', 'Mayur Colony', 'Ideal Colony', 'Vanaz', 'Kothrud Depot'],
+            'Hinjewadi': ['Phase 1', 'Phase 2', 'Phase 3', 'Maan Road', 'Hinjewadi Lake', 'Rajiv Gandhi Infotech Park'],
+            'Pimpri-Chinchwad': ['Pimpri Camp', 'Chinchwad Station', 'Akurdi', 'Ravet', 'Nigdi', 'Talwade'],
+            'Hadapsar': ['Magarpatta', 'Mundhwa', 'Kharadi', 'Keshav Nagar', 'Handewadi Road', 'Pune-Solapur Road'],
+            'Viman Nagar': ['Airport Road', 'Kalyani Nagar', 'Nagar Road', 'Sakore Nagar', 'Clover Park'],
+            'Koregaon Park': ['North Main Road', 'Lane 5', 'Lane 7', 'Mundhwa Road', 'Bund Garden Road'],
+            'Baner': ['Balewadi High Street', 'Baner Road', 'Pashan', 'Sus Road', 'Baner Gaon', 'Bhumkar Chowk'],
+            'Aundh': ['DP Road', 'ITI Road', 'Medipoint', 'Sangvi', 'Aundh Gaon', 'Bremen Chowk'],
+            'Wakad': ['Datta Mandir Road', 'Bhumkar Chowk', 'Mhalunge', 'Wakad Bridge', 'Hinjewadi-Wakad Road'],
+            'Warje': ['Warje Malwadi', 'Karve Nagar', 'Erandwane', 'Nal Stop', 'Kothrud-Warje Road'],
+            'Kalewadi': ['Kalewadi Phata', 'Kalewadi Chowk', 'Rahatani', 'Pimple Saudagar', 'Pimple Gurav'],
+            'Moshi': ['Moshi Bazar Peth', 'Moshi Chowk', 'Chikhali', 'Bhosari', 'Dighi'],
+            'Karvenagar': ['Karve Putala', 'Sahakar Nagar', 'Katraj-Karvenagar Road', 'Deshmukh Nagar']
         };
         
         let routes = [];
-        if (area && routeMap['pune'] && routeMap['pune'][area]) {
-            routes = routeMap['pune'][area];
-        } else if (area && routeMap['mumbai'] && routeMap['mumbai'][area]) {
-            routes = routeMap['mumbai'][area];
+        if (area && routeMap[area]) {
+            routes = routeMap[area];
         } else if (area) {
-            routes = [`${area} Route 1`, `${area} Route 2`, `${area} Route 3`];
+            // Default dummy routes if area not found in map
+            routes = [`${area} Main Road`, `${area} Market Area`, `${area} Residential Area`, `${area} Industrial Area`];
         }
         
         res.json({ routes: routes });
@@ -260,7 +256,7 @@ app.get('/api/sub-areas', async (req, res) => {
 
 // ==================== PASSWORD CHANGE APIs ====================
 
-// Change password for any user (Distributor can change anyone, user can change own)
+// FIXED #5: Change password for any user - fixed ObjectId validation
 app.post('/api/change-password', async (req, res) => {
     try {
         const { userId, currentPassword, newPassword, requestingUserId, requestingUserRole } = req.body;
@@ -269,11 +265,18 @@ app.post('/api/change-password', async (req, res) => {
             return res.status(400).json({ error: 'User ID and new password are required' });
         }
         
-        // Find the target user
+        // Find the target user - try multiple ways
         let targetUser = null;
         
         // Try to find by various ID formats
-        targetUser = await collections.register.findOne({ _id: new ObjectId(userId) });
+        try {
+            if (ObjectId.isValid(userId) && userId.length === 24) {
+                targetUser = await collections.register.findOne({ _id: new ObjectId(userId) });
+            }
+        } catch (err) {
+            console.log('Invalid ObjectId format, trying other methods');
+        }
+        
         if (!targetUser) {
             targetUser = await collections.register.findOne({ salesman_id: userId });
         }
@@ -281,11 +284,28 @@ app.post('/api/change-password', async (req, res) => {
             targetUser = await collections.register.findOne({ distributor_id: userId });
         }
         if (!targetUser) {
+            targetUser = await collections.register.findOne({ email: userId });
+        }
+        if (!targetUser) {
             return res.status(404).json({ error: 'User not found' });
         }
         
         // Check permissions
-        const requestingUserObj = await collections.register.findOne({ _id: new ObjectId(requestingUserId) });
+        let requestingUserObj = null;
+        try {
+            if (requestingUserId && ObjectId.isValid(requestingUserId) && requestingUserId.length === 24) {
+                requestingUserObj = await collections.register.findOne({ _id: new ObjectId(requestingUserId) });
+            }
+        } catch (err) {
+            console.log('Invalid requestingUserId format');
+        }
+        
+        if (!requestingUserObj && requestingUserId) {
+            requestingUserObj = await collections.register.findOne({ salesman_id: requestingUserId });
+        }
+        if (!requestingUserObj && requestingUserId) {
+            requestingUserObj = await collections.register.findOne({ distributor_id: requestingUserId });
+        }
         
         if (requestingUserRole === 'distributor') {
             // Distributor can change any user's password under their distributor_id
@@ -294,7 +314,7 @@ app.post('/api/change-password', async (req, res) => {
             }
         } else if (requestingUserRole === 'salesman') {
             // Salesman can only change their own password
-            if (targetUser._id.toString() !== requestingUserId) {
+            if (targetUser._id.toString() !== requestingUserId && targetUser.salesman_id !== requestingUserId) {
                 return res.status(403).json({ error: 'You can only change your own password' });
             }
             // Verify current password for security
@@ -358,7 +378,6 @@ app.get('/api/users-under-distributor/:distributorId', async (req, res) => {
 // ==================== NOTIFICATION APIs ====================
 
 // Create notification for distributor when salesman creates order (ONLY for salesman orders)
-// FIXED: Properly fetch salesman name from database
 async function createOrderNotification(order, distributorId, salesmanId, salesmanName) {
     try {
         // Only create notification if order is created by a salesman (not distributor)
@@ -381,7 +400,6 @@ async function createOrderNotification(order, distributorId, salesmanId, salesma
             }
         }
         
-        // FIXED: Use actual salesman name, not placeholder text
         const finalSalesmanName = actualSalesmanName || salesmanId || 'Salesman';
         
         const notification = {
@@ -390,7 +408,7 @@ async function createOrderNotification(order, distributorId, salesmanId, salesma
             order_id: order.orderNumber,
             order_number: order.orderNumber,
             customer_name: order.customerName,
-            salesman_name: finalSalesmanName,  // FIXED: Use actual salesman name
+            salesman_name: finalSalesmanName,
             amount: order.grand_total || order.totalAmount,
             message: `New order #${order.orderNumber} created by salesman ${finalSalesmanName} for customer ${order.customerName}`,
             type: 'new_order',
@@ -692,11 +710,16 @@ app.put('/api/products/:id', async (req, res) => {
     }
 });
 
-// Update product stock - FIXED: Now working properly
+// FIXED #2: Update product stock after order placement
 app.put('/api/products/:id/stock', async (req, res) => {
     try {
         const { id } = req.params;
         const { stockReduction, newStock } = req.body;
+        
+        // Validate ObjectId
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({ error: 'Invalid product ID format' });
+        }
         
         const product = await collections.product.findOne({ _id: new ObjectId(id) });
         if (!product) {
@@ -714,6 +737,8 @@ app.put('/api/products/:id/stock', async (req, res) => {
             { _id: new ObjectId(id) },
             { $set: { stock: updatedStock, updatedAt: new Date().toISOString() } }
         );
+        
+        console.log(`Product stock updated: ${product.productName || product.name} - Old stock: ${product.stock || 0}, New stock: ${updatedStock}`);
         
         res.json({ success: true, newStock: updatedStock });
     } catch (error) {
@@ -1076,7 +1101,7 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
 
 // ==================== ORDER APIs ====================
 
-// Create new order
+// FIXED #1, #3, #7: Create new order with proper distributor ID and stock update
 app.post('/api/orders', async (req, res) => {
     try {
         const orderData = req.body;
@@ -1089,21 +1114,82 @@ app.post('/api/orders', async (req, res) => {
         orderData.updatedAt = new Date().toISOString();
         orderData.order_date = new Date().toISOString();
         
+        // FIXED #1 & #3: Ensure distributor_id is properly set
+        // Get distributor ID from the logged-in user or from request
+        let distributorId = orderData.distributor_id || orderData.distributorId;
+        
+        if (!distributorId && orderData.salesman_id) {
+            // If order is by salesman, get distributor from salesman record
+            const salesman = await collections.salesman.findOne({ salesman_id: orderData.salesman_id });
+            if (salesman && salesman.distributor_id) {
+                distributorId = salesman.distributor_id;
+            } else {
+                const registerUser = await collections.register.findOne({ salesman_id: orderData.salesman_id });
+                if (registerUser && registerUser.distributor_id) {
+                    distributorId = registerUser.distributor_id;
+                }
+            }
+        }
+        
+        // Set distributor_id in order
+        orderData.distributor_id = distributorId;
+        orderData.distributorId = distributorId; // Set both fields for compatibility
+        
+        // Track who created the order
+        orderData.created_by_type = orderData.created_by_type || (orderData.salesman_id ? 'salesman' : 'distributor');
+        
         // Ensure all required fields
         orderData.status = orderData.status || 'pending';
         orderData.payment_status = orderData.payment_status || 'pending';
         orderData.paidAmount = orderData.paidAmount || 0;
         orderData.dueAmount = orderData.grand_total || 0;
         
-        // Track who created the order
-        orderData.created_by_type = orderData.created_by_type || (orderData.salesman_id ? 'salesman' : 'distributor');
-        
         const result = await collections.order.insertOne(orderData);
         
         console.log(`Order created: ${orderNumber} with ID: ${result.insertedId}`);
+        console.log(`Order created by: ${orderData.created_by_type}, Distributor ID: ${distributorId}, Salesman ID: ${orderData.salesman_id || 'N/A'}`);
+        
+        // FIXED #2: Update stock for each product in the order
+        if (orderData.items && Array.isArray(orderData.items) && orderData.items.length > 0) {
+            for (const item of orderData.items) {
+                try {
+                    // Find the product by ID or SKU
+                    let product = null;
+                    if (item.productId && ObjectId.isValid(item.productId)) {
+                        product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
+                    } else if (item.sku) {
+                        product = await collections.product.findOne({ sku: item.sku });
+                    } else if (item.product_id) {
+                        product = await collections.product.findOne({ _id: new ObjectId(item.product_id) });
+                    }
+                    
+                    if (product) {
+                        const quantitySold = item.quantity || item.qty || 0;
+                        const currentStock = product.stock || 0;
+                        const newStock = Math.max(0, currentStock - quantitySold);
+                        
+                        await collections.product.updateOne(
+                            { _id: product._id },
+                            { 
+                                $set: { 
+                                    stock: newStock, 
+                                    updatedAt: new Date().toISOString() 
+                                } 
+                            }
+                        );
+                        console.log(`Stock updated for product ${product.productName || product.name}: ${currentStock} -> ${newStock} (Sold: ${quantitySold})`);
+                    } else {
+                        console.warn(`Product not found for stock update: ${item.productId || item.sku}`);
+                    }
+                } catch (stockError) {
+                    console.error(`Error updating stock for product ${item.productId}:`, stockError);
+                    // Continue with other products even if one fails
+                }
+            }
+        }
         
         // FIXED: Create notification for distributor ONLY if order is created by salesman
-        if (orderData.distributor_id && orderData.salesman_id && orderData.created_by_type === 'salesman') {
+        if (distributorId && orderData.salesman_id && orderData.created_by_type === 'salesman') {
             // Get salesman name from the order data or fetch from database
             let salesmanName = orderData.salesmanName;
             if (!salesmanName && orderData.salesman_id) {
@@ -1117,7 +1203,7 @@ app.post('/api/orders', async (req, res) => {
                     }
                 }
             }
-            await createOrderNotification(orderData, orderData.distributor_id, orderData.salesman_id, salesmanName);
+            await createOrderNotification(orderData, distributorId, orderData.salesman_id, salesmanName);
         } else {
             console.log(`No notification created for order ${orderNumber} - created by distributor or no salesman associated`);
         }
@@ -1154,9 +1240,21 @@ app.get('/api/orders/salesman/:salesmanId', async (req, res) => {
 app.get('/api/orders/distributor/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
-        const { customerName, salesmanId, startDate, endDate } = req.query;
+        const { customerName, salesmanId, startDate, endDate, search } = req.query;
         
         let query = { distributor_id: distributorId };
+        
+        // FIXED #6: Search functionality for the search bar
+        if (search && search.trim()) {
+            const searchTerm = search.trim();
+            query.$or = [
+                { orderNumber: { $regex: searchTerm, $options: 'i' } },
+                { customerName: { $regex: searchTerm, $options: 'i' } },
+                { customerPhone: { $regex: searchTerm, $options: 'i' } },
+                { salesmanName: { $regex: searchTerm, $options: 'i' } },
+                { areaName: { $regex: searchTerm, $options: 'i' } }
+            ];
+        }
         
         // Filter by customer name
         if (customerName && customerName.trim()) {
@@ -1186,6 +1284,159 @@ app.get('/api/orders/distributor/:distributorId', async (req, res) => {
         res.json(orders);
     } catch (error) {
         console.error('Error fetching orders:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// FIXED #7: Download orders for distributor with date filters and Excel export
+app.get('/api/orders/download/:distributorId', async (req, res) => {
+    try {
+        const { distributorId } = req.params;
+        const { startDate, endDate, filterType } = req.query;
+        
+        let query = { distributor_id: distributorId };
+        
+        // Apply date filters
+        let startDateTime, endDateTime;
+        const now = new Date();
+        
+        if (filterType === 'today') {
+            startDateTime = new Date(now.setHours(0, 0, 0, 0));
+            endDateTime = new Date(now.setHours(23, 59, 59, 999));
+            query.order_date = {
+                $gte: startDateTime.toISOString(),
+                $lte: endDateTime.toISOString()
+            };
+        } else if (filterType === 'yesterday') {
+            const yesterday = new Date(now);
+            yesterday.setDate(yesterday.getDate() - 1);
+            startDateTime = new Date(yesterday.setHours(0, 0, 0, 0));
+            endDateTime = new Date(yesterday.setHours(23, 59, 59, 999));
+            query.order_date = {
+                $gte: startDateTime.toISOString(),
+                $lte: endDateTime.toISOString()
+            };
+        } else if (filterType === 'lastWeek') {
+            const lastWeek = new Date(now);
+            lastWeek.setDate(lastWeek.getDate() - 7);
+            startDateTime = new Date(lastWeek.setHours(0, 0, 0, 0));
+            endDateTime = new Date(now.setHours(23, 59, 59, 999));
+            query.order_date = {
+                $gte: startDateTime.toISOString(),
+                $lte: endDateTime.toISOString()
+            };
+        } else if (startDate || endDate) {
+            query.order_date = {};
+            if (startDate) {
+                query.order_date.$gte = new Date(startDate).toISOString();
+            }
+            if (endDate) {
+                query.order_date.$lte = new Date(endDate).toISOString();
+            }
+        }
+        
+        // Fetch all orders for this distributor (both salesman and distributor orders)
+        const orders = await collections.order
+            .find(query)
+            .sort({ order_date: -1 })
+            .toArray();
+        
+        if (!orders || orders.length === 0) {
+            return res.status(404).json({ error: 'No orders found for the selected date range' });
+        }
+        
+        // Prepare Excel data
+        const excelData = [];
+        
+        for (const order of orders) {
+            // Get salesman code and name
+            let salesmanCode = order.salesman_id || '';
+            let salesmanName = order.salesmanName || '';
+            
+            if (!salesmanName && order.salesman_id) {
+                const salesman = await collections.salesman.findOne({ salesman_id: order.salesman_id });
+                if (salesman) {
+                    salesmanName = salesman.name;
+                } else {
+                    const registerUser = await collections.register.findOne({ salesman_id: order.salesman_id });
+                    if (registerUser) {
+                        salesmanName = registerUser.fullName;
+                    }
+                }
+            }
+            
+            // For each item in the order, create a row
+            if (order.items && Array.isArray(order.items) && order.items.length > 0) {
+                for (const item of order.items) {
+                    excelData.push({
+                        'Order No': order.orderNumber,
+                        'Order Date': new Date(order.order_date).toLocaleDateString('en-IN'),
+                        'Party code': order.customerId || order.customer_id || '',
+                        'Party name': order.customerName || '',
+                        'Product code': item.productCode || item.sku || item.productId || '',
+                        'Product name': item.productName || item.name || '',
+                        'MRP': item.mrp || item.price || 0,
+                        'Rate': item.rate || item.price || 0,
+                        'Unit': 'PCS',
+                        'SSMcode': salesmanCode,
+                        'Salesman name': salesmanName,
+                        'Net amount': (item.quantity || item.qty || 0) * (item.rate || item.price || 0)
+                    });
+                }
+            } else {
+                // If no items array, create a single row with order summary
+                excelData.push({
+                    'Order No': order.orderNumber,
+                    'Order Date': new Date(order.order_date).toLocaleDateString('en-IN'),
+                    'Party code': order.customerId || order.customer_id || '',
+                    'Party name': order.customerName || '',
+                    'Product code': '',
+                    'Product name': '',
+                    'MRP': 0,
+                    'Rate': 0,
+                    'Unit': 'PCS',
+                    'SSMcode': salesmanCode,
+                    'Salesman name': salesmanName,
+                    'Net amount': order.grand_total || order.order_total || 0
+                });
+            }
+        }
+        
+        // Create worksheet
+        const worksheet = XLSX.utils.json_to_sheet(excelData);
+        
+        // Auto-size columns
+        const colWidths = [
+            { wch: 15 }, // Order No
+            { wch: 12 }, // Order Date
+            { wch: 15 }, // Party code
+            { wch: 25 }, // Party name
+            { wch: 15 }, // Product code
+            { wch: 30 }, // Product name
+            { wch: 10 }, // MRP
+            { wch: 10 }, // Rate
+            { wch: 6 },  // Unit
+            { wch: 12 }, // SSMcode
+            { wch: 20 }, // Salesman name
+            { wch: 12 }  // Net amount
+        ];
+        worksheet['!cols'] = colWidths;
+        
+        // Create workbook
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Orders');
+        
+        // Generate Excel file
+        const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+        
+        // Set response headers
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename=orders_${distributorId}_${Date.now()}.xlsx`);
+        
+        res.send(excelBuffer);
+        
+    } catch (error) {
+        console.error('Error downloading orders:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1362,7 +1613,7 @@ app.get('/api/payments/order/:orderId', async (req, res) => {
     }
 });
 
-// FIXED: Record payment with file upload - properly handles UPI image attachment
+// Record payment with file upload - properly handles UPI image attachment
 app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -1423,13 +1674,11 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
                 cheque_date: chequeDate
             };
         } else if (paymentMode === 'UPI' || paymentMode === 'upi') {
-            // FIXED: Properly handle file upload path for UPI photos
             let photoPath = null;
             if (req.file) {
                 photoPath = req.file.path;
                 console.log(`UPI payment photo saved at: ${photoPath}`);
             } else if (req.body.paymentPhoto) {
-                // Handle base64 or other formats if needed
                 console.log(`UPI payment photo provided as string`);
             }
             
@@ -1819,9 +2068,10 @@ app.listen(process.env.PORT, async () => {
     console.log(`\nSalesman Data:`);
     console.log(`  GET /api/salesman-data/:salesmanId - Get all data for salesman`);
     console.log(`\nOrders:`);
-    console.log(`  POST /api/orders - Create order`);
+    console.log(`  POST /api/orders - Create order (auto-updates stock and sets distributor_id)`);
     console.log(`  GET /api/orders/salesman/:salesmanId - Get orders by salesman`);
-    console.log(`  GET /api/orders/distributor/:distributorId - Get orders by distributor (with filters for customerName, salesmanId, startDate, endDate)`);
+    console.log(`  GET /api/orders/distributor/:distributorId - Get orders by distributor (with filters for customerName, salesmanId, startDate, endDate, search)`);
+    console.log(`  GET /api/orders/download/:distributorId - Download orders as Excel with date filters (today, yesterday, last week, custom range)`);
     console.log(`  GET /api/orders/customer/:customerId - Get orders by customer`);
     console.log(`  GET /api/orders/customer/:customerId/last - Get last order by customer`);
     console.log(`  GET /api/orders/:orderId - Get single order (supports both _id and orderNumber)`);
@@ -1843,8 +2093,16 @@ app.listen(process.env.PORT, async () => {
     console.log(`  Note: Notifications are only created when SALESMAN creates an order (not for distributor self-orders)`);
     console.log(`\nAreas & Routes (Free API):`);
     console.log(`  GET /api/areas - Get major Indian cities and areas`);
-    console.log(`  GET /api/sub-areas - Get sub-areas/routes for selected area`);
+    console.log(`  GET /api/sub-areas - Get real sub-areas/routes for selected area (Pune areas have real route names)`);
     console.log(`\nPassword Change:`);
-    console.log(`  POST /api/change-password - Change user password`);
+    console.log(`  POST /api/change-password - Change user password (fixed ObjectId validation)`);
     console.log(`  GET /api/users-under-distributor/:distributorId - Get users under distributor`);
+    console.log(`\nAll issues fixed:`);
+    console.log(`  1) Distributor ID is now properly set when creating orders`);
+    console.log(`  2) Stock is automatically updated after order placement`);
+    console.log(`  3) Orders maintain proper creator mapping (salesman vs distributor)`);
+    console.log(`  4) Sub-routes now show real route names for Pune areas`);
+    console.log(`  5) Password change ObjectId error fixed`);
+    console.log(`  6) Search bar functionality restored`);
+    console.log(`  7) Excel download with date filters added for distributor orders`);
 });
