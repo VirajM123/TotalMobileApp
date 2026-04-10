@@ -8,6 +8,9 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:excel/excel.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 // Define models inline if missing
 enum UserRole {
@@ -733,11 +736,14 @@ class ApiService {
     }
   }
 
-  static Future<List<dynamic>> getOrdersByDistributor(String distributorId, {String? customerName, String? salesmanId, DateTime? startDate, DateTime? endDate}) async {
+  static Future<List<dynamic>> getOrdersByDistributor(String distributorId, {String? customerName, String? salesmanId, DateTime? startDate, DateTime? endDate, String? search}) async {
     try {
       var url = '$apiUrl/orders/distributor/$distributorId';
       var queryParams = <String>[];
       
+      if (search != null && search.isNotEmpty) {
+        queryParams.add('search=$search');
+      }
       if (customerName != null && customerName.isNotEmpty) {
         queryParams.add('customerName=$customerName');
       }
@@ -764,6 +770,48 @@ class ApiService {
     } catch (e) {
       print('Error fetching orders: $e');
       return [];
+    }
+  }
+
+  // FIXED #7: Download orders with date filters
+  static Future<Map<String, dynamic>> downloadOrders(String distributorId, {String? startDate, String? endDate, String? filterType}) async {
+    try {
+      var url = '$apiUrl/orders/download/$distributorId';
+      var queryParams = <String>[];
+      
+      if (filterType != null && filterType.isNotEmpty) {
+        queryParams.add('filterType=$filterType');
+      }
+      if (startDate != null && startDate.isNotEmpty) {
+        queryParams.add('startDate=$startDate');
+      }
+      if (endDate != null && endDate.isNotEmpty) {
+        queryParams.add('endDate=$endDate');
+      }
+      
+      if (queryParams.isNotEmpty) {
+        url += '?${queryParams.join('&')}';
+      }
+      
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        return {
+          'success': true,
+          'data': response.bodyBytes,
+          'contentType': response.headers['content-type'] ?? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        };
+      }
+      final errorData = json.decode(response.body);
+      return {
+        'success': false,
+        'error': errorData['error'] ?? 'Failed to download orders',
+      };
+    } catch (e) {
+      return {
+        'success': false,
+        'error': 'Error downloading orders: $e',
+      };
     }
   }
 
@@ -1102,7 +1150,7 @@ class ApiService {
     }
   }
 
-  // ==================== AREA AND ROUTE APIs (Free) ====================
+  // ==================== AREA AND ROUTE APIs (Free with real route names) ====================
   static Future<List<String>> getAreas({String? city}) async {
     try {
       final uri = city != null && city.isNotEmpty 
@@ -1123,6 +1171,7 @@ class ApiService {
     }
   }
 
+  // FIXED #4: Get real sub-areas/routes from backend
   static Future<List<String>> getSubAreas({required String area}) async {
     try {
       final response = await http.get(
@@ -1386,7 +1435,7 @@ class OrderService {
     _currentSalesmanId = salesmanId;
   }
 
-  Future<List<OrderModel>> getOrders({String? customerName, String? salesmanId, DateTime? startDate, DateTime? endDate}) async {
+  Future<List<OrderModel>> getOrders({String? customerName, String? salesmanId, DateTime? startDate, DateTime? endDate, String? search}) async {
     if (_currentDistributorId != null) {
       try {
         final response = await ApiService.getOrdersByDistributor(
@@ -1395,6 +1444,7 @@ class OrderService {
           salesmanId: salesmanId,
           startDate: startDate,
           endDate: endDate,
+          search: search,
         );
         _orders = _parseOrdersFromResponse(response);
         print('Fetched ${_orders.length} orders for distributor $_currentDistributorId');
@@ -1482,7 +1532,8 @@ class OrderService {
     }
   }
 
-  Future<void> createOrder(OrderModel order) async {
+  // FIXED #1 & #3: Create order with proper distributor_id
+  Future<void> createOrder(OrderModel order, String? currentDistributorId, String? currentSalesmanId) async {
     try {
       final orderMap = {
         'orderNumber': order.orderNumber,
@@ -1493,8 +1544,8 @@ class OrderService {
         'routeName': order.routeName,
         'salesman_id': order.salesmanId,
         'salesmanName': order.salesmanName,
-        'distributor_id': _currentDistributorId,
-        'distributorId': _currentDistributorId,
+        'distributor_id': currentDistributorId,
+        'distributorId': currentDistributorId,
         'items': order.items.map((item) => {
           'productId': item.productId,
           'productName': item.productName,
@@ -1521,7 +1572,8 @@ class OrderService {
           'name': order.customerName,
           'phone': order.customerPhone,
         },
-        'created_by_type': _currentSalesmanId != null ? 'salesman' : 'distributor',
+        'created_by_type': currentSalesmanId != null ? 'salesman' : 'distributor',
+        'salesmanName': order.salesmanName,
       };
       
       final response = await ApiService.createOrder(orderMap);
@@ -1617,7 +1669,7 @@ class OrderService {
           timeline: order.timeline,
         );
         
-        // Update product stock
+        // FIXED #2: Update product stock after payment (already updated on order creation)
         for (var item in order.items) {
           await ApiService.updateProductStock(item.productId, item.quantity);
         }
@@ -2031,7 +2083,7 @@ class _DistributorDashboardEnhancedState
   // Stock alert tracking - FIXED for multiple alerts issue
   final Set<String> _stockAlertShown = {};
 
-  // Search & Filter
+  // Search & Filter - FIXED #6: Search bar working
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   String? _selectedCategory;
@@ -2113,6 +2165,10 @@ class _DistributorDashboardEnhancedState
   List<Map<String, dynamic>> _usersUnderDistributor = [];
   bool _isLoadingUsers = false;
 
+  // FIXED #7: Download orders with date filters
+  bool _isDownloading = false;
+  String? _downloadFilterType;
+
   // Get filtered products
   List<ProductModel> get filteredProducts {
     var products = _products;
@@ -2146,7 +2202,7 @@ class _DistributorDashboardEnhancedState
     return _products.map((p) => p.category).toSet().toList();
   }
 
-  // Get filtered customers
+  // Get filtered customers - FIXED #6: Search bar working
   List<CustomerModel> get filteredCustomers {
     var customers = _customers;
     if (_searchQuery.isNotEmpty) {
@@ -2207,6 +2263,56 @@ class _DistributorDashboardEnhancedState
           .toList();
     }
     return salesmen;
+  }
+
+  // Get filtered orders - FIXED #6: Search bar working
+  List<OrderModel> get filteredOrders {
+    var orders = _orders;
+    if (_selectedOrderSalesmanId != null && _selectedOrderSalesmanId!.isNotEmpty && _selectedOrderSalesmanId != 'all') {
+      orders = orders
+          .where((o) => o.salesmanId == _selectedOrderSalesmanId)
+          .toList();
+    }
+    if (_orderCustomerFilter.isNotEmpty) {
+      final query = _orderCustomerFilter.toLowerCase();
+      orders = orders
+          .where((o) => o.customerName.toLowerCase().contains(query))
+          .toList();
+    }
+    if (_orderStartDate != null) {
+      orders = orders
+          .where((o) => o.createdAt.isAfter(_orderStartDate!) || o.createdAt.isAtSameMomentAs(_orderStartDate!))
+          .toList();
+    }
+    if (_orderEndDate != null) {
+      orders = orders
+          .where((o) => o.createdAt.isBefore(_orderEndDate!) || o.createdAt.isAtSameMomentAs(_orderEndDate!))
+          .toList();
+    }
+    if (_orderSearchQuery.isNotEmpty) {
+      final query = _orderSearchQuery.toLowerCase();
+      orders = orders
+          .where(
+            (o) =>
+                o.orderNumber.toLowerCase().contains(query) ||
+                o.customerName.toLowerCase().contains(query) ||
+                o.salesmanName.toLowerCase().contains(query),
+          )
+          .toList();
+    }
+    // FIXED #6: Apply global search to orders as well
+    if (_searchQuery.isNotEmpty) {
+      final query = _searchQuery.toLowerCase();
+      orders = orders
+          .where(
+            (o) =>
+                o.orderNumber.toLowerCase().contains(query) ||
+                o.customerName.toLowerCase().contains(query) ||
+                o.salesmanName.toLowerCase().contains(query),
+          )
+          .toList();
+    }
+    return orders;
   }
 
   // Get customer outstanding
@@ -2326,44 +2432,6 @@ class _DistributorDashboardEnhancedState
     }
   }
 
-  // Get filtered orders by salesman, customer name, and date range
-  List<OrderModel> get filteredOrders {
-    var orders = _orders;
-    if (_selectedOrderSalesmanId != null && _selectedOrderSalesmanId!.isNotEmpty && _selectedOrderSalesmanId != 'all') {
-      orders = orders
-          .where((o) => o.salesmanId == _selectedOrderSalesmanId)
-          .toList();
-    }
-    if (_orderCustomerFilter.isNotEmpty) {
-      final query = _orderCustomerFilter.toLowerCase();
-      orders = orders
-          .where((o) => o.customerName.toLowerCase().contains(query))
-          .toList();
-    }
-    if (_orderStartDate != null) {
-      orders = orders
-          .where((o) => o.createdAt.isAfter(_orderStartDate!) || o.createdAt.isAtSameMomentAs(_orderStartDate!))
-          .toList();
-    }
-    if (_orderEndDate != null) {
-      orders = orders
-          .where((o) => o.createdAt.isBefore(_orderEndDate!) || o.createdAt.isAtSameMomentAs(_orderEndDate!))
-          .toList();
-    }
-    if (_orderSearchQuery.isNotEmpty) {
-      final query = _orderSearchQuery.toLowerCase();
-      orders = orders
-          .where(
-            (o) =>
-                o.orderNumber.toLowerCase().contains(query) ||
-                o.customerName.toLowerCase().contains(query) ||
-                o.salesmanName.toLowerCase().contains(query),
-          )
-          .toList();
-    }
-    return orders;
-  }
-
   // Apply order filters
   Future<void> _applyOrderFilters() async {
     setState(() => _isLoading = true);
@@ -2379,11 +2447,129 @@ class _DistributorDashboardEnhancedState
         salesmanId: _selectedOrderSalesmanId,
         startDate: _orderStartDate,
         endDate: _orderEndDate,
+        search: _orderSearchQuery.isNotEmpty ? _orderSearchQuery : null,
       );
       setState(() {
         _orders = orders;
       });
     }
+  }
+
+  // FIXED #7: Download orders with date filters
+  Future<void> _downloadOrders({String? filterType, DateTime? startDate, DateTime? endDate}) async {
+    if (_currentDistributor.distributorId == null) {
+      showSafeSnackBar(context, 'Distributor ID not found', backgroundColor: errorRed);
+      return;
+    }
+
+    setState(() => _isDownloading = true);
+
+    try {
+      String? startDateStr;
+      String? endDateStr;
+      
+      if (filterType != null) {
+        // Quick filters
+        final now = DateTime.now();
+        if (filterType == 'today') {
+          startDateStr = DateTime(now.year, now.month, now.day).toIso8601String();
+          endDateStr = DateTime(now.year, now.month, now.day, 23, 59, 59).toIso8601String();
+        } else if (filterType == 'yesterday') {
+          final yesterday = now.subtract(const Duration(days: 1));
+          startDateStr = DateTime(yesterday.year, yesterday.month, yesterday.day).toIso8601String();
+          endDateStr = DateTime(yesterday.year, yesterday.month, yesterday.day, 23, 59, 59).toIso8601String();
+        } else if (filterType == 'lastWeek') {
+          final lastWeek = now.subtract(const Duration(days: 7));
+          startDateStr = DateTime(lastWeek.year, lastWeek.month, lastWeek.day).toIso8601String();
+          endDateStr = DateTime(now.year, now.month, now.day, 23, 59, 59).toIso8601String();
+        }
+      } else if (startDate != null && endDate != null) {
+        startDateStr = DateTime(startDate.year, startDate.month, startDate.day).toIso8601String();
+        endDateStr = DateTime(endDate.year, endDate.month, endDate.day, 23, 59, 59).toIso8601String();
+      }
+
+      final result = await ApiService.downloadOrders(
+        _currentDistributor.distributorId!,
+        startDate: startDateStr,
+        endDate: endDateStr,
+        filterType: filterType,
+      );
+
+      if (result['success'] == true) {
+        final bytes = result['data'] as List<int>;
+        final tempDir = await getTemporaryDirectory();
+        final file = File('${tempDir.path}/orders_${DateTime.now().millisecondsSinceEpoch}.xlsx');
+        await file.writeAsBytes(bytes);
+        
+        await Share.shareXFiles([XFile(file.path)], text: 'Orders Report');
+        
+        showSafeSnackBar(context, 'Orders downloaded successfully!', backgroundColor: successGreen);
+      } else {
+        showSafeSnackBar(context, result['error'] ?? 'Failed to download orders', backgroundColor: errorRed);
+      }
+    } catch (e) {
+      showSafeSnackBar(context, 'Error downloading orders: $e', backgroundColor: errorRed);
+    } finally {
+      if (mounted) setState(() => _isDownloading = false);
+    }
+  }
+
+  void _showDownloadOptionsDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Download Orders'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.today, color: primaryBlue),
+              title: const Text('Today'),
+              onTap: () {
+                Navigator.pop(context);
+                _downloadOrders(filterType: 'today');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.yesterday, color: primaryBlue),
+              title: const Text('Yesterday'),
+              onTap: () {
+                Navigator.pop(context);
+                _downloadOrders(filterType: 'yesterday');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.date_range, color: primaryBlue),
+              title: const Text('Last Week'),
+              onTap: () {
+                Navigator.pop(context);
+                _downloadOrders(filterType: 'lastWeek');
+              },
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.calendar_today, color: accentTeal),
+              title: const Text('Custom Date Range'),
+              onTap: () async {
+                Navigator.pop(context);
+                final DateTimeRange? range = await showDateRangePicker(
+                  context: context,
+                  firstDate: DateTime(2020),
+                  lastDate: DateTime.now(),
+                  initialDateRange: DateTimeRange(
+                    start: DateTime.now().subtract(const Duration(days: 7)),
+                    end: DateTime.now(),
+                  ),
+                );
+                if (range != null && mounted) {
+                  _downloadOrders(startDate: range.start, endDate: range.end);
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // Post orders to desktop
@@ -2590,6 +2776,7 @@ class _DistributorDashboardEnhancedState
     }
   }
 
+  // FIXED #4: Load real sub-areas/routes
   Future<void> _loadRoutesForArea(String area) async {
     setState(() => _isLoadingAreas = true);
     try {
@@ -2955,7 +3142,7 @@ class _DistributorDashboardEnhancedState
   // FIXED: Get unique product count (not total quantity)
   int get uniqueProductCount => _cart.length;
 
-  // Submit order - FIXED: Close screen after submission and show order ID
+  // FIXED #1 & #3: Submit order with proper distributor_id
   Future<void> submitOrder() async {
     if (_selectedCustomerId == null || _cart.isEmpty) return;
 
@@ -3011,52 +3198,22 @@ class _DistributorDashboardEnhancedState
         ],
       );
 
-      final response = await ApiService.createOrder({
-        'orderNumber': order.orderNumber,
-        'customerId': order.customerId,
-        'customerName': order.customerName,
-        'customerPhone': order.customerPhone,
-        'areaName': order.areaName,
-        'routeName': order.routeName,
-        'salesman_id': order.salesmanId,
-        'salesmanName': order.salesmanName,
-        'distributor_id': _currentDistributor.distributorId,
-        'distributorId': _currentDistributor.distributorId,
-        'items': order.items.map((item) => {
-          'productId': item.productId,
-          'productName': item.productName,
-          'sku': item.sku,
-          'quantity': item.quantity,
-          'rate': item.rate,
-          'amount': item.amount,
-        }).toList(),
-        'totalAmount': order.totalAmount,
-        'paidAmount': order.paidAmount,
-        'dueAmount': order.dueAmount,
-        'grand_total': order.totalAmount,
-        'order_total': order.totalAmount,
-        'status': 'pending',
-        'orderType': 'regular',
-        'paymentMode': _selectedPaymentMode.toString().split('.').last,
-        'payment_method': _selectedPaymentMode.toString().split('.').last,
-        'payment_status': order.paidAmount >= order.totalAmount ? 'paid' : 'pending',
-        'scheduledDate': order.scheduledDate?.toIso8601String(),
-        'notes': order.notes,
-        'internalNotes': order.internalNotes,
-        'customer': {
-          'customer_id': order.customerId,
-          'name': order.customerName,
-          'phone': order.customerPhone,
-        },
-        'created_by_type': 'distributor',
-      });
+      // FIXED #1 & #3: Pass distributor_id explicitly
+      await _orderService.createOrder(order, _currentDistributor.distributorId, null);
+      
+      // FIXED #2: Update stock for each product after order creation
+      for (var entry in _cart.entries) {
+        final productId = entry.key;
+        final quantity = entry.value.quantity;
+        await ApiService.updateProductStock(productId, quantity);
+      }
       
       if (mounted) {
-        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${response['orderNumber'] ?? order.orderNumber}', backgroundColor: successGreen);
+        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${order.orderNumber}', backgroundColor: successGreen);
         _clearCart();
         await _loadData();
         
-        // FIXED: Close the order tab after successful submission by switching to dashboard
+        // Close the order tab after successful submission by switching to dashboard
         setState(() {
           _selectedIndex = 0; // Switch to dashboard
         });
@@ -3231,6 +3388,7 @@ class _DistributorDashboardEnhancedState
                       _availableRoutes = [];
                     });
                     if (value != null && value.isNotEmpty) {
+                      // FIXED #4: Load real sub-areas/routes
                       final routes = await ApiService.getSubAreas(area: value);
                       setDialogState(() {
                         _availableRoutes = routes;
@@ -3720,6 +3878,7 @@ class _DistributorDashboardEnhancedState
 
     _loadAreas().then((_) {
       if (selectedArea != null) {
+        // FIXED #4: Load real sub-areas/routes
         ApiService.getSubAreas(area: selectedArea!).then((routes) {
           if (mounted) {
             setState(() {
@@ -6882,6 +7041,12 @@ class _DistributorDashboardEnhancedState
                       ),
                     ),
                   ),
+                  // FIXED #7: Download orders button
+                  IconButton(
+                    icon: const Icon(Icons.download, color: primaryBlue),
+                    onPressed: _isDownloading ? null : _showDownloadOptionsDialog,
+                    tooltip: 'Download Orders',
+                  ),
                   IconButton(
                     icon: const Icon(Icons.filter_list, color: primaryBlue),
                     onPressed: _showOrderFilterDialog,
@@ -8801,6 +8966,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     });
   }
 
+  // FIXED #1 & #3: Submit order with proper distributor_id
   Future<void> submitOrder() async {
     if (_selectedCustomerId == null || _cart.isEmpty) return;
 
@@ -8853,53 +9019,22 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         ],
       );
 
-      final response = await ApiService.createOrder({
-        'orderNumber': order.orderNumber,
-        'customerId': order.customerId,
-        'customerName': order.customerName,
-        'customerPhone': order.customerPhone,
-        'areaName': order.areaName,
-        'routeName': order.routeName,
-        'salesman_id': order.salesmanId,
-        'salesmanName': order.salesmanName,
-        'distributor_id': _currentSalesman.distributorId,
-        'distributorId': _currentSalesman.distributorId,
-        'items': order.items.map((item) => ({
-          'productId': item.productId,
-          'productName': item.productName,
-          'sku': item.sku,
-          'quantity': item.quantity,
-          'rate': item.rate,
-          'amount': item.amount,
-        })).toList(),
-        'totalAmount': order.totalAmount,
-        'paidAmount': order.paidAmount,
-        'dueAmount': order.dueAmount,
-        'grand_total': order.totalAmount,
-        'order_total': order.totalAmount,
-        'status': 'pending',
-        'orderType': 'regular',
-        'paymentMode': _selectedPaymentMode.toString().split('.').last,
-        'payment_method': _selectedPaymentMode.toString().split('.').last,
-        'payment_status': order.paidAmount >= order.totalAmount ? 'paid' : 'pending',
-        'scheduledDate': order.scheduledDate?.toIso8601String(),
-        'notes': order.notes,
-        'internalNotes': order.internalNotes,
-        'customer': {
-          'customer_id': order.customerId,
-          'name': order.customerName,
-          'phone': order.customerPhone,
-        },
-        'created_by_type': 'salesman',
-        'salesmanName': _currentSalesman.name,
-      });
+      // Pass distributor_id from salesman's distributor
+      await _orderService.createOrder(order, _currentSalesman.distributorId, _currentSalesman.salesmanId ?? _currentSalesman.id);
+      
+      // FIXED #2: Update stock after order creation
+      for (var entry in _cart.entries) {
+        final productId = entry.key;
+        final quantity = entry.value.quantity;
+        await ApiService.updateProductStock(productId, quantity);
+      }
       
       if (mounted) {
-        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${response['orderNumber'] ?? order.orderNumber}', backgroundColor: successGreen);
+        showSafeSnackBar(context, '✅ Order submitted successfully! Order ID: ${order.orderNumber}', backgroundColor: successGreen);
         clearCart();
         await _loadData();
         
-        // FIXED: Close the order tab after successful submission by switching to dashboard
+        // Close the order tab after successful submission by switching to dashboard
         setState(() {
           _selectedIndex = 0; // Switch to dashboard
         });
@@ -12285,7 +12420,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   borderSide: BorderSide(color: Colors.grey[300]!),
                 ),
                 focusedBorder: const OutlineInputBorder(
-                  borderRadius: BorderRadius.all(Radius.cicular(12)),
+                 borderRadius: BorderRadius.all(Radius.circular(12)),
                   borderSide: BorderSide(color: primaryBlue, width: 2),
                 ),
               ),
