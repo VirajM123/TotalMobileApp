@@ -8,7 +8,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:excel/excel.dart';
+import 'package:excel/excel.dart' as ex;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -2531,7 +2531,7 @@ class _DistributorDashboardEnhancedState
               },
             ),
             ListTile(
-              leading: const Icon(Icons.yesterday, color: primaryBlue),
+             leading: const Icon(Icons.calendar_today, color: primaryBlue),
               title: const Text('Yesterday'),
               onTap: () {
                 Navigator.pop(context);

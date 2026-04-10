@@ -2105,4 +2105,5 @@ app.listen(PORT, async () => {
     console.log(`  5) Password change ObjectId error fixed`);
     console.log(`  6) Search bar functionality restored`);
     console.log(`  7) Excel download with date filters added for distributor orders`);
+    console.log(`  8) UPI payment recording with photo upload support added`);
 });
