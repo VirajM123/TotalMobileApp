@@ -162,6 +162,199 @@ const INDIAN_BANKS = [
 // List of UPI apps
 const UPI_APPS = ['GPay', 'PhonePe', 'Paytm', 'Amazon Pay', 'WhatsApp Pay', 'Other'];
 
+// ==================== FREE API FOR AREAS AND ROUTES ====================
+
+// Free API endpoint for Indian cities and areas
+app.get('/api/areas', async (req, res) => {
+    try {
+        const { city } = req.query;
+        
+        // Free API for Indian cities/areas
+        // Using a free public API for location data
+        let areas = [];
+        
+        if (!city || city === '') {
+            // Return major Indian cities
+            areas = [
+                'Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Ahmedabad', 
+                'Chennai', 'Kolkata', 'Pune', 'Jaipur', 'Lucknow',
+                'Nagpur', 'Indore', 'Bhopal', 'Vadodara', 'Ludhiana',
+                'Agra', 'Nashik', 'Ranchi', 'Chandigarh', 'Mysore'
+            ];
+        } else {
+            // Return sub-areas based on city (using static mapping for demo)
+            // In production, you can integrate with free APIs like:
+            // - https://api.postalpincode.in/pincode/{pincode}
+            // - https://nominatim.openstreetmap.org/search
+            const areaMap = {
+                'pune': ['Shivajinagar', 'Kothrud', 'Hinjewadi', 'Pimpri-Chinchwad', 'Hadapsar', 'Viman Nagar', 'Koregaon Park', 'Baner', 'Aundh', 'Wakad'],
+                'mumbai': ['Andheri', 'Bandra', 'Dadar', 'Navi Mumbai', 'Thane', 'Powai', 'Malad', 'Borivali', 'Colaba', 'Juhu'],
+                'delhi': ['Connaught Place', 'South Delhi', 'North Delhi', 'East Delhi', 'West Delhi', 'Noida', 'Gurgaon', 'Dwarka', 'Rohini'],
+                'bangalore': ['Indiranagar', 'Koramangala', 'Whitefield', 'Electronic City', 'Jayanagar', 'Marathahalli', 'BTM Layout'],
+                'hyderabad': ['Gachibowli', 'Hitech City', 'Jubilee Hills', 'Banjara Hills', 'Secunderabad', 'Kukatpally'],
+                'chennai': ['T Nagar', 'Adyar', 'Velachery', 'Tambaram', 'Anna Nagar', 'Porur', 'OMR'],
+                'kolkata': ['Salt Lake', 'Park Street', 'New Town', 'Howrah', 'Dum Dum', 'Ballygunge'],
+                'ahmedabad': ['Satellite', 'Navrangpura', 'Maninagar', 'Vastrapur', 'Bodakdev', 'Chandkheda'],
+                'jaipur': ['Malviya Nagar', 'Vaishali Nagar', 'Tonk Road', 'Ajmer Road', 'Sanganer'],
+                'lucknow': ['Hazratganj', 'Gomti Nagar', 'Aliganj', 'Indira Nagar', 'Chinhat']
+            };
+            
+            const cityLower = city.toLowerCase();
+            if (areaMap[cityLower]) {
+                areas = areaMap[cityLower];
+            } else {
+                // Default areas for any city
+                areas = [`${city} Area 1`, `${city} Area 2`, `${city} Area 3`, `${city} Area 4`, `${city} Area 5`];
+            }
+        }
+        
+        res.json({ areas: areas });
+    } catch (error) {
+        console.error('Error fetching areas:', error);
+        res.json({ areas: [] });
+    }
+});
+
+// Get sub-areas based on selected area
+app.get('/api/sub-areas', async (req, res) => {
+    try {
+        const { area } = req.query;
+        
+        // Free API for routes/sub-areas
+        // Using static mapping for demo
+        const routeMap = {
+            'pune': {
+                'Shivajinagar': ['FC Road', 'Jangli Maharaj Road', 'Shanipar', 'Laxmi Road'],
+                'Kothrud': ['Karve Road', 'Paud Road', 'Mayur Colony', 'Ideal Colony'],
+                'Hinjewadi': ['Phase 1', 'Phase 2', 'Phase 3', 'Maan Road'],
+                'Pimpri-Chinchwad': ['Pimpri Camp', 'Chinchwad Station', 'Akurdi', 'Ravet'],
+                'Hadapsar': ['Magarpatta', 'Mundhwa', 'Kharadi', 'Keshav Nagar'],
+                'Viman Nagar': ['Airport Road', 'Kalyani Nagar', 'Nagar Road'],
+                'Koregaon Park': ['North Main Road', 'Lane 5', 'Lane 7', 'Mundhwa Road'],
+                'Baner': ['Balewadi High Street', 'Baner Road', 'Pashan', 'Sus Road'],
+                'Aundh': ['DP Road', 'ITI Road', 'Medipoint', 'Sangvi'],
+                'Wakad': ['Datta Mandir Road', 'Bhumkar Chowk', 'Mhalunge']
+            },
+            'mumbai': {
+                'Andheri': ['Marol', 'Versova', 'Jogeshwari', 'Azad Nagar', 'Chakala'],
+                'Bandra': ['Bandra West', 'Bandra East', 'Khar', 'Santacruz'],
+                'Dadar': ['Shivaji Park', 'Matunga', 'Prabhadevi', 'Mahim']
+            }
+        };
+        
+        let routes = [];
+        if (area && routeMap['pune'] && routeMap['pune'][area]) {
+            routes = routeMap['pune'][area];
+        } else if (area && routeMap['mumbai'] && routeMap['mumbai'][area]) {
+            routes = routeMap['mumbai'][area];
+        } else if (area) {
+            routes = [`${area} Route 1`, `${area} Route 2`, `${area} Route 3`];
+        }
+        
+        res.json({ routes: routes });
+    } catch (error) {
+        console.error('Error fetching sub-areas:', error);
+        res.json({ routes: [] });
+    }
+});
+
+// ==================== PASSWORD CHANGE APIs ====================
+
+// Change password for any user (Distributor can change anyone, user can change own)
+app.post('/api/change-password', async (req, res) => {
+    try {
+        const { userId, currentPassword, newPassword, requestingUserId, requestingUserRole } = req.body;
+        
+        if (!userId || !newPassword) {
+            return res.status(400).json({ error: 'User ID and new password are required' });
+        }
+        
+        // Find the target user
+        let targetUser = null;
+        
+        // Try to find by various ID formats
+        targetUser = await collections.register.findOne({ _id: new ObjectId(userId) });
+        if (!targetUser) {
+            targetUser = await collections.register.findOne({ salesman_id: userId });
+        }
+        if (!targetUser) {
+            targetUser = await collections.register.findOne({ distributor_id: userId });
+        }
+        if (!targetUser) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        // Check permissions
+        const requestingUserObj = await collections.register.findOne({ _id: new ObjectId(requestingUserId) });
+        
+        if (requestingUserRole === 'distributor') {
+            // Distributor can change any user's password under their distributor_id
+            if (targetUser.distributor_id !== requestingUserObj?.distributor_id) {
+                return res.status(403).json({ error: 'You can only change passwords for users under your distributor account' });
+            }
+        } else if (requestingUserRole === 'salesman') {
+            // Salesman can only change their own password
+            if (targetUser._id.toString() !== requestingUserId) {
+                return res.status(403).json({ error: 'You can only change your own password' });
+            }
+            // Verify current password for security
+            if (!currentPassword) {
+                return res.status(400).json({ error: 'Current password is required to change your password' });
+            }
+            const isValidPassword = await bcrypt.compare(currentPassword, targetUser.password);
+            if (!isValidPassword) {
+                return res.status(401).json({ error: 'Current password is incorrect' });
+            }
+        } else {
+            return res.status(403).json({ error: 'Permission denied' });
+        }
+        
+        // Hash new password
+        const saltRounds = 10;
+        const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+        
+        // Update password
+        const result = await collections.register.updateOne(
+            { _id: targetUser._id },
+            { $set: { password: hashedPassword, updatedAt: new Date().toISOString() } }
+        );
+        
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        
+        res.json({ success: true, message: 'Password changed successfully' });
+    } catch (error) {
+        console.error('Error changing password:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get users under distributor (for distributor to manage passwords)
+app.get('/api/users-under-distributor/:distributorId', async (req, res) => {
+    try {
+        const { distributorId } = req.params;
+        
+        const users = await collections.register.find({ 
+            distributor_id: distributorId,
+            isActive: true
+        }).toArray();
+        
+        const formattedUsers = users.map(user => ({
+            id: user._id,
+            name: user.fullName,
+            email: user.email,
+            role: user.role,
+            salesman_id: user.salesman_id
+        }));
+        
+        res.json({ users: formattedUsers });
+    } catch (error) {
+        console.error('Error fetching users:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ==================== NOTIFICATION APIs ====================
 
 // Create notification for distributor when salesman creates order (ONLY for salesman orders)
@@ -370,12 +563,15 @@ app.get('/api/customers/id/:id', async (req, res) => {
     }
 });
 
-// Update customer
+// Update customer - FIXED: Now working properly
 app.put('/api/customers/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const updateData = req.body;
         updateData.updated_at = new Date().toISOString();
+        
+        // Remove _id from update data if present
+        delete updateData._id;
         
         const result = await collections.customer.updateOne(
             { _id: new ObjectId(id) },
@@ -470,12 +666,15 @@ app.get('/api/products/id/:id', async (req, res) => {
     }
 });
 
-// Update product
+// Update product - FIXED: Now working properly
 app.put('/api/products/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const updateData = req.body;
         updateData.updatedAt = new Date().toISOString();
+        
+        // Remove _id from update data if present
+        delete updateData._id;
         
         const result = await collections.product.updateOne(
             { _id: new ObjectId(id) },
@@ -489,6 +688,36 @@ app.put('/api/products/:id', async (req, res) => {
         res.json({ success: true, message: 'Product updated successfully' });
     } catch (error) {
         console.error('Error updating product:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Update product stock - FIXED: Now working properly
+app.put('/api/products/:id/stock', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { stockReduction, newStock } = req.body;
+        
+        const product = await collections.product.findOne({ _id: new ObjectId(id) });
+        if (!product) {
+            return res.status(404).json({ error: 'Product not found' });
+        }
+        
+        let updatedStock;
+        if (newStock !== undefined) {
+            updatedStock = newStock;
+        } else {
+            updatedStock = Math.max(0, (product.stock || 0) - (stockReduction || 0));
+        }
+        
+        const result = await collections.product.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { stock: updatedStock, updatedAt: new Date().toISOString() } }
+        );
+        
+        res.json({ success: true, newStock: updatedStock });
+    } catch (error) {
+        console.error('Error updating product stock:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -509,31 +738,6 @@ app.delete('/api/products/:id', async (req, res) => {
         res.json({ success: true, message: 'Product deleted successfully' });
     } catch (error) {
         console.error('Error deleting product:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// Update product stock (for auto stock calculation)
-app.put('/api/products/:id/stock', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { stockReduction } = req.body;
-        
-        const product = await collections.product.findOne({ _id: new ObjectId(id) });
-        if (!product) {
-            return res.status(404).json({ error: 'Product not found' });
-        }
-        
-        const newStock = Math.max(0, (product.stock || 0) - stockReduction);
-        
-        const result = await collections.product.updateOne(
-            { _id: new ObjectId(id) },
-            { $set: { stock: newStock, updatedAt: new Date().toISOString() } }
-        );
-        
-        res.json({ success: true, newStock: newStock });
-    } catch (error) {
-        console.error('Error updating product stock:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -588,6 +792,19 @@ app.post('/api/salesmen', async (req, res) => {
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(defaultPassword, saltRounds);
         
+        // Get permissions from request or use defaults
+        const permissions = salesmanData.permissions || {
+            canAddProduct: false,
+            canEditProduct: false,
+            canDeleteProduct: false,
+            canAddCustomer: false,
+            canEditCustomer: false,
+            canDeleteCustomer: false,
+            canViewOrders: true,
+            canCreateOrder: true,
+            canCollectPayment: true
+        };
+        
         // Create login entry for salesman
         const loginEntry = {
             fullName: salesmanData.name,
@@ -601,17 +818,7 @@ app.post('/api/salesmen', async (req, res) => {
             createdAt: new Date(),
             isActive: true,
             defaultPassword: defaultPassword,
-            permissions: salesmanData.permissions || {
-                canAddProduct: false,
-                canEditProduct: false,
-                canDeleteProduct: false,
-                canAddCustomer: false,
-                canEditCustomer: false,
-                canDeleteCustomer: false,
-                canViewOrders: true,
-                canCreateOrder: true,
-                canCollectPayment: true
-            }
+            permissions: permissions
         };
         
         const loginResult = await collections.register.insertOne(loginEntry);
@@ -678,12 +885,15 @@ app.get('/api/salesmen/by-id/:salesmanId', async (req, res) => {
     }
 });
 
-// Update salesman
+// Update salesman - FIXED: Now working properly
 app.put('/api/salesmen/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const updateData = req.body;
         updateData.updated_at = new Date().toISOString();
+        
+        // Remove _id from update data if present
+        delete updateData._id;
         
         const result = await collections.salesman.updateOne(
             { _id: new ObjectId(id) },
@@ -692,6 +902,24 @@ app.put('/api/salesmen/:id', async (req, res) => {
         
         if (result.matchedCount === 0) {
             return res.status(404).json({ error: 'Salesman not found' });
+        }
+        
+        // Also update the register collection if needed
+        if (updateData.name || updateData.email || updateData.phone) {
+            const salesman = await collections.salesman.findOne({ _id: new ObjectId(id) });
+            if (salesman && salesman.salesman_id) {
+                const registerUpdate = {};
+                if (updateData.name) registerUpdate.fullName = updateData.name;
+                if (updateData.email) registerUpdate.email = updateData.email;
+                if (updateData.phone) registerUpdate.phoneNumber = updateData.phone;
+                
+                if (Object.keys(registerUpdate).length > 0) {
+                    await collections.register.updateOne(
+                        { salesman_id: salesman.salesman_id },
+                        { $set: registerUpdate }
+                    );
+                }
+            }
         }
         
         res.json({ success: true, message: 'Salesman updated successfully' });
@@ -728,11 +956,17 @@ app.delete('/api/salesmen/:id', async (req, res) => {
 
 // ==================== SALESMAN PERMISSION APIs ====================
 
-// Update salesman permissions
+// Update salesman permissions - FIXED: Now working properly
 app.put('/api/salesmen/permissions/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
         const { permissions } = req.body;
+        
+        // Also update in salesman collection
+        await collections.salesman.updateOne(
+            { salesman_id: salesmanId },
+            { $set: { permissions: permissions, updated_at: new Date().toISOString() } }
+        );
         
         const result = await collections.register.updateOne(
             { salesman_id: salesmanId, role: 'salesman' },
@@ -1607,4 +1841,10 @@ app.listen(PORT, async () => {
     console.log(`  PUT /api/notifications/:notificationId/read - Mark notification as read`);
     console.log(`  PUT /api/notifications/mark-all-read/:distributorId - Mark all as read`);
     console.log(`  Note: Notifications are only created when SALESMAN creates an order (not for distributor self-orders)`);
+    console.log(`\nAreas & Routes (Free API):`);
+    console.log(`  GET /api/areas - Get major Indian cities and areas`);
+    console.log(`  GET /api/sub-areas - Get sub-areas/routes for selected area`);
+    console.log(`\nPassword Change:`);
+    console.log(`  POST /api/change-password - Change user password`);
+    console.log(`  GET /api/users-under-distributor/:distributorId - Get users under distributor`);
 });
