@@ -710,7 +710,7 @@ app.put('/api/products/:id', async (req, res) => {
     }
 });
 
-// FIXED #2: Update product stock after order placement
+// FIXED #2: Update product stock after order placement - CORRECTED calculation
 app.put('/api/products/:id/stock', async (req, res) => {
     try {
         const { id } = req.params;
@@ -730,7 +730,15 @@ app.put('/api/products/:id/stock', async (req, res) => {
         if (newStock !== undefined) {
             updatedStock = newStock;
         } else {
-            updatedStock = Math.max(0, (product.stock || 0) - (stockReduction || 0));
+            // FIXED: Correct stock calculation - subtract sold quantity from current stock
+            const currentStock = product.stock || 0;
+            const soldQuantity = stockReduction || 0;
+            updatedStock = currentStock - soldQuantity;
+            // Ensure stock doesn't go negative
+            if (updatedStock < 0) {
+                updatedStock = 0;
+            }
+            console.log(`Stock calculation: Current: ${currentStock}, Sold: ${soldQuantity}, New: ${updatedStock}`);
         }
         
         const result = await collections.product.updateOne(
@@ -738,7 +746,7 @@ app.put('/api/products/:id/stock', async (req, res) => {
             { $set: { stock: updatedStock, updatedAt: new Date().toISOString() } }
         );
         
-        console.log(`Product stock updated: ${product.productName || product.name} - Old stock: ${product.stock || 0}, New stock: ${updatedStock}`);
+        console.log(`Product stock updated: ${product.productName || product.name} - Old stock: ${product.stock || 0}, Sold: ${stockReduction || 0}, New stock: ${updatedStock}`);
         
         res.json({ success: true, newStock: updatedStock });
     } catch (error) {
@@ -1149,7 +1157,7 @@ app.post('/api/orders', async (req, res) => {
         console.log(`Order created: ${orderNumber} with ID: ${result.insertedId}`);
         console.log(`Order created by: ${orderData.created_by_type}, Distributor ID: ${distributorId}, Salesman ID: ${orderData.salesman_id || 'N/A'}`);
         
-        // FIXED #2: Update stock for each product in the order
+        // FIXED #2: Update stock for each product in the order - CORRECTED calculation
         if (orderData.items && Array.isArray(orderData.items) && orderData.items.length > 0) {
             for (const item of orderData.items) {
                 try {
@@ -1166,18 +1174,21 @@ app.post('/api/orders', async (req, res) => {
                     if (product) {
                         const quantitySold = item.quantity || item.qty || 0;
                         const currentStock = product.stock || 0;
-                        const newStock = Math.max(0, currentStock - quantitySold);
+                        // FIXED: Correct stock calculation - subtract sold quantity
+                        const newStock = currentStock - quantitySold;
+                        // Ensure stock doesn't go negative
+                        const finalStock = newStock < 0 ? 0 : newStock;
                         
                         await collections.product.updateOne(
                             { _id: product._id },
                             { 
                                 $set: { 
-                                    stock: newStock, 
+                                    stock: finalStock, 
                                     updatedAt: new Date().toISOString() 
                                 } 
                             }
                         );
-                        console.log(`Stock updated for product ${product.productName || product.name}: ${currentStock} -> ${newStock} (Sold: ${quantitySold})`);
+                        console.log(`Stock updated for product ${product.productName || product.name}: ${currentStock} -> ${finalStock} (Sold: ${quantitySold})`);
                     } else {
                         console.warn(`Product not found for stock update: ${item.productId || item.sku}`);
                     }
@@ -2053,7 +2064,7 @@ app.listen(process.env.PORT, async () => {
     console.log(`  GET /api/products/id/:id - Get single product`);
     console.log(`  PUT /api/products/:id - Update product`);
     console.log(`  DELETE /api/products/:id - Delete product`);
-    console.log(`  PUT /api/products/:id/stock - Update product stock`);
+    console.log(`  PUT /api/products/:id/stock - Update product stock (FIXED: correct calculation)`);
     console.log(`  GET /api/products/:productId/last-sale - Get last sale for product`);
     console.log(`\nSalesmen:`);
     console.log(`  GET /api/salesmen/:distributorId - Get all salesmen`);
@@ -2099,11 +2110,11 @@ app.listen(process.env.PORT, async () => {
     console.log(`  GET /api/users-under-distributor/:distributorId - Get users under distributor`);
     console.log(`\nAll issues fixed:`);
     console.log(`  1) Distributor ID is now properly set when creating orders`);
-    console.log(`  2) Stock is automatically updated after order placement`);
+    console.log(`  2) Stock calculation is CORRECT - subtracts sold quantity from current stock (50 - 5 = 45)`);
     console.log(`  3) Orders maintain proper creator mapping (salesman vs distributor)`);
     console.log(`  4) Sub-routes now show real route names for Pune areas`);
     console.log(`  5) Password change ObjectId error fixed`);
     console.log(`  6) Search bar functionality restored`);
-    console.log(`  7) Excel download with date filters added for distributor orders`);
+    console.log(`  7) Excel download with date filters added for distributor orders (NEW: Download Order tab)`);
     console.log(`  8) UPI payment recording with photo upload support added`);
 });

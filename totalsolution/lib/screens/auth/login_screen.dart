@@ -773,7 +773,7 @@ class ApiService {
     }
   }
 
-  // FIXED #7: Download orders with date filters
+  // FIXED #7: Download orders with date filters - UPDATED for distributor-specific download
   static Future<Map<String, dynamic>> downloadOrders(String distributorId, {String? startDate, String? endDate, String? filterType}) async {
     try {
       var url = '$apiUrl/orders/download/$distributorId';
@@ -2165,7 +2165,7 @@ class _DistributorDashboardEnhancedState
   List<Map<String, dynamic>> _usersUnderDistributor = [];
   bool _isLoadingUsers = false;
 
-  // FIXED #7: Download orders with date filters
+  // FIXED #7: Download orders with date filters - NEW
   bool _isDownloading = false;
   String? _downloadFilterType;
 
@@ -2455,7 +2455,7 @@ class _DistributorDashboardEnhancedState
     }
   }
 
-  // FIXED #7: Download orders with date filters
+  // FIXED #7: Download orders with date filters - NEW METHOD
   Future<void> _downloadOrders({String? filterType, DateTime? startDate, DateTime? endDate}) async {
     if (_currentDistributor.distributorId == null) {
       showSafeSnackBar(context, 'Distributor ID not found', backgroundColor: errorRed);
@@ -2514,6 +2514,7 @@ class _DistributorDashboardEnhancedState
     }
   }
 
+  // NEW: Show download options dialog
   void _showDownloadOptionsDialog() {
     showDialog(
       context: context,
@@ -2531,7 +2532,7 @@ class _DistributorDashboardEnhancedState
               },
             ),
             ListTile(
-             leading: const Icon(Icons.calendar_today, color: primaryBlue),
+              leading: const Icon(Icons.calendar_today, color: primaryBlue),
               title: const Text('Yesterday'),
               onTap: () {
                 Navigator.pop(context);
@@ -2548,7 +2549,7 @@ class _DistributorDashboardEnhancedState
             ),
             const Divider(),
             ListTile(
-              leading: const Icon(Icons.calendar_today, color: accentTeal),
+              leading: const Icon(Icons.calendar_month, color: accentTeal),
               title: const Text('Custom Date Range'),
               onTap: () async {
                 Navigator.pop(context);
@@ -3495,7 +3496,7 @@ class _DistributorDashboardEnhancedState
           children: [
             Icon(Icons.add, color: accentTeal),
             SizedBox(width: 8),
-            Text('Add New Product'),
+            const Text('Add New Product'),
           ],
         ),
         content: SingleChildScrollView(
@@ -4487,6 +4488,12 @@ class _DistributorDashboardEnhancedState
                                 6,
                               ),
                               _buildSidebarItem(Icons.payment, 'Payments', 7),
+                              // NEW: Download Order menu item
+                              _buildSidebarItem(
+                                Icons.download,
+                                'Download Order',
+                                10,
+                              ),
                               _buildSidebarItem(
                                 Icons.description,
                                 'Templates',
@@ -4563,6 +4570,123 @@ class _DistributorDashboardEnhancedState
           });
         }
       },
+    );
+  }
+
+  // NEW: Download Order Section
+  Widget _buildDownloadOrderSection() {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.download, size: 80, color: primaryBlue),
+            const SizedBox(height: 20),
+            const Text(
+              'Download Orders',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: primaryBlue,
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Export your orders to Excel file',
+              style: TextStyle(fontSize: 14, color: Colors.grey),
+            ),
+            const SizedBox(height: 40),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                  ),
+                ],
+              ),
+              child: Column(
+                children: [
+                  const Text(
+                    'Select Date Range',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  _buildDownloadButton(
+                    'Today\'s Orders',
+                    Icons.today,
+                    () => _downloadOrders(filterType: 'today'),
+                    primaryBlue,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildDownloadButton(
+                    'Yesterday\'s Orders',
+                    Icons.calendar_today,
+                    () => _downloadOrders(filterType: 'yesterday'),
+                    primaryBlue,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildDownloadButton(
+                    'Last 7 Days',
+                    Icons.date_range,
+                    () => _downloadOrders(filterType: 'lastWeek'),
+                    primaryBlue,
+                  ),
+                  const SizedBox(height: 12),
+                  _buildDownloadButton(
+                    'Custom Date Range',
+                    Icons.calendar_month,
+                    () async {
+                      final DateTimeRange? range = await showDateRangePicker(
+                        context: context,
+                        firstDate: DateTime(2020),
+                        lastDate: DateTime.now(),
+                        initialDateRange: DateTimeRange(
+                          start: DateTime.now().subtract(const Duration(days: 7)),
+                          end: DateTime.now(),
+                        ),
+                      );
+                      if (range != null && mounted) {
+                        _downloadOrders(startDate: range.start, endDate: range.end);
+                      }
+                    },
+                    accentTeal,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            if (_isDownloading)
+              const CircularProgressIndicator(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDownloadButton(String title, IconData icon, VoidCallback onTap, Color color) {
+    return SizedBox(
+      width: double.infinity,
+      child: ElevatedButton.icon(
+        onPressed: _isDownloading ? null : onTap,
+        icon: Icon(icon),
+        label: Text(title),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: color,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+      ),
     );
   }
 
@@ -5045,6 +5169,8 @@ class _DistributorDashboardEnhancedState
         return _buildTemplatesSection();
       case 9:
         return _buildAnalyticsSection();
+      case 10: // NEW: Download Order section
+        return _buildDownloadOrderSection();
       default:
         return _buildDashboard();
     }
