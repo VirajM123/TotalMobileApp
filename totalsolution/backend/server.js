@@ -2070,9 +2070,11 @@ app.get('/api/health', (req, res) => {
 });
 
 app.listen(PORT, async () => {
+// Start server
+app.listen(process.env.PORT, async () => {
     await connectToMongoDB();
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`API endpoints available at http://localhost:${PORT}/api`);
+    console.log(`Server running on http://localhost:${process.env.PORT}`);
+    console.log(`API endpoints available at http://localhost:${process.env.PORT}/api`);
     console.log(`\nAPI Endpoints:`);
     console.log(`\nAuth:`);
     console.log(`  POST /api/login - User login`);
