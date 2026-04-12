@@ -2060,7 +2060,7 @@ class _ChangePasswordDialogState extends State<ChangePasswordDialog> {
   }
 }
 
-// ==================== IMPORT MASTER DATA DIALOG ====================
+// ==================== IMPORT MASTER DATA DIALOG (FIXED - No Overflow) ====================
 class ImportMasterDataDialog extends StatefulWidget {
   final String distributorId;
   final String createdBy;
@@ -2145,14 +2145,12 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
         });
         widget.onImportComplete();
         
-        // Show success message
         showSafeSnackBar(
           context,
           result['message'],
           backgroundColor: Colors.green,
         );
         
-        // Close dialog after 2 seconds
         Future.delayed(const Duration(seconds: 2), () {
           if (mounted) {
             Navigator.pop(context);
@@ -2181,180 +2179,210 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: Container(
-        padding: const EdgeInsets.all(20),
         width: double.maxFinite,
         constraints: BoxConstraints(
-          maxWidth: 400,
-          maxHeight: MediaQuery.of(context).size.height * 0.7,
+          maxWidth: 450,
+          maxHeight: MediaQuery.of(context).size.height * 0.85,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.upload_file, color: const Color(0xFF1A3B70)),
-                const SizedBox(width: 12),
-                const Text(
-                  'Import Master Data',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF1A3B70),
-                  ),
-                ),
-              ],
-            ),
-            const Divider(),
-            const SizedBox(height: 16),
-            const Text(
-              'Select Master Type',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 12,
-              children: _masterTypes.map((type) {
-                final isSelected = _selectedMasterType == type['value'];
-                return ChoiceChip(
-                  label: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(type['icon'], size: 16, color: isSelected ? Colors.white : const Color(0xFF1A3B70)),
-                      const SizedBox(width: 4),
-                      Text(type['label']),
-                    ],
-                  ),
-                  selected: isSelected,
-                  onSelected: (selected) {
-                    setState(() {
-                      _selectedMasterType = selected ? type['value'] : null;
-                      _importMessage = null;
-                    });
-                  },
-                  selectedColor: const Color(0xFF00A68A),
-                  backgroundColor: Colors.grey[200],
-                );
-              }).toList(),
-            ),
-            const SizedBox(height: 20),
-            const Text(
-              'Excel File Format',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.blue[50],
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+        child: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header
+              Row(
                 children: [
+                  Icon(Icons.upload_file, color: const Color(0xFF1A3B70)),
+                  const SizedBox(width: 12),
                   const Text(
-                    'Customer Excel Columns:',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Customer Code, Customer Name, Area, Route, Address, Distributor id',
-                    style: TextStyle(fontSize: 11),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Product Excel Columns:',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'product name, Product code, MRP, Price, Category, Stock Quantity, Description, Distirbutor Id',
-                    style: TextStyle(fontSize: 11),
+                    'Import Master Data',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF1A3B70),
+                    ),
                   ),
                 ],
               ),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: _pickFile,
-              icon: const Icon(Icons.attach_file),
-              label: Text(_selectedFile != null 
-                  ? 'Selected: ${_selectedFile!.path.split('/').last}' 
-                  : 'Choose Excel File'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF1A3B70),
-                minimumSize: const Size(double.infinity, 45),
+              const Divider(),
+              const SizedBox(height: 12),
+              
+              // Master Type Selection
+              const Text(
+                'Select Master Type',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
               ),
-            ),
-            if (_selectedFile != null) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                children: _masterTypes.map((type) {
+                  final isSelected = _selectedMasterType == type['value'];
+                  return ChoiceChip(
+                    label: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(type['icon'], size: 18, color: isSelected ? Colors.white : const Color(0xFF1A3B70)),
+                        const SizedBox(width: 6),
+                        Text(type['label']),
+                      ],
+                    ),
+                    selected: isSelected,
+                    onSelected: (selected) {
+                      setState(() {
+                        _selectedMasterType = selected ? type['value'] : null;
+                        _importMessage = null;
+                      });
+                    },
+                    selectedColor: const Color(0xFF00A68A),
+                    backgroundColor: Colors.grey[200],
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 20),
+              
+              // Excel Format Info
+              const Text(
+                'Excel File Format',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
               const SizedBox(height: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Colors.green[50],
-                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.blue[50],
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.blue[200]!),
                 ),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.check_circle, color: Colors.green[700], size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'File ready to import',
-                        style: TextStyle(color: Colors.green[700], fontSize: 12),
-                      ),
+                    const Text(
+                      '📊 Customer Excel Columns:',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Customer Code, Customer Name, Area, Route, Address, Distributor id',
+                      style: TextStyle(fontSize: 11),
+                    ),
+                    const SizedBox(height: 10),
+                    const Text(
+                      '📦 Product Excel Columns:',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'product name, Product code, MRP, Price, Category, Stock Quantity, Description, Distirbutor Id',
+                      style: TextStyle(fontSize: 11),
                     ),
                   ],
                 ),
               ),
-            ],
-            if (_importMessage != null) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: _importMessage!.contains('Error') ? Colors.red[50] : Colors.green[50],
-                  borderRadius: BorderRadius.circular(8),
+              const SizedBox(height: 20),
+              
+              // File Selection Button
+              ElevatedButton.icon(
+                onPressed: _pickFile,
+                icon: const Icon(Icons.attach_file),
+                label: Text(
+                  _selectedFile != null 
+                      ? 'Selected: ${_selectedFile!.path.split('/').last}' 
+                      : 'Choose Excel File',
+                  overflow: TextOverflow.ellipsis,
                 ),
-                child: Text(
-                  _importMessage!,
-                  style: TextStyle(
-                    color: _importMessage!.contains('Error') ? Colors.red[700] : Colors.green[700],
-                    fontSize: 12,
-                  ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1A3B70),
+                  minimumSize: const Size(double.infinity, 45),
                 ),
               ),
-            ],
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _isImporting ? null : () => Navigator.pop(context),
-                    child: const Text('Cancel'),
+              
+              // File Status
+              if (_selectedFile != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.green[50],
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.green[200]!),
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _isImporting || _selectedMasterType == null || _selectedFile == null
-                        ? null
-                        : _importData,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00A68A),
-                    ),
-                    child: _isImporting
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Import'),
+                  child: Row(
+                    children: [
+                      Icon(Icons.check_circle, color: Colors.green[700], size: 16),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'File ready to import',
+                          style: TextStyle(color: Colors.green[700], fontSize: 12),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
-            ),
-          ],
+              
+              // Import Message
+              if (_importMessage != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: _importMessage!.contains('Error') ? Colors.red[50] : Colors.green[50],
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: _importMessage!.contains('Error') ? Colors.red[200]! : Colors.green[200]!,
+                    ),
+                  ),
+                  child: Text(
+                    _importMessage!,
+                    style: TextStyle(
+                      color: _importMessage!.contains('Error') ? Colors.red[700] : Colors.green[700],
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ],
+              
+              const SizedBox(height: 20),
+              
+              // Action Buttons
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _isImporting ? null : () => Navigator.pop(context),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: (_isImporting || _selectedMasterType == null || _selectedFile == null)
+                          ? null
+                          : _importData,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00A68A),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: _isImporting
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            )
+                          : const Text('Import'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

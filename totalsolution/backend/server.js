@@ -175,90 +175,145 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
     try {
         const { distributorId, createdBy } = req.body;
         
+        console.log('Import customers request received');
+        console.log('Distributor ID:', distributorId);
+        console.log('File received:', req.file ? req.file.originalname : 'No file');
+        
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         
         if (!distributorId) {
+            // Clean up uploaded file
+            if (fs.existsSync(req.file.path)) {
+                fs.unlinkSync(req.file.path);
+            }
             return res.status(400).json({ error: 'Distributor ID is required' });
         }
         
+        // Read the Excel file
         const workbook = XLSX.readFile(req.file.path);
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const data = XLSX.utils.sheet_to_json(worksheet);
         
+        console.log(`Found ${data.length} rows in Excel file`);
+        
         if (!data || data.length === 0) {
+            if (fs.existsSync(req.file.path)) {
+                fs.unlinkSync(req.file.path);
+            }
             return res.status(400).json({ error: 'No data found in Excel file' });
         }
         
         let importedCount = 0;
         let skippedCount = 0;
+        const errors = [];
         
-        for (const row of data) {
+        for (let i = 0; i < data.length; i++) {
+            const row = data[i];
             try {
-                const customerCode = row['Customer Code'] || row['customer_code'] || row['CustomerCode'] || '';
-                const customerName = row['Customer Name'] || row['customer_name'] || row['CustomerName'] || '';
+                // Support multiple column name variations
+                const customerCode = row['Customer Code'] || row['customer_code'] || row['CustomerCode'] || row['Customer code'] || '';
+                const customerName = row['Customer Name'] || row['customer_name'] || row['CustomerName'] || row['Customer name'] || '';
                 const area = row['Area'] || row['area'] || '';
                 const route = row['Route'] || row['route'] || '';
                 const address = row['Address'] || row['address'] || '';
-                const distributorIdFromExcel = row['Distributor id'] || row['distributor_id'] || row['DistributorId'] || distributorId;
+                const phone = row['Phone'] || row['phone'] || row['Mobile'] || row['mobile'] || '';
+                const distributorIdFromExcel = row['Distributor id'] || row['distributor_id'] || row['DistributorId'] || row['Distributor Id'] || distributorId;
                 
-                if (!customerName || !area) {
+                console.log(`Processing row ${i + 1}: Name=${customerName}, Area=${area}, Code=${customerCode}`);
+                
+                // Validate required fields
+                if (!customerName || !customerName.toString().trim()) {
+                    console.log(`Skipping row ${i + 1}: Missing customer name`);
                     skippedCount++;
+                    errors.push(`Row ${i + 1}: Missing customer name`);
                     continue;
                 }
                 
-                const phone = row['Phone'] || row['phone'] || row['Mobile'] || row['mobile'] || '';
+                if (!area || !area.toString().trim()) {
+                    console.log(`Skipping row ${i + 1}: Missing area`);
+                    skippedCount++;
+                    errors.push(`Row ${i + 1}: Missing area for customer "${customerName}"`);
+                    continue;
+                }
                 
+                const trimmedCustomerName = customerName.toString().trim();
+                const trimmedArea = area.toString().trim();
+                const trimmedRoute = route ? route.toString().trim() : null;
+                const trimmedAddress = address ? address.toString().trim() : null;
+                const trimmedPhone = phone ? phone.toString().trim() : '';
+                const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
+                
+                // Check for existing customer
                 const existingCustomer = await collections.customer.findOne({ 
                     $or: [
-                        { name: customerName, distributor_id: distributorIdFromExcel },
-                        { customer_id: customerCode }
+                        { name: trimmedCustomerName, distributor_id: trimmedDistributorId },
+                        { customer_id: customerCode ? customerCode.toString().trim() : null }
                     ]
                 });
                 
                 if (existingCustomer) {
+                    console.log(`Skipping row ${i + 1}: Customer "${trimmedCustomerName}" already exists`);
                     skippedCount++;
+                    errors.push(`Row ${i + 1}: Customer "${trimmedCustomerName}" already exists`);
                     continue;
                 }
                 
-                const customerId = customerCode || `GK${Date.now()}${Math.floor(Math.random() * 1000)}`;
+                // Generate customer ID if not provided
+                const customerId = (customerCode && customerCode.toString().trim()) 
+                    ? customerCode.toString().trim() 
+                    : `GK${Date.now()}${Math.floor(Math.random() * 1000)}`;
                 
                 const customer = {
-                    name: customerName,
+                    name: trimmedCustomerName,
                     customer_id: customerId,
-                    phone: phone,
-                    area: area,
-                    route: route || null,
-                    address: address || null,
+                    phone: trimmedPhone || null,
+                    area: trimmedArea,
+                    route: trimmedRoute,
+                    address: trimmedAddress,
                     created_at: new Date().toISOString(),
                     updated_at: new Date().toISOString(),
                     status: 'active',
                     created_by: createdBy || 'import',
-                    distributor_id: distributorIdFromExcel
+                    distributor_id: trimmedDistributorId
                 };
                 
                 await collections.customer.insertOne(customer);
                 importedCount++;
+                console.log(`Imported customer ${importedCount}: ${trimmedCustomerName}`);
+                
             } catch (rowError) {
-                console.error('Error importing customer row:', rowError);
+                console.error(`Error importing row ${i + 1}:`, rowError);
                 skippedCount++;
+                errors.push(`Row ${i + 1}: ${rowError.message}`);
             }
         }
         
-        fs.unlinkSync(req.file.path);
+        // Clean up uploaded file
+        if (fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        
+        console.log(`Import completed: ${importedCount} imported, ${skippedCount} skipped`);
         
         res.json({
             success: true,
-            message: `Imported ${importedCount} customers successfully. Skipped ${skippedCount} duplicates/invalid entries.`,
+            message: `Imported ${importedCount} customers successfully. Skipped ${skippedCount} entries.`,
             importedCount: importedCount,
-            skippedCount: skippedCount
+            skippedCount: skippedCount,
+            errors: errors.length > 0 ? errors.slice(0, 10) : []
         });
+        
     } catch (error) {
         console.error('Error importing customers:', error);
         if (req.file && fs.existsSync(req.file.path)) {
-            fs.unlinkSync(req.file.path);
+            try {
+                fs.unlinkSync(req.file.path);
+            } catch (unlinkError) {
+                console.error('Error cleaning up file:', unlinkError);
+            }
         }
         res.status(500).json({ error: error.message });
     }
@@ -269,67 +324,113 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
     try {
         const { distributorId, createdBy } = req.body;
         
+        console.log('Import products request received');
+        console.log('Distributor ID:', distributorId);
+        console.log('File received:', req.file ? req.file.originalname : 'No file');
+        
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         
         if (!distributorId) {
+            if (fs.existsSync(req.file.path)) {
+                fs.unlinkSync(req.file.path);
+            }
             return res.status(400).json({ error: 'Distributor ID is required' });
         }
         
+        // Read the Excel file
         const workbook = XLSX.readFile(req.file.path);
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
         const data = XLSX.utils.sheet_to_json(worksheet);
         
+        console.log(`Found ${data.length} rows in Excel file`);
+        
         if (!data || data.length === 0) {
+            if (fs.existsSync(req.file.path)) {
+                fs.unlinkSync(req.file.path);
+            }
             return res.status(400).json({ error: 'No data found in Excel file' });
         }
         
         let importedCount = 0;
         let skippedCount = 0;
+        const errors = [];
         
-        for (const row of data) {
+        for (let i = 0; i < data.length; i++) {
+            const row = data[i];
             try {
-                const productName = row['product name'] || row['product_name'] || row['Product Name'] || row['ProductName'] || '';
-                const productCode = row['Product code'] || row['product_code'] || row['ProductCode'] || row['SKU'] || row['sku'] || '';
+                // Support multiple column name variations
+                const productName = row['product name'] || row['product_name'] || row['Product Name'] || row['ProductName'] || row['Product name'] || '';
+                const productCode = row['Product code'] || row['product_code'] || row['ProductCode'] || row['Product Code'] || row['SKU'] || row['sku'] || '';
                 const mrp = parseFloat(row['MRP'] || row['mrp'] || 0);
                 const price = parseFloat(row['Price'] || row['price'] || 0);
                 const category = row['Category'] || row['category'] || '';
                 const stockQuantity = parseInt(row['Stock Quantity'] || row['stock_quantity'] || row['Stock'] || row['stock'] || 0);
                 const description = row['Description'] || row['description'] || '';
-                const distributorIdFromExcel = row['Distirbutor Id'] || row['distributor_id'] || row['DistributorId'] || distributorId;
+                const distributorIdFromExcel = row['Distirbutor Id'] || row['distributor_id'] || row['DistributorId'] || row['Distributor Id'] || distributorId;
                 
-                if (!productName || !productCode || price <= 0) {
+                console.log(`Processing row ${i + 1}: Name=${productName}, Code=${productCode}, Price=${price}`);
+                
+                // Validate required fields
+                if (!productName || !productName.toString().trim()) {
+                    console.log(`Skipping row ${i + 1}: Missing product name`);
                     skippedCount++;
+                    errors.push(`Row ${i + 1}: Missing product name`);
                     continue;
                 }
                 
+                if (!productCode || !productCode.toString().trim()) {
+                    console.log(`Skipping row ${i + 1}: Missing product code/SKU`);
+                    skippedCount++;
+                    errors.push(`Row ${i + 1}: Missing product code/SKU for "${productName}"`);
+                    continue;
+                }
+                
+                if (isNaN(price) || price <= 0) {
+                    console.log(`Skipping row ${i + 1}: Invalid price (${price})`);
+                    skippedCount++;
+                    errors.push(`Row ${i + 1}: Invalid price for "${productName}"`);
+                    continue;
+                }
+                
+                const trimmedProductName = productName.toString().trim();
+                const trimmedProductCode = productCode.toString().trim();
+                const trimmedCategory = category ? category.toString().trim() : 'General';
+                const trimmedDescription = description ? description.toString().trim() : null;
+                const validMRP = isNaN(mrp) || mrp <= 0 ? price : mrp;
+                const validStock = isNaN(stockQuantity) ? 0 : stockQuantity;
+                const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
+                
+                // Check for existing product
                 const existingProduct = await collections.product.findOne({ 
                     $or: [
-                        { productName: productName, distributorId: distributorIdFromExcel },
-                        { sku: productCode }
+                        { productName: trimmedProductName, distributorId: trimmedDistributorId },
+                        { sku: trimmedProductCode }
                     ]
                 });
                 
                 if (existingProduct) {
+                    console.log(`Skipping row ${i + 1}: Product "${trimmedProductName}" already exists`);
                     skippedCount++;
+                    errors.push(`Row ${i + 1}: Product "${trimmedProductName}" already exists`);
                     continue;
                 }
                 
                 const product = {
-                    productName: productName,
-                    sku: productCode,
-                    mrp: mrp,
+                    productName: trimmedProductName,
+                    sku: trimmedProductCode,
+                    mrp: validMRP,
                     price: price,
-                    category: category || 'General',
-                    stock: stockQuantity,
-                    stockQuantity: stockQuantity,
-                    description: description || null,
+                    category: trimmedCategory,
+                    stock: validStock,
+                    stockQuantity: validStock,
+                    description: trimmedDescription,
                     createdAt: new Date().toISOString(),
                     updatedAt: new Date().toISOString(),
                     createdBy: createdBy || 'import',
-                    distributorId: distributorIdFromExcel,
+                    distributorId: trimmedDistributorId,
                     isActive: true,
                     images: [],
                     tags: []
@@ -337,24 +438,38 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 
                 await collections.product.insertOne(product);
                 importedCount++;
+                console.log(`Imported product ${importedCount}: ${trimmedProductName}`);
+                
             } catch (rowError) {
-                console.error('Error importing product row:', rowError);
+                console.error(`Error importing row ${i + 1}:`, rowError);
                 skippedCount++;
+                errors.push(`Row ${i + 1}: ${rowError.message}`);
             }
         }
         
-        fs.unlinkSync(req.file.path);
+        // Clean up uploaded file
+        if (fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        
+        console.log(`Import completed: ${importedCount} imported, ${skippedCount} skipped`);
         
         res.json({
             success: true,
-            message: `Imported ${importedCount} products successfully. Skipped ${skippedCount} duplicates/invalid entries.`,
+            message: `Imported ${importedCount} products successfully. Skipped ${skippedCount} entries.`,
             importedCount: importedCount,
-            skippedCount: skippedCount
+            skippedCount: skippedCount,
+            errors: errors.length > 0 ? errors.slice(0, 10) : []
         });
+        
     } catch (error) {
         console.error('Error importing products:', error);
         if (req.file && fs.existsSync(req.file.path)) {
-            fs.unlinkSync(req.file.path);
+            try {
+                fs.unlinkSync(req.file.path);
+            } catch (unlinkError) {
+                console.error('Error cleaning up file:', unlinkError);
+            }
         }
         res.status(500).json({ error: error.message });
     }
@@ -2144,4 +2259,6 @@ app.listen(PORT, async () => {
     console.log(`  2) Excel download now includes MRP column for orders`);
     console.log(`  3) Stock calculation is CORRECT - subtracts sold quantity from current stock`);
     console.log(`  4) Import Master Data - Customers and Products can be imported from Excel`);
+    console.log(`  5) FIXED: Import button activation - better validation and error handling`);
+    console.log(`  6) FIXED: Support for multiple column name variations in Excel files`);
 });
