@@ -1,7 +1,7 @@
 const express = require('express');
 const { MongoClient, ObjectId } = require('mongodb');
 const cors = require('cors');
-const bcrypt = require('bcryptjs'); // Changed from 'bcrypt' to 'bcryptjs'
+const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -26,6 +26,22 @@ const storage = multer.diskStorage({
   }
 });
 const upload = multer({ storage: storage });
+
+// Configure multer for Excel file uploads
+const excelStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = './excel_uploads';
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'import-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+const excelUpload = multer({ storage: excelStorage });
 
 // Middleware
 app.use(cors({
@@ -63,7 +79,6 @@ async function connectToMongoDB() {
         });
         db = client.db(DB_NAME);
         
-        // Initialize collections
         collections.register = db.collection(COLLECTIONS.REGISTER);
         collections.customer = db.collection(COLLECTIONS.CUSTOMER);
         collections.product = db.collection(COLLECTIONS.PRODUCT);
@@ -76,7 +91,6 @@ async function connectToMongoDB() {
         console.log('Connected to MongoDB successfully');
         console.log(`Database: ${DB_NAME}`);
         
-        // Create indexes
         await collections.register.createIndex({ email: 1, role: 1 }, { unique: true });
         await collections.customer.createIndex({ customer_id: 1 }, { unique: true });
         await collections.customer.createIndex({ distributor_id: 1 });
@@ -107,14 +121,12 @@ async function connectToMongoDB() {
     }
 }
 
-// Helper function to generate unique distributor ID
 function generateDistributorId() {
     const timestamp = Date.now();
     const random = Math.floor(Math.random() * 10000);
     return `DIST${timestamp}${random}`;
 }
 
-// Helper function to generate unique collection ID
 function generateCollectionId() {
     const date = new Date();
     const year = date.getFullYear();
@@ -124,33 +136,27 @@ function generateCollectionId() {
     return `COL-${year}${month}${day}-${random}`;
 }
 
-// Helper function to generate unique IDs
 function generateId(prefix) {
     return `${prefix}${Date.now()}${Math.floor(Math.random() * 1000)}`;
 }
 
-// Helper function to normalize email
 const normalizeEmail = (email) => email ? email.trim().toLowerCase() : '';
 
-// Email validation regex
 const validateEmail = (email) => {
     const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
     return emailRegex.test(email);
 };
 
-// Mobile number validation (10 digits only, no alphabets)
 const validateMobileNumber = (phone) => {
     const phoneRegex = /^\d{10}$/;
     return phoneRegex.test(phone);
 };
 
-// Alphabet validation (only letters and spaces)
 const validateAlphabetOnly = (text) => {
     const alphabetRegex = /^[a-zA-Z\s]+$/;
     return alphabetRegex.test(text);
 };
 
-// List of Indian banks for cheque dropdown
 const INDIAN_BANKS = [
     'State Bank of India', 'HDFC Bank', 'ICICI Bank', 'Axis Bank', 'Kotak Mahindra Bank',
     'Bank of Baroda', 'Punjab National Bank', 'Canara Bank', 'Union Bank of India',
@@ -160,22 +166,209 @@ const INDIAN_BANKS = [
     'DBS Bank', 'Standard Chartered Bank', 'Citibank', 'HSBC'
 ];
 
-// List of UPI apps
 const UPI_APPS = ['GPay', 'PhonePe', 'Paytm', 'Amazon Pay', 'WhatsApp Pay', 'Other'];
+
+// ==================== IMPORT MASTER DATA APIs ====================
+
+// Import customers from Excel
+app.post('/api/import/customers', excelUpload.single('file'), async (req, res) => {
+    try {
+        const { distributorId, createdBy } = req.body;
+        
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        
+        if (!distributorId) {
+            return res.status(400).json({ error: 'Distributor ID is required' });
+        }
+        
+        const workbook = XLSX.readFile(req.file.path);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const data = XLSX.utils.sheet_to_json(worksheet);
+        
+        if (!data || data.length === 0) {
+            return res.status(400).json({ error: 'No data found in Excel file' });
+        }
+        
+        let importedCount = 0;
+        let skippedCount = 0;
+        
+        for (const row of data) {
+            try {
+                const customerCode = row['Customer Code'] || row['customer_code'] || row['CustomerCode'] || '';
+                const customerName = row['Customer Name'] || row['customer_name'] || row['CustomerName'] || '';
+                const area = row['Area'] || row['area'] || '';
+                const route = row['Route'] || row['route'] || '';
+                const address = row['Address'] || row['address'] || '';
+                const distributorIdFromExcel = row['Distributor id'] || row['distributor_id'] || row['DistributorId'] || distributorId;
+                
+                if (!customerName || !area) {
+                    skippedCount++;
+                    continue;
+                }
+                
+                const phone = row['Phone'] || row['phone'] || row['Mobile'] || row['mobile'] || '';
+                
+                const existingCustomer = await collections.customer.findOne({ 
+                    $or: [
+                        { name: customerName, distributor_id: distributorIdFromExcel },
+                        { customer_id: customerCode }
+                    ]
+                });
+                
+                if (existingCustomer) {
+                    skippedCount++;
+                    continue;
+                }
+                
+                const customerId = customerCode || `GK${Date.now()}${Math.floor(Math.random() * 1000)}`;
+                
+                const customer = {
+                    name: customerName,
+                    customer_id: customerId,
+                    phone: phone,
+                    area: area,
+                    route: route || null,
+                    address: address || null,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                    status: 'active',
+                    created_by: createdBy || 'import',
+                    distributor_id: distributorIdFromExcel
+                };
+                
+                await collections.customer.insertOne(customer);
+                importedCount++;
+            } catch (rowError) {
+                console.error('Error importing customer row:', rowError);
+                skippedCount++;
+            }
+        }
+        
+        fs.unlinkSync(req.file.path);
+        
+        res.json({
+            success: true,
+            message: `Imported ${importedCount} customers successfully. Skipped ${skippedCount} duplicates/invalid entries.`,
+            importedCount: importedCount,
+            skippedCount: skippedCount
+        });
+    } catch (error) {
+        console.error('Error importing customers:', error);
+        if (req.file && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Import products from Excel
+app.post('/api/import/products', excelUpload.single('file'), async (req, res) => {
+    try {
+        const { distributorId, createdBy } = req.body;
+        
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        
+        if (!distributorId) {
+            return res.status(400).json({ error: 'Distributor ID is required' });
+        }
+        
+        const workbook = XLSX.readFile(req.file.path);
+        const sheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[sheetName];
+        const data = XLSX.utils.sheet_to_json(worksheet);
+        
+        if (!data || data.length === 0) {
+            return res.status(400).json({ error: 'No data found in Excel file' });
+        }
+        
+        let importedCount = 0;
+        let skippedCount = 0;
+        
+        for (const row of data) {
+            try {
+                const productName = row['product name'] || row['product_name'] || row['Product Name'] || row['ProductName'] || '';
+                const productCode = row['Product code'] || row['product_code'] || row['ProductCode'] || row['SKU'] || row['sku'] || '';
+                const mrp = parseFloat(row['MRP'] || row['mrp'] || 0);
+                const price = parseFloat(row['Price'] || row['price'] || 0);
+                const category = row['Category'] || row['category'] || '';
+                const stockQuantity = parseInt(row['Stock Quantity'] || row['stock_quantity'] || row['Stock'] || row['stock'] || 0);
+                const description = row['Description'] || row['description'] || '';
+                const distributorIdFromExcel = row['Distirbutor Id'] || row['distributor_id'] || row['DistributorId'] || distributorId;
+                
+                if (!productName || !productCode || price <= 0) {
+                    skippedCount++;
+                    continue;
+                }
+                
+                const existingProduct = await collections.product.findOne({ 
+                    $or: [
+                        { productName: productName, distributorId: distributorIdFromExcel },
+                        { sku: productCode }
+                    ]
+                });
+                
+                if (existingProduct) {
+                    skippedCount++;
+                    continue;
+                }
+                
+                const product = {
+                    productName: productName,
+                    sku: productCode,
+                    mrp: mrp,
+                    price: price,
+                    category: category || 'General',
+                    stock: stockQuantity,
+                    stockQuantity: stockQuantity,
+                    description: description || null,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    createdBy: createdBy || 'import',
+                    distributorId: distributorIdFromExcel,
+                    isActive: true,
+                    images: [],
+                    tags: []
+                };
+                
+                await collections.product.insertOne(product);
+                importedCount++;
+            } catch (rowError) {
+                console.error('Error importing product row:', rowError);
+                skippedCount++;
+            }
+        }
+        
+        fs.unlinkSync(req.file.path);
+        
+        res.json({
+            success: true,
+            message: `Imported ${importedCount} products successfully. Skipped ${skippedCount} duplicates/invalid entries.`,
+            importedCount: importedCount,
+            skippedCount: skippedCount
+        });
+    } catch (error) {
+        console.error('Error importing products:', error);
+        if (req.file && fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        res.status(500).json({ error: error.message });
+    }
+});
 
 // ==================== FREE API FOR AREAS AND ROUTES ====================
 
-// Free API endpoint for Indian cities and areas
 app.get('/api/areas', async (req, res) => {
     try {
         const { city } = req.query;
         
-        // Free API for Indian cities/areas
-        // Using a free public API for location data
         let areas = [];
         
         if (!city || city === '') {
-            // Return major Indian cities
             areas = [
                 'Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Ahmedabad', 
                 'Chennai', 'Kolkata', 'Pune', 'Jaipur', 'Lucknow',
@@ -183,10 +376,6 @@ app.get('/api/areas', async (req, res) => {
                 'Agra', 'Nashik', 'Ranchi', 'Chandigarh', 'Mysore'
             ];
         } else {
-            // Return sub-areas based on city (using static mapping for demo)
-            // In production, you can integrate with free APIs like:
-            // - https://api.postalpincode.in/pincode/{pincode}
-            // - https://nominatim.openstreetmap.org/search
             const areaMap = {
                 'pune': ['Shivajinagar', 'Kothrud', 'Hinjewadi', 'Pimpri-Chinchwad', 'Hadapsar', 'Viman Nagar', 'Koregaon Park', 'Baner', 'Aundh', 'Wakad'],
                 'mumbai': ['Andheri', 'Bandra', 'Dadar', 'Navi Mumbai', 'Thane', 'Powai', 'Malad', 'Borivali', 'Colaba', 'Juhu'],
@@ -204,7 +393,6 @@ app.get('/api/areas', async (req, res) => {
             if (areaMap[cityLower]) {
                 areas = areaMap[cityLower];
             } else {
-                // Default areas for any city
                 areas = [`${city} Area 1`, `${city} Area 2`, `${city} Area 3`, `${city} Area 4`, `${city} Area 5`];
             }
         }
@@ -216,12 +404,10 @@ app.get('/api/areas', async (req, res) => {
     }
 });
 
-// FIXED #4: Get sub-areas based on selected area with real route names
 app.get('/api/sub-areas', async (req, res) => {
     try {
         const { area } = req.query;
         
-        // Real sub-areas/routes for Pune areas
         const routeMap = {
             'Shivajinagar': ['FC Road', 'Jangli Maharaj Road', 'Shanipar', 'Laxmi Road', 'Tilak Road'],
             'Kothrud': ['Karve Road', 'Paud Road', 'Mayur Colony', 'Ideal Colony', 'Vanaz', 'Kothrud Depot'],
@@ -243,7 +429,6 @@ app.get('/api/sub-areas', async (req, res) => {
         if (area && routeMap[area]) {
             routes = routeMap[area];
         } else if (area) {
-            // Default dummy routes if area not found in map
             routes = [`${area} Main Road`, `${area} Market Area`, `${area} Residential Area`, `${area} Industrial Area`];
         }
         
@@ -256,7 +441,6 @@ app.get('/api/sub-areas', async (req, res) => {
 
 // ==================== PASSWORD CHANGE APIs ====================
 
-// FIXED #5: Change password for any user - fixed ObjectId validation
 app.post('/api/change-password', async (req, res) => {
     try {
         const { userId, currentPassword, newPassword, requestingUserId, requestingUserRole } = req.body;
@@ -265,10 +449,8 @@ app.post('/api/change-password', async (req, res) => {
             return res.status(400).json({ error: 'User ID and new password are required' });
         }
         
-        // Find the target user - try multiple ways
         let targetUser = null;
         
-        // Try to find by various ID formats
         try {
             if (ObjectId.isValid(userId) && userId.length === 24) {
                 targetUser = await collections.register.findOne({ _id: new ObjectId(userId) });
@@ -290,7 +472,6 @@ app.post('/api/change-password', async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
         
-        // Check permissions
         let requestingUserObj = null;
         try {
             if (requestingUserId && ObjectId.isValid(requestingUserId) && requestingUserId.length === 24) {
@@ -308,16 +489,13 @@ app.post('/api/change-password', async (req, res) => {
         }
         
         if (requestingUserRole === 'distributor') {
-            // Distributor can change any user's password under their distributor_id
             if (targetUser.distributor_id !== requestingUserObj?.distributor_id) {
                 return res.status(403).json({ error: 'You can only change passwords for users under your distributor account' });
             }
         } else if (requestingUserRole === 'salesman') {
-            // Salesman can only change their own password
             if (targetUser._id.toString() !== requestingUserId && targetUser.salesman_id !== requestingUserId) {
                 return res.status(403).json({ error: 'You can only change your own password' });
             }
-            // Verify current password for security
             if (!currentPassword) {
                 return res.status(400).json({ error: 'Current password is required to change your password' });
             }
@@ -329,11 +507,9 @@ app.post('/api/change-password', async (req, res) => {
             return res.status(403).json({ error: 'Permission denied' });
         }
         
-        // Hash new password
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
         
-        // Update password
         const result = await collections.register.updateOne(
             { _id: targetUser._id },
             { $set: { password: hashedPassword, updatedAt: new Date().toISOString() } }
@@ -350,7 +526,6 @@ app.post('/api/change-password', async (req, res) => {
     }
 });
 
-// Get users under distributor (for distributor to manage passwords)
 app.get('/api/users-under-distributor/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -377,16 +552,13 @@ app.get('/api/users-under-distributor/:distributorId', async (req, res) => {
 
 // ==================== NOTIFICATION APIs ====================
 
-// Create notification for distributor when salesman creates order (ONLY for salesman orders)
 async function createOrderNotification(order, distributorId, salesmanId, salesmanName) {
     try {
-        // Only create notification if order is created by a salesman (not distributor)
         if (!order.salesman_id || order.created_by_type === 'distributor') {
             console.log(`Skipping notification - order created by distributor or no salesman associated`);
             return;
         }
         
-        // Get the actual salesman name from database if not provided
         let actualSalesmanName = salesmanName;
         if (!actualSalesmanName && salesmanId) {
             const salesman = await collections.salesman.findOne({ salesman_id: salesmanId });
@@ -426,7 +598,6 @@ async function createOrderNotification(order, distributorId, salesmanId, salesma
     }
 }
 
-// Get notifications by distributor ID
 app.get('/api/notifications/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -441,7 +612,6 @@ app.get('/api/notifications/:distributorId', async (req, res) => {
     }
 });
 
-// Get unread notification count
 app.get('/api/notifications/unread-count/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -456,7 +626,6 @@ app.get('/api/notifications/unread-count/:distributorId', async (req, res) => {
     }
 });
 
-// Mark notification as read
 app.put('/api/notifications/:notificationId/read', async (req, res) => {
     try {
         const { notificationId } = req.params;
@@ -476,7 +645,6 @@ app.put('/api/notifications/:notificationId/read', async (req, res) => {
     }
 });
 
-// Mark all notifications as read
 app.put('/api/notifications/mark-all-read/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -493,7 +661,6 @@ app.put('/api/notifications/mark-all-read/:distributorId', async (req, res) => {
 
 // ==================== DISTRIBUTOR APIs ====================
 
-// Get distributor by ID
 app.get('/api/distributors/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -508,7 +675,6 @@ app.get('/api/distributors/:distributorId', async (req, res) => {
     }
 });
 
-// Get all distributors
 app.get('/api/distributors', async (req, res) => {
     try {
         const distributors = await collections.distributor.find({}).toArray();
@@ -521,18 +687,15 @@ app.get('/api/distributors', async (req, res) => {
 
 // ==================== CUSTOMER APIs ====================
 
-// Add new customer
 app.post('/api/customers', async (req, res) => {
     try {
         const customerData = req.body;
         
-        // Generate customer_id if not provided
         if (!customerData.customer_id) {
             const count = await collections.customer.countDocuments({ distributor_id: customerData.distributor_id });
             customerData.customer_id = `GK${String(count + 1).padStart(4, '0')}`;
         }
         
-        // Set timestamps
         customerData.created_at = customerData.created_at || new Date().toISOString();
         customerData.updated_at = new Date().toISOString();
         customerData.status = customerData.status || 'active';
@@ -551,7 +714,6 @@ app.post('/api/customers', async (req, res) => {
     }
 });
 
-// Get customers by distributor ID
 app.get('/api/customers/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -566,7 +728,6 @@ app.get('/api/customers/:distributorId', async (req, res) => {
     }
 });
 
-// Get single customer
 app.get('/api/customers/id/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -581,14 +742,12 @@ app.get('/api/customers/id/:id', async (req, res) => {
     }
 });
 
-// Update customer - FIXED: Now working properly
 app.put('/api/customers/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const updateData = req.body;
         updateData.updated_at = new Date().toISOString();
         
-        // Remove _id from update data if present
         delete updateData._id;
         
         const result = await collections.customer.updateOne(
@@ -607,7 +766,6 @@ app.put('/api/customers/:id', async (req, res) => {
     }
 });
 
-// Delete customer
 app.delete('/api/customers/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -626,12 +784,10 @@ app.delete('/api/customers/:id', async (req, res) => {
 
 // ==================== PRODUCT APIs ====================
 
-// Add new product
 app.post('/api/products', async (req, res) => {
     try {
         const productData = req.body;
         
-        // Set timestamps
         productData.createdAt = productData.createdAt || new Date().toISOString();
         productData.updatedAt = new Date().toISOString();
         productData.isActive = productData.isActive !== undefined ? productData.isActive : true;
@@ -650,7 +806,6 @@ app.post('/api/products', async (req, res) => {
     }
 });
 
-// Get products by distributor ID (only active products)
 app.get('/api/products/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -669,7 +824,6 @@ app.get('/api/products/:distributorId', async (req, res) => {
     }
 });
 
-// Get single product
 app.get('/api/products/id/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -684,14 +838,12 @@ app.get('/api/products/id/:id', async (req, res) => {
     }
 });
 
-// Update product - FIXED: Now working properly
 app.put('/api/products/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const updateData = req.body;
         updateData.updatedAt = new Date().toISOString();
         
-        // Remove _id from update data if present
         delete updateData._id;
         
         const result = await collections.product.updateOne(
@@ -710,13 +862,11 @@ app.put('/api/products/:id', async (req, res) => {
     }
 });
 
-// FIXED #2: Update product stock after order placement - CORRECTED calculation
 app.put('/api/products/:id/stock', async (req, res) => {
     try {
         const { id } = req.params;
         const { stockReduction, newStock } = req.body;
         
-        // Validate ObjectId
         if (!ObjectId.isValid(id)) {
             return res.status(400).json({ error: 'Invalid product ID format' });
         }
@@ -730,11 +880,9 @@ app.put('/api/products/:id/stock', async (req, res) => {
         if (newStock !== undefined) {
             updatedStock = newStock;
         } else {
-            // FIXED: Correct stock calculation - subtract sold quantity from current stock
             const currentStock = product.stock || 0;
             const soldQuantity = stockReduction || 0;
             updatedStock = currentStock - soldQuantity;
-            // Ensure stock doesn't go negative
             if (updatedStock < 0) {
                 updatedStock = 0;
             }
@@ -755,7 +903,6 @@ app.put('/api/products/:id/stock', async (req, res) => {
     }
 });
 
-// Delete product (soft delete)
 app.delete('/api/products/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -777,28 +924,23 @@ app.delete('/api/products/:id', async (req, res) => {
 
 // ==================== SALESMAN APIs ====================
 
-// Add new salesman (with automatic login creation)
 app.post('/api/salesmen', async (req, res) => {
     try {
         const salesmanData = req.body;
         
-        // Validate name (alphabet only)
         if (!validateAlphabetOnly(salesmanData.name)) {
             return res.status(400).json({ error: 'Name should contain only alphabets and spaces' });
         }
         
-        // Validate phone number (10 digits only)
         if (!validateMobileNumber(salesmanData.phone)) {
             return res.status(400).json({ error: 'Phone number must be exactly 10 digits' });
         }
         
-        // Generate salesman_id if not provided
         if (!salesmanData.salesman_id) {
             const count = await collections.salesman.countDocuments({ distributor_id: salesmanData.distributor_id });
             salesmanData.salesman_id = `SM${String(count + 1).padStart(4, '0')}`;
         }
         
-        // Set timestamps
         salesmanData.created_at = salesmanData.created_at || new Date().toISOString();
         salesmanData.updated_at = new Date().toISOString();
         salesmanData.status = salesmanData.status || 'active';
@@ -808,7 +950,6 @@ app.post('/api/salesmen', async (req, res) => {
         salesmanData.documents = salesmanData.documents || {};
         salesmanData.notes = salesmanData.notes || '';
         
-        // Check if user already exists with this email
         const existingUser = await collections.register.findOne({ 
             email: salesmanData.email, 
             role: 'salesman' 
@@ -818,14 +959,11 @@ app.post('/api/salesmen', async (req, res) => {
             return res.status(400).json({ error: 'A salesman with this email already exists' });
         }
         
-        // Generate a default password (first 6 characters of name + phone last 4 digits)
         const defaultPassword = `${salesmanData.name.substring(0, 3).toLowerCase()}${salesmanData.phone.substring(6)}`;
         
-        // Hash password for login (using bcryptjs)
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(defaultPassword, saltRounds);
         
-        // Get permissions from request or use defaults
         const permissions = salesmanData.permissions || {
             canAddProduct: false,
             canEditProduct: false,
@@ -838,7 +976,6 @@ app.post('/api/salesmen', async (req, res) => {
             canCollectPayment: true
         };
         
-        // Create login entry for salesman
         const loginEntry = {
             fullName: salesmanData.name,
             email: salesmanData.email,
@@ -856,7 +993,6 @@ app.post('/api/salesmen', async (req, res) => {
         
         const loginResult = await collections.register.insertOne(loginEntry);
         
-        // Insert salesman data
         const result = await collections.salesman.insertOne(salesmanData);
         
         res.json({ 
@@ -873,7 +1009,6 @@ app.post('/api/salesmen', async (req, res) => {
     }
 });
 
-// Get salesmen by distributor ID
 app.get('/api/salesmen/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -888,7 +1023,6 @@ app.get('/api/salesmen/:distributorId', async (req, res) => {
     }
 });
 
-// Get single salesman
 app.get('/api/salesmen/id/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -903,7 +1037,6 @@ app.get('/api/salesmen/id/:id', async (req, res) => {
     }
 });
 
-// Get salesman by salesman_id
 app.get('/api/salesmen/by-id/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
@@ -918,14 +1051,12 @@ app.get('/api/salesmen/by-id/:salesmanId', async (req, res) => {
     }
 });
 
-// Update salesman - FIXED: Now working properly
 app.put('/api/salesmen/:id', async (req, res) => {
     try {
         const { id } = req.params;
         const updateData = req.body;
         updateData.updated_at = new Date().toISOString();
         
-        // Remove _id from update data if present
         delete updateData._id;
         
         const result = await collections.salesman.updateOne(
@@ -937,7 +1068,6 @@ app.put('/api/salesmen/:id', async (req, res) => {
             return res.status(404).json({ error: 'Salesman not found' });
         }
         
-        // Also update the register collection if needed
         if (updateData.name || updateData.email || updateData.phone) {
             const salesman = await collections.salesman.findOne({ _id: new ObjectId(id) });
             if (salesman && salesman.salesman_id) {
@@ -962,7 +1092,6 @@ app.put('/api/salesmen/:id', async (req, res) => {
     }
 });
 
-// Delete salesman (soft delete)
 app.delete('/api/salesmen/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -989,13 +1118,11 @@ app.delete('/api/salesmen/:id', async (req, res) => {
 
 // ==================== SALESMAN PERMISSION APIs ====================
 
-// Update salesman permissions - FIXED: Now working properly
 app.put('/api/salesmen/permissions/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
         const { permissions } = req.body;
         
-        // Also update in salesman collection
         await collections.salesman.updateOne(
             { salesman_id: salesmanId },
             { $set: { permissions: permissions, updated_at: new Date().toISOString() } }
@@ -1017,7 +1144,6 @@ app.put('/api/salesmen/permissions/:salesmanId', async (req, res) => {
     }
 });
 
-// Get salesman permissions
 app.get('/api/salesmen/permissions/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
@@ -1037,12 +1163,10 @@ app.get('/api/salesmen/permissions/:salesmanId', async (req, res) => {
     }
 });
 
-// Get data for salesman (customers and products of their distributor)
 app.get('/api/salesman-data/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
         
-        // Get salesman details to find distributor
         const salesman = await collections.register.findOne({ 
             salesman_id: salesmanId, 
             role: 'salesman' 
@@ -1055,11 +1179,9 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
         const distributorId = salesman.distributor_id;
         console.log(`Salesman ${salesmanId} belongs to distributor: ${distributorId}`);
         
-        // Get the salesman's name from salesman collection
         const salesmanDetails = await collections.salesman.findOne({ salesman_id: salesmanId });
         const salesmanName = salesmanDetails?.name || salesman.fullName || salesmanId;
         
-        // Get customers for this distributor
         const customers = await collections.customer
             .find({ distributor_id: distributorId })
             .sort({ created_at: -1 })
@@ -1067,7 +1189,6 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
         
         console.log(`Found ${customers.length} customers for distributor ${distributorId}`);
         
-        // Get products for this distributor (include all products, even out of stock)
         const products = await collections.product
             .find({ distributorId: distributorId, isActive: true })
             .sort({ createdAt: -1 })
@@ -1075,13 +1196,11 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
         
         console.log(`Found ${products.length} products for distributor ${distributorId}`);
         
-        // Get orders for this salesman
         const orders = await collections.order
             .find({ salesman_id: salesmanId })
             .sort({ createdAt: -1 })
             .toArray();
         
-        // Get permissions for this salesman
         const permissions = salesman.permissions || {
             canAddProduct: false,
             canEditProduct: false,
@@ -1109,12 +1228,10 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
 
 // ==================== ORDER APIs ====================
 
-// FIXED #1, #3, #7: Create new order with proper distributor ID and stock update
 app.post('/api/orders', async (req, res) => {
     try {
         const orderData = req.body;
         
-        // Generate order number
         const orderNumber = `ORD${Date.now()}`;
         orderData.orderNumber = orderNumber;
         orderData.order_id = orderNumber;
@@ -1122,12 +1239,9 @@ app.post('/api/orders', async (req, res) => {
         orderData.updatedAt = new Date().toISOString();
         orderData.order_date = new Date().toISOString();
         
-        // FIXED #1 & #3: Ensure distributor_id is properly set
-        // Get distributor ID from the logged-in user or from request
         let distributorId = orderData.distributor_id || orderData.distributorId;
         
         if (!distributorId && orderData.salesman_id) {
-            // If order is by salesman, get distributor from salesman record
             const salesman = await collections.salesman.findOne({ salesman_id: orderData.salesman_id });
             if (salesman && salesman.distributor_id) {
                 distributorId = salesman.distributor_id;
@@ -1139,14 +1253,11 @@ app.post('/api/orders', async (req, res) => {
             }
         }
         
-        // Set distributor_id in order
         orderData.distributor_id = distributorId;
-        orderData.distributorId = distributorId; // Set both fields for compatibility
+        orderData.distributorId = distributorId;
         
-        // Track who created the order
         orderData.created_by_type = orderData.created_by_type || (orderData.salesman_id ? 'salesman' : 'distributor');
         
-        // Ensure all required fields
         orderData.status = orderData.status || 'pending';
         orderData.payment_status = orderData.payment_status || 'pending';
         orderData.paidAmount = orderData.paidAmount || 0;
@@ -1157,11 +1268,9 @@ app.post('/api/orders', async (req, res) => {
         console.log(`Order created: ${orderNumber} with ID: ${result.insertedId}`);
         console.log(`Order created by: ${orderData.created_by_type}, Distributor ID: ${distributorId}, Salesman ID: ${orderData.salesman_id || 'N/A'}`);
         
-        // FIXED #2: Update stock for each product in the order - CORRECTED calculation
         if (orderData.items && Array.isArray(orderData.items) && orderData.items.length > 0) {
             for (const item of orderData.items) {
                 try {
-                    // Find the product by ID or SKU
                     let product = null;
                     if (item.productId && ObjectId.isValid(item.productId)) {
                         product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
@@ -1174,9 +1283,7 @@ app.post('/api/orders', async (req, res) => {
                     if (product) {
                         const quantitySold = item.quantity || item.qty || 0;
                         const currentStock = product.stock || 0;
-                        // FIXED: Correct stock calculation - subtract sold quantity
                         const newStock = currentStock - quantitySold;
-                        // Ensure stock doesn't go negative
                         const finalStock = newStock < 0 ? 0 : newStock;
                         
                         await collections.product.updateOne(
@@ -1194,14 +1301,11 @@ app.post('/api/orders', async (req, res) => {
                     }
                 } catch (stockError) {
                     console.error(`Error updating stock for product ${item.productId}:`, stockError);
-                    // Continue with other products even if one fails
                 }
             }
         }
         
-        // FIXED: Create notification for distributor ONLY if order is created by salesman
         if (distributorId && orderData.salesman_id && orderData.created_by_type === 'salesman') {
-            // Get salesman name from the order data or fetch from database
             let salesmanName = orderData.salesmanName;
             if (!salesmanName && orderData.salesman_id) {
                 const salesman = await collections.salesman.findOne({ salesman_id: orderData.salesman_id });
@@ -1231,7 +1335,6 @@ app.post('/api/orders', async (req, res) => {
     }
 });
 
-// Get orders by salesman ID
 app.get('/api/orders/salesman/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
@@ -1247,7 +1350,6 @@ app.get('/api/orders/salesman/:salesmanId', async (req, res) => {
     }
 });
 
-// Get orders by distributor ID with filters
 app.get('/api/orders/distributor/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -1255,7 +1357,6 @@ app.get('/api/orders/distributor/:distributorId', async (req, res) => {
         
         let query = { distributor_id: distributorId };
         
-        // FIXED #6: Search functionality for the search bar
         if (search && search.trim()) {
             const searchTerm = search.trim();
             query.$or = [
@@ -1267,17 +1368,14 @@ app.get('/api/orders/distributor/:distributorId', async (req, res) => {
             ];
         }
         
-        // Filter by customer name
         if (customerName && customerName.trim()) {
             query.customerName = { $regex: customerName, $options: 'i' };
         }
         
-        // Filter by salesman
         if (salesmanId && salesmanId.trim() && salesmanId !== 'all') {
             query.salesman_id = salesmanId;
         }
         
-        // Filter by date range
         if (startDate || endDate) {
             query.order_date = {};
             if (startDate) {
@@ -1299,7 +1397,6 @@ app.get('/api/orders/distributor/:distributorId', async (req, res) => {
     }
 });
 
-// FIXED #7: Download orders for distributor with date filters and Excel export
 app.get('/api/orders/download/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -1307,7 +1404,6 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
         
         let query = { distributor_id: distributorId };
         
-        // Apply date filters
         let startDateTime, endDateTime;
         const now = new Date();
         
@@ -1346,7 +1442,6 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
             }
         }
         
-        // Fetch all orders for this distributor (both salesman and distributor orders)
         const orders = await collections.order
             .find(query)
             .sort({ order_date: -1 })
@@ -1356,11 +1451,9 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
             return res.status(404).json({ error: 'No orders found for the selected date range' });
         }
         
-        // Prepare Excel data
         const excelData = [];
         
         for (const order of orders) {
-            // Get salesman code and name
             let salesmanCode = order.salesman_id || '';
             let salesmanName = order.salesmanName || '';
             
@@ -1376,7 +1469,6 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
                 }
             }
             
-            // For each item in the order, create a row
             if (order.items && Array.isArray(order.items) && order.items.length > 0) {
                 for (const item of order.items) {
                     excelData.push({
@@ -1395,7 +1487,6 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
                     });
                 }
             } else {
-                // If no items array, create a single row with order summary
                 excelData.push({
                     'Order No': order.orderNumber,
                     'Order Date': new Date(order.order_date).toLocaleDateString('en-IN'),
@@ -1413,34 +1504,20 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
             }
         }
         
-        // Create worksheet
         const worksheet = XLSX.utils.json_to_sheet(excelData);
         
-        // Auto-size columns
         const colWidths = [
-            { wch: 15 }, // Order No
-            { wch: 12 }, // Order Date
-            { wch: 15 }, // Party code
-            { wch: 25 }, // Party name
-            { wch: 15 }, // Product code
-            { wch: 30 }, // Product name
-            { wch: 10 }, // MRP
-            { wch: 10 }, // Rate
-            { wch: 6 },  // Unit
-            { wch: 12 }, // SSMcode
-            { wch: 20 }, // Salesman name
-            { wch: 12 }  // Net amount
+            { wch: 15 }, { wch: 12 }, { wch: 15 }, { wch: 25 }, { wch: 15 },
+            { wch: 30 }, { wch: 10 }, { wch: 10 }, { wch: 6 }, { wch: 12 },
+            { wch: 20 }, { wch: 12 }
         ];
         worksheet['!cols'] = colWidths;
         
-        // Create workbook
         const workbook = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(workbook, worksheet, 'Orders');
         
-        // Generate Excel file
         const excelBuffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
         
-        // Set response headers
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename=orders_${distributorId}_${Date.now()}.xlsx`);
         
@@ -1452,7 +1529,6 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
     }
 });
 
-// Get orders by customer ID
 app.get('/api/orders/customer/:customerId', async (req, res) => {
     try {
         const { customerId } = req.params;
@@ -1468,7 +1544,6 @@ app.get('/api/orders/customer/:customerId', async (req, res) => {
     }
 });
 
-// Get last order by customer ID
 app.get('/api/orders/customer/:customerId/last', async (req, res) => {
     try {
         const { customerId } = req.params;
@@ -1486,7 +1561,6 @@ app.get('/api/orders/customer/:customerId/last', async (req, res) => {
     }
 });
 
-// Get last sale for product
 app.get('/api/products/:productId/last-sale', async (req, res) => {
     try {
         const { productId } = req.params;
@@ -1515,18 +1589,15 @@ app.get('/api/products/:productId/last-sale', async (req, res) => {
     }
 });
 
-// Get single order by ID (supports both MongoDB _id and orderNumber)
 app.get('/api/orders/:orderId', async (req, res) => {
     try {
         const { orderId } = req.params;
         
-        // Try to find by MongoDB _id first
         let order = null;
         if (ObjectId.isValid(orderId)) {
             order = await collections.order.findOne({ _id: new ObjectId(orderId) });
         }
         
-        // If not found by _id, try by orderNumber
         if (!order) {
             order = await collections.order.findOne({ orderNumber: orderId });
         }
@@ -1541,7 +1612,6 @@ app.get('/api/orders/:orderId', async (req, res) => {
     }
 });
 
-// Update order status
 app.put('/api/orders/:orderId/status', async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -1563,9 +1633,8 @@ app.put('/api/orders/:orderId/status', async (req, res) => {
     }
 });
 
-// ==================== PAYMENT APIs with mas_payment collection ====================
+// ==================== PAYMENT APIs ====================
 
-// Get all payments
 app.get('/api/payments', async (req, res) => {
     try {
         const payments = await collections.payment
@@ -1579,7 +1648,6 @@ app.get('/api/payments', async (req, res) => {
     }
 });
 
-// Get payments by distributor
 app.get('/api/payments/distributor/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
@@ -1594,7 +1662,6 @@ app.get('/api/payments/distributor/:distributorId', async (req, res) => {
     }
 });
 
-// Get payments by salesman
 app.get('/api/payments/salesman/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
@@ -1609,7 +1676,6 @@ app.get('/api/payments/salesman/:salesmanId', async (req, res) => {
     }
 });
 
-// Get payments by order ID
 app.get('/api/payments/order/:orderId', async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -1624,7 +1690,6 @@ app.get('/api/payments/order/:orderId', async (req, res) => {
     }
 });
 
-// Record payment with file upload - properly handles UPI image attachment
 app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (req, res) => {
     try {
         const { orderId } = req.params;
@@ -1647,15 +1712,12 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
         
         console.log(`Looking for order with ID: ${orderId}`);
         
-        // Try to find order by both _id and orderNumber
         let order = null;
         
-        // First try by MongoDB _id
         if (ObjectId.isValid(orderId)) {
             order = await collections.order.findOne({ _id: new ObjectId(orderId) });
         }
         
-        // If not found, try by orderNumber
         if (!order) {
             order = await collections.order.findOne({ orderNumber: orderId });
         }
@@ -1671,10 +1733,8 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
         const newPaidAmount = (order.paidAmount || 0) + paymentAmount;
         const newDueAmount = order.grand_total - newPaidAmount;
         
-        // Generate collection ID
         const collectionId = generateCollectionId();
         
-        // Prepare payment modes details based on payment mode
         let paymentModesDetails = {};
         
         if (paymentMode === 'Cheque' || paymentMode === 'cheque') {
@@ -1715,7 +1775,6 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
             };
         }
         
-        // Create payment record in mas_payment collection
         const paymentRecord = {
             collection_id: collectionId,
             collection_date: new Date().toISOString(),
@@ -1750,7 +1809,6 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
         const paymentResult = await collections.payment.insertOne(paymentRecord);
         console.log(`Payment recorded with ID: ${paymentResult.insertedId}, Collection ID: ${collectionId}`);
         
-        // Update order with payment information
         const updateData = { 
             paidAmount: newPaidAmount,
             dueAmount: newDueAmount,
@@ -1797,7 +1855,6 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
     }
 });
 
-// Get customer outstanding balance
 app.get('/api/customers/:customerId/outstanding', async (req, res) => {
     try {
         const { customerId } = req.params;
@@ -1818,19 +1875,16 @@ app.get('/api/customers/:customerId/outstanding', async (req, res) => {
     }
 });
 
-// Get banks list API
 app.get('/api/banks', (req, res) => {
     res.json({ banks: INDIAN_BANKS });
 });
 
-// Get UPI types API
 app.get('/api/upi-types', (req, res) => {
     res.json({ upiTypes: UPI_APPS });
 });
 
 // ==================== AUTH APIs ====================
 
-// Check if user exists
 app.post('/api/check-user', async (req, res) => {
     try {
         const { email, role } = req.body;
@@ -1843,7 +1897,6 @@ app.post('/api/check-user', async (req, res) => {
     }
 });
 
-// Get user details
 app.post('/api/get-user', async (req, res) => {
     try {
         const { email, role } = req.body;
@@ -1861,14 +1914,12 @@ app.post('/api/get-user', async (req, res) => {
     }
 });
 
-// Register new user
 app.post('/api/register', async (req, res) => {
     try {
         console.log('Received registration request:', req.body);
         
         const { fullName, email, phoneNumber, password, role, accountType, createdAt, isActive } = req.body;
         
-        // Validate required fields
         if (!fullName || !email || !phoneNumber || !password || !role) {
             return res.status(400).json({ 
                 message: 'Missing required fields',
@@ -1876,28 +1927,24 @@ app.post('/api/register', async (req, res) => {
             });
         }
         
-        // Validate name (alphabet only)
         if (!validateAlphabetOnly(fullName)) {
             return res.status(400).json({ 
                 message: 'Name should contain only alphabets and spaces' 
             });
         }
         
-        // Validate email format
         if (!validateEmail(email)) {
             return res.status(400).json({ 
                 message: 'Invalid email format. Please enter a valid email address (e.g., name@example.com)' 
             });
         }
         
-        // Validate mobile number format (10 digits only)
         if (!validateMobileNumber(phoneNumber)) {
             return res.status(400).json({ 
                 message: 'Invalid mobile number. Mobile number must be exactly 10 digits' 
             });
         }
         
-        // Check if user already exists
         const normalizedEmail = normalizeEmail(email);
         const existingUser = await collections.register.findOne({ email: normalizedEmail, role });
         if (existingUser) {
@@ -1906,16 +1953,13 @@ app.post('/api/register', async (req, res) => {
             });
         }
 
-        // Hash the password (using bcryptjs)
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(password, saltRounds);
         
-        // Generate unique distributor ID if role is distributor
         let distributorId = null;
         if (role === 'distributor') {
             distributorId = generateDistributorId();
             
-            // Create distributor document
             const distributorDoc = {
                 distributor_id: distributorId,
                 name: fullName,
@@ -1929,7 +1973,6 @@ app.post('/api/register', async (req, res) => {
             console.log(`Created distributor with ID: ${distributorId}`);
         }
         
-        // Prepare user document for insertion
         const userDocument = {
             fullName: fullName,
             email: normalizedEmail,
@@ -1944,7 +1987,6 @@ app.post('/api/register', async (req, res) => {
         
         console.log('Attempting to insert user:', { ...userDocument, password: '[HIDDEN]' });
         
-        // Insert new user
         const result = await collections.register.insertOne(userDocument);
         
         console.log('User inserted successfully with ID:', result.insertedId);
@@ -1963,40 +2005,34 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// Login endpoint
 app.post('/api/login', async (req, res) => {
     try {
         const { email, password } = req.body;
         
         console.log('Login attempt for:', { email });
         
-        // Validate email format
         if (!validateEmail(email)) {
             return res.status(401).json({ message: 'Invalid email format' });
         }
         
         const normalizedEmail = normalizeEmail(email);
         
-        // Find user by email
         const user = await collections.register.findOne({ email: normalizedEmail });
         
         if (!user) {
             return res.status(401).json({ message: 'Invalid credentials. Email or password incorrect.' });
         }
         
-        // Check if user is active
         if (user.isActive === false) {
             return res.status(401).json({ message: 'Account is deactivated. Please contact administrator.' });
         }
         
-        // Verify password (using bcryptjs)
         const isValidPassword = await bcrypt.compare(password, user.password);
         
         if (!isValidPassword) {
             return res.status(401).json({ message: 'Invalid credentials. Email or password incorrect.' });
         }
 
-        // Remove password and _id from response
         const { _id, password: _, ...userResponse } = user;
         res.json({ 
             success: true, 
@@ -2009,13 +2045,8 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// Logout endpoint - clears any server-side session if needed
 app.post('/api/logout', async (req, res) => {
     try {
-        // Since we're using stateless authentication with JWT-like approach,
-        // logout is primarily handled client-side by clearing stored tokens.
-        // This endpoint exists for consistency and future token-based auth.
-        // We don't have server-side sessions to destroy.
         res.json({ 
             success: true, 
             message: 'Logout successful' 
@@ -2026,7 +2057,6 @@ app.post('/api/logout', async (req, res) => {
     }
 });
 
-// Health check endpoint
 app.get('/api/health', (req, res) => {
     res.json({ 
         status: 'OK', 
@@ -2039,7 +2069,6 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Start server
 app.listen(PORT, async () => {
     await connectToMongoDB();
     console.log(`Server running on http://localhost:${PORT}`);
@@ -2049,6 +2078,9 @@ app.listen(PORT, async () => {
     console.log(`  POST /api/login - User login`);
     console.log(`  POST /api/logout - User logout`);
     console.log(`  POST /api/register - User registration`);
+    console.log(`\nImport Master Data (NEW):`);
+    console.log(`  POST /api/import/customers - Import customers from Excel`);
+    console.log(`  POST /api/import/products - Import products from Excel`);
     console.log(`\nDistributors:`);
     console.log(`  GET /api/distributors - Get all distributors`);
     console.log(`  GET /api/distributors/:distributorId - Get distributor by ID`);
@@ -2059,8 +2091,8 @@ app.listen(PORT, async () => {
     console.log(`  PUT /api/customers/:id - Update customer`);
     console.log(`  DELETE /api/customers/:id - Delete customer`);
     console.log(`\nProducts:`);
-    console.log(`  GET /api/products/:distributorId - Get all products`);
-    console.log(`  POST /api/products - Add new product`);
+    console.log(`  GET /api/products/:distributorId - Get all products (includes MRP field)`);
+    console.log(`  POST /api/products - Add new product (includes MRP)`);
     console.log(`  GET /api/products/id/:id - Get single product`);
     console.log(`  PUT /api/products/:id - Update product`);
     console.log(`  DELETE /api/products/:id - Delete product`);
@@ -2079,16 +2111,16 @@ app.listen(PORT, async () => {
     console.log(`\nSalesman Data:`);
     console.log(`  GET /api/salesman-data/:salesmanId - Get all data for salesman`);
     console.log(`\nOrders:`);
-    console.log(`  POST /api/orders - Create order (auto-updates stock and sets distributor_id)`);
+    console.log(`  POST /api/orders - Create order (auto-updates stock and sets distributor_id, includes MRP)`);
     console.log(`  GET /api/orders/salesman/:salesmanId - Get orders by salesman`);
-    console.log(`  GET /api/orders/distributor/:distributorId - Get orders by distributor (with filters for customerName, salesmanId, startDate, endDate, search)`);
-    console.log(`  GET /api/orders/download/:distributorId - Download orders as Excel with date filters (today, yesterday, last week, custom range)`);
+    console.log(`  GET /api/orders/distributor/:distributorId - Get orders by distributor`);
+    console.log(`  GET /api/orders/download/:distributorId - Download orders as Excel with MRP column`);
     console.log(`  GET /api/orders/customer/:customerId - Get orders by customer`);
     console.log(`  GET /api/orders/customer/:customerId/last - Get last order by customer`);
-    console.log(`  GET /api/orders/:orderId - Get single order (supports both _id and orderNumber)`);
+    console.log(`  GET /api/orders/:orderId - Get single order`);
     console.log(`  PUT /api/orders/:orderId/status - Update order status`);
     console.log(`\nPayments:`);
-    console.log(`  POST /api/orders/:orderId/payment - Record payment with file upload (supports both _id and orderNumber)`);
+    console.log(`  POST /api/orders/:orderId/payment - Record payment with file upload`);
     console.log(`  GET /api/payments - Get all payments`);
     console.log(`  GET /api/payments/distributor/:distributorId - Get payments by distributor`);
     console.log(`  GET /api/payments/salesman/:salesmanId - Get payments by salesman`);
@@ -2101,20 +2133,15 @@ app.listen(PORT, async () => {
     console.log(`  GET /api/notifications/unread-count/:distributorId - Get unread count`);
     console.log(`  PUT /api/notifications/:notificationId/read - Mark notification as read`);
     console.log(`  PUT /api/notifications/mark-all-read/:distributorId - Mark all as read`);
-    console.log(`  Note: Notifications are only created when SALESMAN creates an order (not for distributor self-orders)`);
-    console.log(`\nAreas & Routes (Free API):`);
+    console.log(`\nAreas & Routes:`);
     console.log(`  GET /api/areas - Get major Indian cities and areas`);
-    console.log(`  GET /api/sub-areas - Get real sub-areas/routes for selected area (Pune areas have real route names)`);
+    console.log(`  GET /api/sub-areas - Get real sub-areas/routes for selected area`);
     console.log(`\nPassword Change:`);
-    console.log(`  POST /api/change-password - Change user password (fixed ObjectId validation)`);
+    console.log(`  POST /api/change-password - Change user password`);
     console.log(`  GET /api/users-under-distributor/:distributorId - Get users under distributor`);
-    console.log(`\nAll issues fixed:`);
-    console.log(`  1) Distributor ID is now properly set when creating orders`);
-    console.log(`  2) Stock calculation is CORRECT - subtracts sold quantity from current stock (50 - 5 = 45)`);
-    console.log(`  3) Orders maintain proper creator mapping (salesman vs distributor)`);
-    console.log(`  4) Sub-routes now show real route names for Pune areas`);
-    console.log(`  5) Password change ObjectId error fixed`);
-    console.log(`  6) Search bar functionality restored`);
-    console.log(`  7) Excel download with date filters added for distributor orders (NEW: Download Order tab)`);
-    console.log(`  8) UPI payment recording with photo upload support added`);
+    console.log(`\nAll issues fixed in this version:`);
+    console.log(`  1) MRP field added to products - products now have both MRP and Rate/Price`);
+    console.log(`  2) Excel download now includes MRP column for orders`);
+    console.log(`  3) Stock calculation is CORRECT - subtracts sold quantity from current stock`);
+    console.log(`  4) Import Master Data - Customers and Products can be imported from Excel`);
 });
