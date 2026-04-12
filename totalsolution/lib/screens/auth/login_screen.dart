@@ -7,10 +7,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:async';
-import 'package:flutter/material.dart';
 import 'package:excel/excel.dart' as ex;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:file_picker/file_picker.dart';
 
 // Define models inline if missing
 enum UserRole {
@@ -176,6 +176,7 @@ class ProductModel {
   final String name;
   final String sku;
   final double price;
+  final double mrp;
   final String category;
   final int stock;
   final String? description;
@@ -192,6 +193,7 @@ class ProductModel {
     required this.name,
     required this.sku,
     required this.price,
+    required this.mrp,
     required this.category,
     required this.stock,
     this.description,
@@ -209,6 +211,7 @@ class ProductModel {
       'productName': name,
       'sku': sku,
       'price': price,
+      'mrp': mrp,
       'category': category,
       'stock': stock,
       'stockQuantity': stock,
@@ -229,6 +232,7 @@ class ProductModel {
       name: map['productName'] ?? map['name'] ?? '',
       sku: map['sku'] ?? '',
       price: (map['price'] ?? 0).toDouble(),
+      mrp: (map['mrp'] ?? map['price'] ?? 0).toDouble(),
       category: map['category'] ?? '',
       stock: map['stock'] ?? map['stockQuantity'] ?? 0,
       description: map['description'],
@@ -564,20 +568,12 @@ class CartItemData {
   }
 }
 
-// API Service for backend communication
+// ==================== API Service for backend communication ====================
 class ApiService {
+  static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
+  
   static String get apiUrl {
-    if (kIsWeb) {
-      return 'https://totalmobileapp.onrender.com/api';
-    }
-    
-    if (Platform.isAndroid) {
-      return 'http://10.0.2.2:3000/api';
-    } else if (Platform.isIOS) {
-      return 'https://totalmobileapp.onrender.com/api';
-    }
-    
-    return 'https://totalmobileapp.onrender.com/api';
+    return _remoteBaseUrl;
   }
 
   // Customer APIs
@@ -650,6 +646,66 @@ class ApiService {
     }
   }
 
+  // ==================== IMPORT MASTER DATA APIs ====================
+  
+  static Future<Map<String, dynamic>> importCustomersFromExcel({
+    required String filePath,
+    required String distributorId,
+    String? createdBy,
+  }) async {
+    try {
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$apiUrl/import/customers'),
+      );
+      
+      request.fields['distributorId'] = distributorId;
+      if (createdBy != null) request.fields['createdBy'] = createdBy;
+      
+      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+      
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      final errorData = json.decode(response.body);
+      throw Exception(errorData['error'] ?? 'Failed to import customers');
+    } catch (e) {
+      throw Exception('Error importing customers: $e');
+    }
+  }
+
+  static Future<Map<String, dynamic>> importProductsFromExcel({
+    required String filePath,
+    required String distributorId,
+    String? createdBy,
+  }) async {
+    try {
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$apiUrl/import/products'),
+      );
+      
+      request.fields['distributorId'] = distributorId;
+      if (createdBy != null) request.fields['createdBy'] = createdBy;
+      
+      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+      
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      final errorData = json.decode(response.body);
+      throw Exception(errorData['error'] ?? 'Failed to import products');
+    } catch (e) {
+      throw Exception('Error importing products: $e');
+    }
+  }
+
   // Salesman APIs
   static Future<Map<String, dynamic>> addSalesman(Map<String, dynamic> salesmanData) async {
     try {
@@ -684,7 +740,6 @@ class ApiService {
     }
   }
 
-  // Salesman Data API (for salesman to get their distributor's data)
   static Future<Map<String, dynamic>> getSalesmanData(String salesmanId) async {
     try {
       final response = await http.get(
@@ -773,7 +828,6 @@ class ApiService {
     }
   }
 
-  // FIXED #7: Download orders with date filters - UPDATED for distributor-specific download
   static Future<Map<String, dynamic>> downloadOrders(String distributorId, {String? startDate, String? endDate, String? filterType}) async {
     try {
       var url = '$apiUrl/orders/download/$distributorId';
@@ -864,7 +918,6 @@ class ApiService {
     }
   }
 
-  // Payment APIs with file upload - FIXED for UPI photo attachment
   static Future<Map<String, dynamic>> recordPaymentWithFile({
     required String orderId,
     required double amount,
@@ -948,7 +1001,6 @@ class ApiService {
     }
   }
 
-  // Permission APIs
   static Future<Map<String, dynamic>> updateSalesmanPermissions(String salesmanId, Map<String, dynamic> permissions) async {
     try {
       final response = await http.put(
@@ -982,7 +1034,6 @@ class ApiService {
     }
   }
   
-  // Logout API
   static Future<Map<String, dynamic>> logout() async {
     try {
       final response = await http.post(
@@ -1000,7 +1051,6 @@ class ApiService {
     }
   }
 
-  // Get customer outstanding balance
   static Future<double> getCustomerOutstanding(String customerId) async {
     try {
       final response = await http.get(
@@ -1018,7 +1068,6 @@ class ApiService {
     }
   }
 
-  // Notification APIs
   static Future<List<dynamic>> getNotifications(String distributorId) async {
     try {
       final response = await http.get(
@@ -1084,7 +1133,6 @@ class ApiService {
     }
   }
 
-  // Product stock update
   static Future<Map<String, dynamic>> updateProductStock(String productId, int stockReduction) async {
     try {
       final response = await http.put(
@@ -1102,7 +1150,6 @@ class ApiService {
     }
   }
 
-  // ==================== PASSWORD CHANGE APIs ====================
   static Future<Map<String, dynamic>> changePassword({
     required String userId,
     String? currentPassword,
@@ -1150,7 +1197,6 @@ class ApiService {
     }
   }
 
-  // ==================== AREA AND ROUTE APIs (Free with real route names) ====================
   static Future<List<String>> getAreas({String? city}) async {
     try {
       final uri = city != null && city.isNotEmpty 
@@ -1171,7 +1217,6 @@ class ApiService {
     }
   }
 
-  // FIXED #4: Get real sub-areas/routes from backend
   static Future<List<String>> getSubAreas({required String area}) async {
     try {
       final response = await http.get(
@@ -1334,6 +1379,7 @@ class ProductService {
             name: _products[index].name,
             sku: _products[index].sku,
             price: _products[index].price,
+            mrp: _products[index].mrp,
             category: _products[index].category,
             stock: newStock,
             description: _products[index].description,
@@ -1532,7 +1578,6 @@ class OrderService {
     }
   }
 
-  // FIXED #1 & #3: Create order with proper distributor_id
   Future<void> createOrder(OrderModel order, String? currentDistributorId, String? currentSalesmanId) async {
     try {
       final orderMap = {
@@ -1669,7 +1714,6 @@ class OrderService {
           timeline: order.timeline,
         );
         
-        // FIXED #2: Update product stock after payment (already updated on order creation)
         for (var item in order.items) {
           await ApiService.updateProductStock(item.productId, item.quantity);
         }
@@ -2016,6 +2060,307 @@ class _ChangePasswordDialogState extends State<ChangePasswordDialog> {
   }
 }
 
+// ==================== IMPORT MASTER DATA DIALOG ====================
+class ImportMasterDataDialog extends StatefulWidget {
+  final String distributorId;
+  final String createdBy;
+  final Function onImportComplete;
+
+  const ImportMasterDataDialog({
+    super.key,
+    required this.distributorId,
+    required this.createdBy,
+    required this.onImportComplete,
+  });
+
+  @override
+  State<ImportMasterDataDialog> createState() => _ImportMasterDataDialogState();
+}
+
+class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
+  String? _selectedMasterType;
+  File? _selectedFile;
+  bool _isImporting = false;
+  String? _importMessage;
+
+  final List<Map<String, dynamic>> _masterTypes = [
+    {'value': 'customer', 'label': 'Customers', 'icon': Icons.people},
+    {'value': 'product', 'label': 'Products', 'icon': Icons.inventory_2},
+  ];
+
+  Future<void> _pickFile() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['xlsx', 'xls'],
+      );
+      
+      if (result != null && result.files.single.path != null) {
+        setState(() {
+          _selectedFile = File(result.files.single.path!);
+          _importMessage = null;
+        });
+      }
+    } catch (e) {
+      showSafeSnackBar(context, 'Error picking file: $e', backgroundColor: Colors.red);
+    }
+  }
+
+  Future<void> _importData() async {
+    if (_selectedMasterType == null) {
+      showSafeSnackBar(context, 'Please select master type', backgroundColor: Colors.red);
+      return;
+    }
+    
+    if (_selectedFile == null) {
+      showSafeSnackBar(context, 'Please select an Excel file', backgroundColor: Colors.red);
+      return;
+    }
+    
+    setState(() {
+      _isImporting = true;
+      _importMessage = null;
+    });
+    
+    try {
+      Map<String, dynamic> result;
+      
+      if (_selectedMasterType == 'customer') {
+        result = await ApiService.importCustomersFromExcel(
+          filePath: _selectedFile!.path,
+          distributorId: widget.distributorId,
+          createdBy: widget.createdBy,
+        );
+      } else {
+        result = await ApiService.importProductsFromExcel(
+          filePath: _selectedFile!.path,
+          distributorId: widget.distributorId,
+          createdBy: widget.createdBy,
+        );
+      }
+      
+      if (result['success'] == true) {
+        setState(() {
+          _importMessage = result['message'];
+        });
+        widget.onImportComplete();
+        
+        // Show success message
+        showSafeSnackBar(
+          context,
+          result['message'],
+          backgroundColor: Colors.green,
+        );
+        
+        // Close dialog after 2 seconds
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) {
+            Navigator.pop(context);
+          }
+        });
+      } else {
+        setState(() {
+          _importMessage = result['error'] ?? 'Import failed';
+        });
+        showSafeSnackBar(context, _importMessage!, backgroundColor: Colors.red);
+      }
+    } catch (e) {
+      setState(() {
+        _importMessage = 'Error: $e';
+      });
+      showSafeSnackBar(context, 'Error importing data: $e', backgroundColor: Colors.red);
+    } finally {
+      setState(() {
+        _isImporting = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        width: double.maxFinite,
+        constraints: BoxConstraints(
+          maxWidth: 400,
+          maxHeight: MediaQuery.of(context).size.height * 0.7,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.upload_file, color: const Color(0xFF1A3B70)),
+                const SizedBox(width: 12),
+                const Text(
+                  'Import Master Data',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF1A3B70),
+                  ),
+                ),
+              ],
+            ),
+            const Divider(),
+            const SizedBox(height: 16),
+            const Text(
+              'Select Master Type',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 12,
+              children: _masterTypes.map((type) {
+                final isSelected = _selectedMasterType == type['value'];
+                return ChoiceChip(
+                  label: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(type['icon'], size: 16, color: isSelected ? Colors.white : const Color(0xFF1A3B70)),
+                      const SizedBox(width: 4),
+                      Text(type['label']),
+                    ],
+                  ),
+                  selected: isSelected,
+                  onSelected: (selected) {
+                    setState(() {
+                      _selectedMasterType = selected ? type['value'] : null;
+                      _importMessage = null;
+                    });
+                  },
+                  selectedColor: const Color(0xFF00A68A),
+                  backgroundColor: Colors.grey[200],
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Excel File Format',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Customer Excel Columns:',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Customer Code, Customer Name, Area, Route, Address, Distributor id',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Product Excel Columns:',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'product name, Product code, MRP, Price, Category, Stock Quantity, Description, Distirbutor Id',
+                    style: TextStyle(fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: _pickFile,
+              icon: const Icon(Icons.attach_file),
+              label: Text(_selectedFile != null 
+                  ? 'Selected: ${_selectedFile!.path.split('/').last}' 
+                  : 'Choose Excel File'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF1A3B70),
+                minimumSize: const Size(double.infinity, 45),
+              ),
+            ),
+            if (_selectedFile != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.green[50],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.green[700], size: 16),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'File ready to import',
+                        style: TextStyle(color: Colors.green[700], fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (_importMessage != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _importMessage!.contains('Error') ? Colors.red[50] : Colors.green[50],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  _importMessage!,
+                  style: TextStyle(
+                    color: _importMessage!.contains('Error') ? Colors.red[700] : Colors.green[700],
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: _isImporting ? null : () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _isImporting || _selectedMasterType == null || _selectedFile == null
+                        ? null
+                        : _importData,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF00A68A),
+                    ),
+                    child: _isImporting
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('Import'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ==================== DISTRIBUTOR DASHBOARD (FULL FEATURED) ====================
 class DistributorDashboardEnhanced extends StatefulWidget {
   final UserModel? loggedInUser;
@@ -2080,10 +2425,10 @@ class _DistributorDashboardEnhancedState
   String _orderNotes = '';
   String _internalNotes = '';
 
-  // Stock alert tracking - FIXED for multiple alerts issue
+  // Stock alert tracking
   final Set<String> _stockAlertShown = {};
 
-  // Search & Filter - FIXED #6: Search bar working
+  // Search & Filter
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   String? _selectedCategory;
@@ -2165,7 +2510,7 @@ class _DistributorDashboardEnhancedState
   List<Map<String, dynamic>> _usersUnderDistributor = [];
   bool _isLoadingUsers = false;
 
-  // FIXED #7: Download orders with date filters - NEW
+  // Download orders with date filters
   bool _isDownloading = false;
   String? _downloadFilterType;
 
@@ -2202,7 +2547,7 @@ class _DistributorDashboardEnhancedState
     return _products.map((p) => p.category).toSet().toList();
   }
 
-  // Get filtered customers - FIXED #6: Search bar working
+  // Get filtered customers
   List<CustomerModel> get filteredCustomers {
     var customers = _customers;
     if (_searchQuery.isNotEmpty) {
@@ -2265,7 +2610,7 @@ class _DistributorDashboardEnhancedState
     return salesmen;
   }
 
-  // Get filtered orders - FIXED #6: Search bar working
+  // Get filtered orders
   List<OrderModel> get filteredOrders {
     var orders = _orders;
     if (_selectedOrderSalesmanId != null && _selectedOrderSalesmanId!.isNotEmpty && _selectedOrderSalesmanId != 'all') {
@@ -2300,7 +2645,6 @@ class _DistributorDashboardEnhancedState
           )
           .toList();
     }
-    // FIXED #6: Apply global search to orders as well
     if (_searchQuery.isNotEmpty) {
       final query = _searchQuery.toLowerCase();
       orders = orders
@@ -2455,7 +2799,44 @@ class _DistributorDashboardEnhancedState
     }
   }
 
-  // FIXED #7: Download orders with date filters - NEW METHOD
+  // Helper method to get the correct save directory for Excel files
+  Future<Directory> _getExcelSaveDirectory() async {
+    if (kIsWeb) {
+      return await getTemporaryDirectory();
+    }
+    
+    Directory? targetDir;
+    
+    if (Platform.isAndroid) {
+      try {
+        final externalDir = await getExternalStorageDirectory();
+        if (externalDir != null) {
+          String path = externalDir.path;
+          if (path.contains('/Android/')) {
+            path = path.substring(0, path.indexOf('/Android/'));
+          }
+          targetDir = Directory('$path/TotalMobileExcel');
+          if (!await targetDir.exists()) {
+            await targetDir.create(recursive: true);
+          }
+        }
+      } catch (e) {
+        print('Error accessing external storage: $e');
+      }
+    }
+    
+    if (targetDir == null || !await targetDir.exists()) {
+      final appDir = await getApplicationDocumentsDirectory();
+      targetDir = Directory('${appDir.path}/TotalMobileExcel');
+      if (!await targetDir.exists()) {
+        await targetDir.create(recursive: true);
+      }
+    }
+    
+    return targetDir;
+  }
+
+  // Download orders with date filters
   Future<void> _downloadOrders({String? filterType, DateTime? startDate, DateTime? endDate}) async {
     if (_currentDistributor.distributorId == null) {
       showSafeSnackBar(context, 'Distributor ID not found', backgroundColor: errorRed);
@@ -2469,7 +2850,6 @@ class _DistributorDashboardEnhancedState
       String? endDateStr;
       
       if (filterType != null) {
-        // Quick filters
         final now = DateTime.now();
         if (filterType == 'today') {
           startDateStr = DateTime(now.year, now.month, now.day).toIso8601String();
@@ -2497,13 +2877,22 @@ class _DistributorDashboardEnhancedState
 
       if (result['success'] == true) {
         final bytes = result['data'] as List<int>;
-        final tempDir = await getTemporaryDirectory();
-        final file = File('${tempDir.path}/orders_${DateTime.now().millisecondsSinceEpoch}.xlsx');
+        final saveDir = await _getExcelSaveDirectory();
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        final fileName = 'orders_$timestamp.xlsx';
+        final file = File('${saveDir.path}/$fileName');
         await file.writeAsBytes(bytes);
         
-        await Share.shareXFiles([XFile(file.path)], text: 'Orders Report');
+        showSafeSnackBar(
+          context, 
+          '✅ Orders saved to: ${file.path}',
+          backgroundColor: successGreen,
+        );
         
-        showSafeSnackBar(context, 'Orders downloaded successfully!', backgroundColor: successGreen);
+        await Share.shareXFiles(
+          [XFile(file.path)], 
+          text: 'Orders Report - ${DateTime.now().toString().split(' ')[0]}',
+        );
       } else {
         showSafeSnackBar(context, result['error'] ?? 'Failed to download orders', backgroundColor: errorRed);
       }
@@ -2514,7 +2903,6 @@ class _DistributorDashboardEnhancedState
     }
   }
 
-  // NEW: Show download options dialog
   void _showDownloadOptionsDialog() {
     showDialog(
       context: context,
@@ -2569,6 +2957,20 @@ class _DistributorDashboardEnhancedState
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // NEW: Show import master data dialog
+  void _showImportMasterDataDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => ImportMasterDataDialog(
+        distributorId: _currentDistributor.distributorId ?? '',
+        createdBy: _currentDistributor.email,
+        onImportComplete: () {
+          _loadData();
+        },
       ),
     );
   }
@@ -2699,7 +3101,6 @@ class _DistributorDashboardEnhancedState
       _salesmanService.setDistributorInfo(_currentDistributor.distributorId!, _currentDistributor.email);
       _orderService.setDistributorId(_currentDistributor.distributorId!);
       
-      // Initialize notification service
       _notificationService.init(_currentDistributor.distributorId!, onUnreadCountChanged: (count) {
         if (mounted) {
           setState(() {
@@ -2708,7 +3109,6 @@ class _DistributorDashboardEnhancedState
         }
       });
       
-      // Load users for password change
       _loadUsersUnderDistributor();
     }
     
@@ -2777,7 +3177,6 @@ class _DistributorDashboardEnhancedState
     }
   }
 
-  // FIXED #4: Load real sub-areas/routes
   Future<void> _loadRoutesForArea(String area) async {
     setState(() => _isLoadingAreas = true);
     try {
@@ -3090,7 +3489,6 @@ class _DistributorDashboardEnhancedState
         _cart[productId]!.quantity = quantity;
         _cart[productId]!.calculate();
         
-        // FIXED: Stock alert appears only once per product
         if (quantity > product.stock && !_stockAlertShown.contains(productId)) {
           _stockAlertShown.add(productId);
           showSafeSnackBar(
@@ -3140,10 +3538,8 @@ class _DistributorDashboardEnhancedState
 
   int get cartItemCount => _cart.values.fold(0, (a, b) => a + b.quantity);
   
-  // FIXED: Get unique product count (not total quantity)
   int get uniqueProductCount => _cart.length;
 
-  // FIXED #1 & #3: Submit order with proper distributor_id
   Future<void> submitOrder() async {
     if (_selectedCustomerId == null || _cart.isEmpty) return;
 
@@ -3199,10 +3595,8 @@ class _DistributorDashboardEnhancedState
         ],
       );
 
-      // FIXED #1 & #3: Pass distributor_id explicitly
       await _orderService.createOrder(order, _currentDistributor.distributorId, null);
       
-      // FIXED #2: Update stock for each product after order creation
       for (var entry in _cart.entries) {
         final productId = entry.key;
         final quantity = entry.value.quantity;
@@ -3214,9 +3608,8 @@ class _DistributorDashboardEnhancedState
         _clearCart();
         await _loadData();
         
-        // Close the order tab after successful submission by switching to dashboard
         setState(() {
-          _selectedIndex = 0; // Switch to dashboard
+          _selectedIndex = 0;
         });
       }
     } catch (e) {
@@ -3324,7 +3717,6 @@ class _DistributorDashboardEnhancedState
     final phoneController = TextEditingController();
     final addressController = TextEditingController();
     
-    // Reset area/route selection
     _selectedArea = null;
     _selectedRoute = null;
     _availableAreas = [];
@@ -3389,7 +3781,6 @@ class _DistributorDashboardEnhancedState
                       _availableRoutes = [];
                     });
                     if (value != null && value.isNotEmpty) {
-                      // FIXED #4: Load real sub-areas/routes
                       final routes = await ApiService.getSubAreas(area: value);
                       setDialogState(() {
                         _availableRoutes = routes;
@@ -3484,6 +3875,7 @@ class _DistributorDashboardEnhancedState
   void _showAddProductDialog() {
     final nameController = TextEditingController();
     final skuController = TextEditingController();
+    final mrpController = TextEditingController();
     final priceController = TextEditingController();
     final categoryController = TextEditingController();
     final stockController = TextEditingController();
@@ -3496,7 +3888,7 @@ class _DistributorDashboardEnhancedState
           children: [
             Icon(Icons.add, color: accentTeal),
             SizedBox(width: 8),
-            const Text('Add New Product'),
+            Text('Add New Product'),
           ],
         ),
         content: SingleChildScrollView(
@@ -3522,9 +3914,20 @@ class _DistributorDashboardEnhancedState
               ),
               const SizedBox(height: 12),
               TextField(
+                controller: mrpController,
+                decoration: const InputDecoration(
+                  labelText: 'MRP *',
+                  hintText: 'Enter maximum retail price',
+                  border: OutlineInputBorder(),
+                  prefixText: '₹ ',
+                ),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              TextField(
                 controller: priceController,
                 decoration: const InputDecoration(
-                  labelText: 'Price *',
+                  labelText: 'Selling Price *',
                   hintText: 'Enter selling price',
                   border: OutlineInputBorder(),
                   prefixText: '₹ ',
@@ -3579,7 +3982,7 @@ class _DistributorDashboardEnhancedState
                 return;
               }
               if (priceController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter price', backgroundColor: errorRed);
+                showSafeSnackBar(context, 'Please enter selling price', backgroundColor: errorRed);
                 return;
               }
               if (categoryController.text.trim().isEmpty) {
@@ -3592,6 +3995,7 @@ class _DistributorDashboardEnhancedState
                 name: nameController.text.trim(),
                 sku: skuController.text.trim(),
                 price: double.tryParse(priceController.text) ?? 0,
+                mrp: double.tryParse(mrpController.text) ?? double.tryParse(priceController.text) ?? 0,
                 category: categoryController.text.trim(),
                 stock: int.tryParse(stockController.text) ?? 0,
                 description: descriptionController.text.trim().isNotEmpty ? descriptionController.text.trim() : null,
@@ -3879,7 +4283,6 @@ class _DistributorDashboardEnhancedState
 
     _loadAreas().then((_) {
       if (selectedArea != null) {
-        // FIXED #4: Load real sub-areas/routes
         ApiService.getSubAreas(area: selectedArea!).then((routes) {
           if (mounted) {
             setState(() {
@@ -4044,6 +4447,7 @@ class _DistributorDashboardEnhancedState
   void _showEditProductDialog(ProductModel product) {
     final nameController = TextEditingController(text: product.name);
     final skuController = TextEditingController(text: product.sku);
+    final mrpController = TextEditingController(text: product.mrp.toStringAsFixed(0));
     final priceController = TextEditingController(text: product.price.toStringAsFixed(0));
     final categoryController = TextEditingController(text: product.category);
     final stockController = TextEditingController(text: product.stock.toString());
@@ -4080,9 +4484,19 @@ class _DistributorDashboardEnhancedState
               ),
               const SizedBox(height: 12),
               TextField(
+                controller: mrpController,
+                decoration: const InputDecoration(
+                  labelText: 'MRP *',
+                  border: OutlineInputBorder(),
+                  prefixText: '₹ ',
+                ),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              TextField(
                 controller: priceController,
                 decoration: const InputDecoration(
-                  labelText: 'Price *',
+                  labelText: 'Selling Price *',
                   border: OutlineInputBorder(),
                   prefixText: '₹ ',
                 ),
@@ -4133,7 +4547,7 @@ class _DistributorDashboardEnhancedState
                 return;
               }
               if (priceController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter price', backgroundColor: errorRed);
+                showSafeSnackBar(context, 'Please enter selling price', backgroundColor: errorRed);
                 return;
               }
               if (categoryController.text.trim().isEmpty) {
@@ -4146,6 +4560,7 @@ class _DistributorDashboardEnhancedState
                 name: nameController.text.trim(),
                 sku: skuController.text.trim(),
                 price: double.tryParse(priceController.text) ?? 0,
+                mrp: double.tryParse(mrpController.text) ?? double.tryParse(priceController.text) ?? 0,
                 category: categoryController.text.trim(),
                 stock: int.tryParse(stockController.text) ?? 0,
                 description: descriptionController.text.trim().isNotEmpty ? descriptionController.text.trim() : null,
@@ -4488,11 +4903,15 @@ class _DistributorDashboardEnhancedState
                                 6,
                               ),
                               _buildSidebarItem(Icons.payment, 'Payments', 7),
-                              // NEW: Download Order menu item
                               _buildSidebarItem(
                                 Icons.download,
                                 'Download Order',
                                 10,
+                              ),
+                              _buildSidebarItem(
+                                Icons.upload_file,
+                                'Import Master Data',
+                                11,
                               ),
                               _buildSidebarItem(
                                 Icons.description,
@@ -4563,6 +4982,9 @@ class _DistributorDashboardEnhancedState
         } else if (index == -2) {
           setState(() => _isSidebarOpen = false);
           _showChangePasswordDialog();
+        } else if (index == 11) {
+          setState(() => _isSidebarOpen = false);
+          _showImportMasterDataDialog();
         } else {
           setState(() {
             _selectedIndex = index;
@@ -4573,7 +4995,6 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  // NEW: Download Order Section
   Widget _buildDownloadOrderSection() {
     return Center(
       child: SingleChildScrollView(
@@ -5169,7 +5590,7 @@ class _DistributorDashboardEnhancedState
         return _buildTemplatesSection();
       case 9:
         return _buildAnalyticsSection();
-      case 10: // NEW: Download Order section
+      case 10:
         return _buildDownloadOrderSection();
       default:
         return _buildDashboard();
@@ -5460,6 +5881,28 @@ class _DistributorDashboardEnhancedState
                     Icons.person_add_alt,
                     cardPurple,
                     _showAddSalesmanDialog,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildQuickActionCard(
+                    'Import Master Data',
+                    Icons.upload_file,
+                    primaryBlue,
+                    _showImportMasterDataDialog,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _buildQuickActionCard(
+                    'Download Orders',
+                    Icons.download,
+                    successGreen,
+                    _showDownloadOptionsDialog,
                   ),
                 ),
               ],
@@ -6399,7 +6842,6 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  // FIXED: Product card now shows last sale only when expanded/tapped
   Widget _buildProductCard(ProductModel product) {
     bool _isExpanded = false;
     
@@ -6434,6 +6876,12 @@ class _DistributorDashboardEnhancedState
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('SKU: ${product.sku} | Stock: ${product.stock}'),
+                Row(
+                  children: [
+                    Text('MRP: ₹${product.mrp.toStringAsFixed(0)} | '),
+                    Text('Price: ₹${product.price.toStringAsFixed(0)}'),
+                  ],
+                ),
                 Text('Category: ${product.category}'),
               ],
             ),
@@ -6470,7 +6918,6 @@ class _DistributorDashboardEnhancedState
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // FIXED: Last sale details only shown when expanded
                     if (_isExpanded)
                       FutureBuilder<Map<String, dynamic>?>(
                         future: getLastSaleForProduct(product.id),
@@ -6991,7 +7438,6 @@ class _DistributorDashboardEnhancedState
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // Customer Name Filter
                 TextField(
                   decoration: const InputDecoration(
                     labelText: 'Customer Name',
@@ -7006,7 +7452,6 @@ class _DistributorDashboardEnhancedState
                   },
                 ),
                 const SizedBox(height: 16),
-                // Salesman Filter
                 DropdownButtonFormField<String?>(
                   value: _selectedOrderSalesmanId,
                   decoration: const InputDecoration(
@@ -7031,7 +7476,6 @@ class _DistributorDashboardEnhancedState
                   },
                 ),
                 const SizedBox(height: 16),
-                // Date Range Filter
                 Row(
                   children: [
                     Expanded(
@@ -7140,7 +7584,6 @@ class _DistributorDashboardEnhancedState
   }
 
   Widget _buildOrdersSection() {
-    // FIXED: Today's orders displayed in dashboard - all orders appear here
     final todayOrders = _orders.where((o) => 
       o.createdAt.day == DateTime.now().day &&
       o.createdAt.month == DateTime.now().month &&
@@ -7167,7 +7610,6 @@ class _DistributorDashboardEnhancedState
                       ),
                     ),
                   ),
-                  // FIXED #7: Download orders button
                   IconButton(
                     icon: const Icon(Icons.download, color: primaryBlue),
                     onPressed: _isDownloading ? null : _showDownloadOptionsDialog,
@@ -7198,7 +7640,6 @@ class _DistributorDashboardEnhancedState
                 ],
               ),
               const SizedBox(height: 8),
-              // Today's orders summary
               if (todayOrders.isNotEmpty)
                 Container(
                   margin: const EdgeInsets.only(bottom: 12),
@@ -7747,7 +8188,6 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  // FIXED: Quantity input properly handles numeric input without reversing digits
   Widget _buildProductSelectionStepWithScheme() {
     final Map<String, TextEditingController> quantityControllers = {};
     final Map<String, TextEditingController> rateControllers = {};
@@ -7825,7 +8265,7 @@ class _DistributorDashboardEnhancedState
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      '${uniqueProductCount} unique products', // FIXED: Show unique product count
+                      '${uniqueProductCount} unique products',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     Text(
@@ -7969,7 +8409,6 @@ class _DistributorDashboardEnhancedState
                                     ),
                                     keyboardType: TextInputType.number,
                                     onChanged: (value) {
-                                      // FIXED: Properly parse integer without reversing digits
                                       final qty = int.tryParse(value ?? '0');
                                       if (qty != null && qty >= 0) {
                                         if (qty > product.stock && !_stockAlertShown.contains(product.id)) {
@@ -8181,7 +8620,7 @@ class _DistributorDashboardEnhancedState
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    '${uniqueProductCount} unique products', // FIXED: Show unique product count
+                    '${uniqueProductCount} unique products',
                     style: TextStyle(color: Colors.grey[600]),
                   ),
                   Text(
@@ -8637,7 +9076,6 @@ class _DistributorDashboardEnhancedState
                     paymentPhoto: paymentPhoto,
                   );
                   await _loadData();
-                  // Refresh outstanding balance immediately
                   if (mounted) {
                     showSafeSnackBar(context, 'Payment collected successfully! Outstanding balance updated.', backgroundColor: successGreen);
                   }
@@ -8703,7 +9141,6 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   final OrderService _orderService = OrderService();
   final Map<String, Map<String, dynamic>> _lastSaleCache = {};
   
-  // Stock alert tracking
   final Set<String> _stockAlertShown = {};
 
   @override
@@ -9092,7 +9529,6 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     });
   }
 
-  // FIXED #1 & #3: Submit order with proper distributor_id
   Future<void> submitOrder() async {
     if (_selectedCustomerId == null || _cart.isEmpty) return;
 
@@ -9145,10 +9581,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         ],
       );
 
-      // Pass distributor_id from salesman's distributor
       await _orderService.createOrder(order, _currentSalesman.distributorId, _currentSalesman.salesmanId ?? _currentSalesman.id);
       
-      // FIXED #2: Update stock after order creation
       for (var entry in _cart.entries) {
         final productId = entry.key;
         final quantity = entry.value.quantity;
@@ -9160,9 +9594,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         clearCart();
         await _loadData();
         
-        // Close the order tab after successful submission by switching to dashboard
         setState(() {
-          _selectedIndex = 0; // Switch to dashboard
+          _selectedIndex = 0;
         });
       }
     } catch (e) {
@@ -9304,6 +9737,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     
     final nameController = TextEditingController();
     final skuController = TextEditingController();
+    final mrpController = TextEditingController();
     final priceController = TextEditingController();
     final categoryController = TextEditingController();
     final stockController = TextEditingController();
@@ -9333,9 +9767,19 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
               ),
               const SizedBox(height: 12),
               TextField(
+                controller: mrpController,
+                decoration: const InputDecoration(
+                  labelText: 'MRP *',
+                  border: OutlineInputBorder(),
+                  prefixText: '₹ ',
+                ),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              TextField(
                 controller: priceController,
                 decoration: const InputDecoration(
-                  labelText: 'Price *',
+                  labelText: 'Selling Price *',
                   border: OutlineInputBorder(),
                   prefixText: '₹ ',
                 ),
@@ -9377,7 +9821,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                 return;
               }
               if (priceController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter price', backgroundColor: errorRed);
+                showSafeSnackBar(context, 'Please enter selling price', backgroundColor: errorRed);
                 return;
               }
               if (categoryController.text.trim().isEmpty) {
@@ -9390,6 +9834,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                 name: nameController.text.trim(),
                 sku: skuController.text.trim(),
                 price: double.tryParse(priceController.text) ?? 0,
+                mrp: double.tryParse(mrpController.text) ?? double.tryParse(priceController.text) ?? 0,
                 category: categoryController.text.trim(),
                 stock: int.tryParse(stockController.text) ?? 0,
                 description: null,
@@ -10188,7 +10633,6 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     );
   }
 
-  // FIXED: Product card for salesman - shows details only when clicked
   Widget _buildProductCard(ProductModel product) {
     bool _isExpanded = false;
     
@@ -10227,12 +10671,11 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                   'SKU: ${product.sku} | Stock: ${product.stock}',
                   style: const TextStyle(fontSize: 11, color: Colors.grey),
                 ),
-                Text(
-                  '₹${product.price.toStringAsFixed(0)}',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: primaryBlue,
-                  ),
+                Row(
+                  children: [
+                    Text('MRP: ₹${product.mrp.toStringAsFixed(0)} | '),
+                    Text('Price: ₹${product.price.toStringAsFixed(0)}'),
+                  ],
                 ),
               ],
             ),
@@ -10932,7 +11375,6 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                     ),
                                     keyboardType: TextInputType.number,
                                     onChanged: (value) {
-                                      // FIXED: Properly parse integer without reversing digits
                                       final qty = int.tryParse(value ?? '0');
                                       if (qty != null && qty >= 0) {
                                         if (qty > product.stock && !_stockAlertShown.contains(product.id)) {
@@ -11790,18 +12232,10 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _errorMessage;
   String? _successMessage;
 
+  static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
+  
   static String get apiUrl {
-    if (kIsWeb) {
-      return 'https://totalmobileapp.onrender.com/api';
-    }
-    
-    if (Platform.isAndroid) {
-      return 'http://10.0.2.2:3000/api';
-    } else if (Platform.isIOS) {
-      return 'https://totalmobileapp.onrender.com/api';
-    }
-    
-    return 'https://totalmobileapp.onrender.com/api';
+    return _remoteBaseUrl;
   }
 
   static const Color primaryBlue = Color(0xFF1A3B70);
@@ -12546,7 +12980,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   borderSide: BorderSide(color: Colors.grey[300]!),
                 ),
                 focusedBorder: const OutlineInputBorder(
-                 borderRadius: BorderRadius.all(Radius.circular(12)),
+                  borderRadius: BorderRadius.all(Radius.circular(12)),
                   borderSide: BorderSide(color: primaryBlue, width: 2),
                 ),
               ),
