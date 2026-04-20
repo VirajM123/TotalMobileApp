@@ -2004,6 +2004,17 @@ app.post('/api/orders', async (req, res) => {
             }
         }
         
+        // FIXED: Store salesman_id correctly - ensure we use the actual salesman_id from the salesman object
+        if (orderData.salesman_id) {
+            const salesman = await getSalesmanById(orderData.salesman_id);
+            if (salesman && salesman.salesman_id) {
+                orderData.salesman_id = salesman.salesman_id;
+                console.log(`✅ Salesman ID set to: ${orderData.salesman_id}`);
+            } else {
+                console.log(`⚠️ Salesman not found for ID: ${orderData.salesman_id}, keeping original value: ${orderData.salesman_id}`);
+            }
+        }
+        
         // FIXED: Process order items to ensure MRP is saved
         if (orderData.items && Array.isArray(orderData.items) && orderData.items.length > 0) {
             orderData.items = await processOrderItems(orderData.items);
@@ -3364,4 +3375,5 @@ app.listen(PORT, async () => {
     console.log(`  2) ✅ Orders now have a 'status' field that can be set to 'downloaded' when orders are downloaded to desktop`);
     console.log(`  3) ✅ Added 'downloadedAt' timestamp to track when order was downloaded`);
     console.log(`  4) ✅ Added index on 'status' field for faster queries`);
+    console.log(`\n✅ FIXED: Salesman ID is now properly stored in orders - using the actual salesman_id from mas_salesman collection`);
 });
