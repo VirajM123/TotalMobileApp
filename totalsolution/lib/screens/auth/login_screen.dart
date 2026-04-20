@@ -143,6 +143,7 @@ class CustomerModel {
       'customer_id': customerId,
       'phone': phone ?? mobile,
       'area': area,
+      'route': route,
       'address': address,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt.toIso8601String(),
@@ -342,6 +343,78 @@ class SalesmanModel {
   }
 }
 
+// ==================== COLLECTION HISTORY MODEL ====================
+class CollectionHistoryModel {
+  final String id;
+  final String collectionId;
+  final String orderId;
+  final double orderAmount;
+  final double amountCollected;
+  final String paymentMode;
+  final String customerId;
+  final String customerName;
+  final String distributorId;
+  final Map<String, dynamic> collectedBy;
+  final Map<String, dynamic>? salesmanDetails;
+  final String billNo;
+  final DateTime collectionDate;
+  final DateTime createdAt;
+  final String status;
+  final String? chequeNumber;
+  final String? bankName;
+  final String? chequeDate;
+  final String? upiType;
+  final String? transactionNumber;
+
+  CollectionHistoryModel({
+    required this.id,
+    required this.collectionId,
+    required this.orderId,
+    required this.orderAmount,
+    required this.amountCollected,
+    required this.paymentMode,
+    required this.customerId,
+    required this.customerName,
+    required this.distributorId,
+    required this.collectedBy,
+    this.salesmanDetails,
+    required this.billNo,
+    required this.collectionDate,
+    required this.createdAt,
+    required this.status,
+    this.chequeNumber,
+    this.bankName,
+    this.chequeDate,
+    this.upiType,
+    this.transactionNumber,
+  });
+
+  factory CollectionHistoryModel.fromMap(Map<String, dynamic> map, String id) {
+    return CollectionHistoryModel(
+      id: id,
+      collectionId: map['collection_id'] ?? '',
+      orderId: map['order_id'] ?? '',
+      orderAmount: (map['order_amount'] ?? 0).toDouble(),
+      amountCollected: (map['amount_collected'] ?? 0).toDouble(),
+      paymentMode: map['payment_mode'] ?? '',
+      customerId: map['customer_id'] ?? '',
+      customerName: map['customer_name'] ?? '',
+      distributorId: map['distributor_id'] ?? '',
+      collectedBy: map['collected_by'] ?? {},
+      salesmanDetails: map['salesman_details'],
+      billNo: map['bill_no'] ?? '',
+      collectionDate: map['collection_date'] != null ? DateTime.parse(map['collection_date']) : DateTime.now(),
+      createdAt: map['created_at'] != null ? DateTime.parse(map['created_at']) : DateTime.now(),
+      status: map['status'] ?? 'completed',
+      chequeNumber: map['cheque_number'],
+      bankName: map['bank_name'],
+      chequeDate: map['cheque_date'],
+      upiType: map['upi_type'],
+      transactionNumber: map['transaction_number'],
+    );
+  }
+}
+
 class NotificationModel {
   final String id;
   final String distributorId;
@@ -400,6 +473,7 @@ class OrderItemModel {
   final int quantity;
   final double rate;
   final double amount;
+  final double? mrp;
 
   OrderItemModel({
     required this.id,
@@ -409,6 +483,7 @@ class OrderItemModel {
     required this.quantity,
     required this.rate,
     required this.amount,
+    this.mrp,
   });
 }
 
@@ -523,6 +598,7 @@ class CartItemData {
   String sku;
   int quantity;
   double rate;
+  double mrp;
   double schPer;
   double schAmt;
   double grossAmt;
@@ -536,6 +612,7 @@ class CartItemData {
     required this.sku,
     this.quantity = 1,
     this.rate = 0,
+    this.mrp = 0,
     this.schPer = 0,
     this.schAmt = 0,
     this.grossAmt = 0,
@@ -553,6 +630,7 @@ class CartItemData {
   CartItemData copyWith({
     int? quantity,
     double? rate,
+    double? mrp,
     double? schPer,
     bool? schEnabled,
   }) {
@@ -562,6 +640,7 @@ class CartItemData {
       sku: sku,
       quantity: quantity ?? this.quantity,
       rate: rate ?? this.rate,
+      mrp: mrp ?? this.mrp,
       schPer: schPer ?? this.schPer,
       schEnabled: schEnabled ?? this.schEnabled,
     );
@@ -574,6 +653,23 @@ class ApiService {
   
   static String get apiUrl {
     return _remoteBaseUrl;
+  }
+
+  // ==================== GLOBAL SEARCH API ====================
+  static Future<Map<String, dynamic>> searchGlobal(String distributorId, String query) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/search/$distributorId?query=${Uri.encodeComponent(query)}'),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {'products': [], 'customers': [], 'orders': []};
+    } catch (e) {
+      print('Error searching: $e');
+      return {'products': [], 'customers': [], 'orders': []};
+    }
   }
 
   // Customer APIs
@@ -607,6 +703,24 @@ class ApiService {
     } catch (e) {
       print('Error fetching customers: $e');
       return [];
+    }
+  }
+
+  static Future<Map<String, dynamic>> updateCustomer(String customerId, Map<String, dynamic> customerData) async {
+    try {
+      final response = await http.put(
+        Uri.parse('$apiUrl/customers/$customerId'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(customerData),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      final errorData = json.decode(response.body);
+      throw Exception(errorData['error'] ?? 'Failed to update customer');
+    } catch (e) {
+      throw Exception('Error updating customer: $e');
     }
   }
 
@@ -646,12 +760,105 @@ class ApiService {
     }
   }
 
+  // ==================== COLLECTION HISTORY APIs ====================
+  static Future<Map<String, dynamic>> getCollectionHistoryForDistributor(
+    String distributorId, {
+    DateTime? startDate,
+    DateTime? endDate,
+    String? salesmanId,
+  }) async {
+    try {
+      var url = '$apiUrl/collection-history/distributor/$distributorId';
+      var queryParams = <String>[];
+      
+      if (startDate != null) {
+        queryParams.add('startDate=${startDate.toIso8601String()}');
+      }
+      if (endDate != null) {
+        queryParams.add('endDate=${endDate.toIso8601String()}');
+      }
+      if (salesmanId != null && salesmanId.isNotEmpty && salesmanId != 'all') {
+        queryParams.add('salesmanId=$salesmanId');
+      }
+      
+      if (queryParams.isNotEmpty) {
+        url += '?${queryParams.join('&')}';
+      }
+      
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {'collections': [], 'summary': {}};
+    } catch (e) {
+      print('Error fetching collection history: $e');
+      return {'collections': [], 'summary': {}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> getCollectionHistoryForSalesman(
+    String salesmanId, {
+    DateTime? startDate,
+    DateTime? endDate,
+  }) async {
+    try {
+      var url = '$apiUrl/collection-history/salesman/$salesmanId';
+      var queryParams = <String>[];
+      
+      if (startDate != null) {
+        queryParams.add('startDate=${startDate.toIso8601String()}');
+      }
+      if (endDate != null) {
+        queryParams.add('endDate=${endDate.toIso8601String()}');
+      }
+      
+      if (queryParams.isNotEmpty) {
+        url += '?${queryParams.join('&')}';
+      }
+      
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {'collections': [], 'summary': {}};
+    } catch (e) {
+      print('Error fetching salesman collection history: $e');
+      return {'collections': [], 'summary': {}};
+    }
+  }
+
+  static Future<Map<String, dynamic>> reconcileCollections(
+    String distributorId, {
+    required double expectedAmount,
+    DateTime? date,
+  }) async {
+    try {
+      var url = '$apiUrl/collection-history/reconcile/$distributorId?expectedAmount=$expectedAmount';
+      if (date != null) {
+        url += '&date=${date.toIso8601String().split('T')[0]}';
+      }
+      
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {'is_matching': false, 'difference': expectedAmount, 'message': 'Failed to reconcile'};
+    } catch (e) {
+      print('Error reconciling collections: $e');
+      return {'is_matching': false, 'difference': expectedAmount, 'message': 'Error: $e'};
+    }
+  }
+
   // ==================== IMPORT MASTER DATA APIs ====================
   
   static Future<Map<String, dynamic>> importCustomersFromExcel({
     required String filePath,
     required String distributorId,
     String? createdBy,
+    bool updateExisting = true,
   }) async {
     try {
       var request = http.MultipartRequest(
@@ -661,6 +868,7 @@ class ApiService {
       
       request.fields['distributorId'] = distributorId;
       if (createdBy != null) request.fields['createdBy'] = createdBy;
+      request.fields['updateExisting'] = updateExisting.toString();
       
       request.files.add(await http.MultipartFile.fromPath('file', filePath));
       
@@ -681,6 +889,7 @@ class ApiService {
     required String filePath,
     required String distributorId,
     String? createdBy,
+    bool updateExisting = true,
   }) async {
     try {
       var request = http.MultipartRequest(
@@ -690,6 +899,7 @@ class ApiService {
       
       request.fields['distributorId'] = distributorId;
       if (createdBy != null) request.fields['createdBy'] = createdBy;
+      request.fields['updateExisting'] = updateExisting.toString();
       
       request.files.add(await http.MultipartFile.fromPath('file', filePath));
       
@@ -759,6 +969,20 @@ class ApiService {
   // Order APIs
   static Future<Map<String, dynamic>> createOrder(Map<String, dynamic> orderData) async {
     try {
+      // CRITICAL FIX: Ensure each item has MRP value
+      if (orderData.containsKey('items') && orderData['items'] is List) {
+        final items = orderData['items'] as List;
+        for (var i = 0; i < items.length; i++) {
+          final item = items[i];
+          // Ensure MRP is present - if not, use rate as fallback
+          if (item['mrp'] == null || item['mrp'] == 0) {
+            item['mrp'] = item['rate'] ?? 0;
+          }
+          items[i] = item;
+        }
+        orderData['items'] = items;
+      }
+      
       final response = await http.post(
         Uri.parse('$apiUrl/orders'),
         headers: {'Content-Type': 'application/json'},
@@ -843,6 +1067,8 @@ class ApiService {
         queryParams.add('endDate=$endDate');
       }
       
+      queryParams.add('includeMrp=true');
+      
       if (queryParams.isNotEmpty) {
         url += '?${queryParams.join('&')}';
       }
@@ -918,6 +1144,7 @@ class ApiService {
     }
   }
 
+  // FIXED: This method now properly passes cheque and UPI details to the backend
   static Future<Map<String, dynamic>> recordPaymentWithFile({
     required String orderId,
     required double amount,
@@ -947,21 +1174,46 @@ class ApiService {
       request.fields['collectedByName'] = collectedByName;
       request.fields['collectedByType'] = collectedByType;
       
-      if (salesmanId != null) request.fields['salesmanId'] = salesmanId;
+      if (salesmanId != null && salesmanId.isNotEmpty) {
+        request.fields['salesmanId'] = salesmanId;
+      }
       if (salesmanName != null) request.fields['salesmanName'] = salesmanName;
-      if (chequeNumber != null) request.fields['chequeNumber'] = chequeNumber;
-      if (chequeDate != null) request.fields['chequeDate'] = chequeDate;
-      if (bankName != null) request.fields['bankName'] = bankName;
-      if (upiType != null) request.fields['upiType'] = upiType;
-      if (transactionNumber != null) request.fields['transactionNumber'] = transactionNumber;
-      if (remark != null) request.fields['remark'] = remark;
+      
+      // FIXED: Pass all cheque and UPI details to backend
+      if (chequeNumber != null && chequeNumber.isNotEmpty) {
+        request.fields['chequeNumber'] = chequeNumber;
+        print('Adding chequeNumber: $chequeNumber');
+      }
+      if (chequeDate != null && chequeDate.isNotEmpty) {
+        request.fields['chequeDate'] = chequeDate;
+        print('Adding chequeDate: $chequeDate');
+      }
+      if (bankName != null && bankName.isNotEmpty) {
+        request.fields['bankName'] = bankName;
+        print('Adding bankName: $bankName');
+      }
+      if (upiType != null && upiType.isNotEmpty) {
+        request.fields['upiType'] = upiType;
+        print('Adding upiType: $upiType');
+      }
+      if (transactionNumber != null && transactionNumber.isNotEmpty) {
+        request.fields['transactionNumber'] = transactionNumber;
+        print('Adding transactionNumber: $transactionNumber');
+      }
+      if (remark != null && remark.isNotEmpty) {
+        request.fields['remark'] = remark;
+      }
       
       if (paymentPhoto != null) {
         request.files.add(await http.MultipartFile.fromPath('paymentPhoto', paymentPhoto.path));
+        print('Adding payment photo: ${paymentPhoto.path}');
       }
       
       final streamedResponse = await request.send();
       final response = await http.Response.fromStream(streamedResponse);
+      
+      print('Payment API response status: ${response.statusCode}');
+      print('Payment API response body: ${response.body}');
       
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -969,6 +1221,7 @@ class ApiService {
       final errorText = response.body;
       throw Exception('Failed to record payment: ${response.statusCode} - $errorText');
     } catch (e) {
+      print('Error recording payment: $e');
       throw Exception('Error recording payment: $e');
     }
   }
@@ -1150,6 +1403,53 @@ class ApiService {
     }
   }
 
+  static Future<Map<String, dynamic>> editOrder(String orderId, Map<String, dynamic> orderData) async {
+    try {
+      // CRITICAL FIX: Ensure each item has MRP value when editing
+      if (orderData.containsKey('items') && orderData['items'] is List) {
+        final items = orderData['items'] as List;
+        for (var i = 0; i < items.length; i++) {
+          final item = items[i];
+          if (item['mrp'] == null || item['mrp'] == 0) {
+            item['mrp'] = item['rate'] ?? 0;
+          }
+          items[i] = item;
+        }
+        orderData['items'] = items;
+      }
+      
+      final response = await http.put(
+        Uri.parse('$apiUrl/orders/$orderId'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode(orderData),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      final errorData = json.decode(response.body);
+      throw Exception(errorData['error'] ?? 'Failed to edit order');
+    } catch (e) {
+      throw Exception('Error editing order: $e');
+    }
+  }
+
+  static Future<Map<String, dynamic>> deleteOrder(String orderId) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('$apiUrl/orders/$orderId'),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      final errorData = json.decode(response.body);
+      throw Exception(errorData['error'] ?? 'Failed to delete order');
+    } catch (e) {
+      throw Exception('Error deleting order: $e');
+    }
+  }
+
   static Future<Map<String, dynamic>> changePassword({
     required String userId,
     String? currentPassword,
@@ -1235,6 +1535,22 @@ class ApiService {
       return [];
     }
   }
+
+  static Future<Map<String, dynamic>> getDashboardStats(String distributorId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$apiUrl/dashboard/stats/$distributorId'),
+      );
+      
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      }
+      return {};
+    } catch (e) {
+      print('Error fetching dashboard stats: $e');
+      return {};
+    }
+  }
 }
 
 // Services using API
@@ -1277,22 +1593,32 @@ class CustomerService {
 
   Future<void> updateCustomer(CustomerModel customer) async {
     try {
-      final response = await http.put(
-        Uri.parse('${ApiService.apiUrl}/customers/${customer.id}'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode(customer.toMap()),
-      );
-      
-      if (response.statusCode == 200) {
-        final index = _customers.indexWhere((c) => c.id == customer.id);
-        if (index != -1) {
-          _customers[index] = customer;
-        }
-      } else {
-        throw Exception('Failed to update customer');
+      final updateMap = customer.toMap();
+      await ApiService.updateCustomer(customer.id, updateMap);
+      final index = _customers.indexWhere((c) => c.id == customer.id);
+      if (index != -1) {
+        _customers[index] = customer;
       }
     } catch (e) {
       print('Error updating customer: $e');
+      throw e;
+    }
+  }
+
+  Future<void> deleteCustomer(String customerId) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('${ApiService.apiUrl}/customers/$customerId'),
+      );
+      
+      if (response.statusCode == 200) {
+        _customers.removeWhere((c) => c.id == customerId);
+      } else {
+        final errorData = json.decode(response.body);
+        throw Exception(errorData['error'] ?? 'Failed to delete customer');
+      }
+    } catch (e) {
+      print('Error deleting customer: $e');
       throw e;
     }
   }
@@ -1359,6 +1685,24 @@ class ProductService {
       }
     } catch (e) {
       print('Error updating product: $e');
+      throw e;
+    }
+  }
+
+  Future<void> deleteProduct(String productId) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('${ApiService.apiUrl}/products/$productId'),
+      );
+      
+      if (response.statusCode == 200) {
+        _products.removeWhere((p) => p.id == productId);
+      } else {
+        final errorData = json.decode(response.body);
+        throw Exception(errorData['error'] ?? 'Failed to delete product');
+      }
+    } catch (e) {
+      print('Error deleting product: $e');
       throw e;
     }
   }
@@ -1465,6 +1809,24 @@ class SalesmanService {
       throw e;
     }
   }
+
+  Future<void> deleteSalesman(String salesmanId) async {
+    try {
+      final response = await http.delete(
+        Uri.parse('${ApiService.apiUrl}/salesmen/$salesmanId'),
+      );
+      
+      if (response.statusCode == 200) {
+        _salesmen.removeWhere((s) => s.id == salesmanId);
+      } else {
+        final errorData = json.decode(response.body);
+        throw Exception(errorData['error'] ?? 'Failed to delete salesman');
+      }
+    } catch (e) {
+      print('Error deleting salesman: $e');
+      throw e;
+    }
+  }
 }
 
 class OrderService {
@@ -1530,6 +1892,7 @@ class OrderService {
           quantity: item['quantity'] ?? 0,
           rate: (item['rate'] ?? 0).toDouble(),
           amount: (item['amount'] ?? 0).toDouble(),
+          mrp: (item['mrp'] ?? 0).toDouble(),
         )).toList() ?? [],
         totalAmount: (data['grand_total'] ?? data['totalAmount'] ?? 0).toDouble(),
         paidAmount: (data['paidAmount'] ?? 0).toDouble(),
@@ -1598,6 +1961,7 @@ class OrderService {
           'quantity': item.quantity,
           'rate': item.rate,
           'amount': item.amount,
+          'mrp': item.mrp != null && item.mrp! > 0 ? item.mrp : item.rate,
         }).toList(),
         'totalAmount': order.totalAmount,
         'paidAmount': order.paidAmount,
@@ -1630,6 +1994,62 @@ class OrderService {
     }
   }
 
+  Future<void> editOrder(OrderModel order) async {
+    try {
+      final orderMap = {
+        'customerId': order.customerId,
+        'customerName': order.customerName,
+        'customerPhone': order.customerPhone,
+        'areaName': order.areaName,
+        'routeName': order.routeName,
+        'items': order.items.map((item) => {
+          'productId': item.productId,
+          'productName': item.productName,
+          'sku': item.sku,
+          'quantity': item.quantity,
+          'rate': item.rate,
+          'amount': item.amount,
+          'mrp': item.mrp != null && item.mrp! > 0 ? item.mrp : item.rate,
+        }).toList(),
+        'totalAmount': order.totalAmount,
+        'paidAmount': order.paidAmount,
+        'dueAmount': order.dueAmount,
+        'grand_total': order.totalAmount,
+        'status': order.status.toString().split('.').last,
+        'orderType': order.orderType.toString().split('.').last,
+        'paymentMode': order.paymentMode?.toString().split('.').last,
+        'notes': order.notes,
+        'internalNotes': order.internalNotes,
+      };
+      
+      final response = await ApiService.editOrder(order.id, orderMap);
+      print('Order edited successfully: ${response['message']}');
+      
+      final index = _orders.indexWhere((o) => o.id == order.id);
+      if (index != -1) {
+        _orders[index] = order;
+      }
+    } catch (e) {
+      print('Error editing order: $e');
+      rethrow;
+    }
+  }
+
+  Future<void> deleteOrder(String orderId) async {
+    try {
+      final response = await ApiService.deleteOrder(orderId);
+      print('Order deleted successfully: ${response['message']}');
+      _orders.removeWhere((o) => o.id == orderId);
+    } catch (e) {
+      print('Error deleting order: $e');
+      rethrow;
+    }
+  }
+
+  double _getProductMrp(String productId) {
+    return 0;
+  }
+
   List<OrderModel> getDraftOrders() {
     return _draftOrders;
   }
@@ -1646,6 +2066,7 @@ class OrderService {
     return _orders.fold(0.0, (sum, o) => sum + o.dueAmount);
   }
 
+  // FIXED: Enhanced recordPayment method to properly pass all cheque and UPI details
   Future<void> recordPayment(String orderId, double amount, PaymentMode mode, 
       {String? reference, String? collectedBy, String? salesmanId, 
       String? chequeNumber, String? chequeDate, String? bankName,
@@ -1656,35 +2077,53 @@ class OrderService {
         'amount': amount,
         'paymentMode': mode.toString().split('.').last,
         'reference': reference,
-        'collectedBy': collectedBy,
-        'collectedByName': collectedBy,
+        'collectedBy': salesmanId ?? collectedBy,
+        'collectedByName': collectedBy ?? '',
         'collectedByType': salesmanId != null ? 'salesman' : 'distributor',
-        'salesmanId': salesmanId ?? _currentSalesmanId,
+        'salesmanId': salesmanId,
         'salesmanName': salesmanId != null ? 'Salesman' : null,
         'remark': remark,
       };
       
       Map<String, dynamic> response;
-      if (paymentPhoto != null && (mode == PaymentMode.upi || mode == PaymentMode.cheque)) {
+      
+      // Always use file upload method for cheque and UPI payments to ensure all details are sent
+      if (mode == PaymentMode.cheque) {
         response = await ApiService.recordPaymentWithFile(
           orderId: orderId,
           amount: amount,
           paymentMode: mode.toString().split('.').last,
-          collectedBy: collectedBy ?? '',
+          collectedBy: salesmanId ?? collectedBy ?? '',
           collectedByName: collectedBy ?? '',
           collectedByType: salesmanId != null ? 'salesman' : 'distributor',
           salesmanId: salesmanId,
           chequeNumber: chequeNumber,
           chequeDate: chequeDate,
           bankName: bankName,
+          remark: remark,
+          paymentPhoto: paymentPhoto,
+        );
+        print('Cheque payment recorded: Number=$chequeNumber, Bank=$bankName, Date=$chequeDate');
+      } else if (mode == PaymentMode.upi) {
+        response = await ApiService.recordPaymentWithFile(
+          orderId: orderId,
+          amount: amount,
+          paymentMode: mode.toString().split('.').last,
+          collectedBy: salesmanId ?? collectedBy ?? '',
+          collectedByName: collectedBy ?? '',
+          collectedByType: salesmanId != null ? 'salesman' : 'distributor',
+          salesmanId: salesmanId,
           upiType: upiType,
           transactionNumber: transactionNumber,
           remark: remark,
           paymentPhoto: paymentPhoto,
         );
+        print('UPI payment recorded: Type=$upiType, Transaction=$transactionNumber');
       } else {
         response = await ApiService.recordPayment(orderId, paymentData);
       }
+      
+      print('Payment response: $response');
       
       final index = _orders.indexWhere((o) => o.id == orderId);
       if (index != -1) {
@@ -1713,10 +2152,6 @@ class OrderService {
           createdAt: order.createdAt,
           timeline: order.timeline,
         );
-        
-        for (var item in order.items) {
-          await ApiService.updateProductStock(item.productId, item.quantity);
-        }
       }
     } catch (e) {
       print('Error recording payment: $e');
@@ -1875,6 +2310,76 @@ class NotificationService {
   void dispose() {
     _pollingTimer?.cancel();
   }
+}
+
+// ==================== COLLECTION HISTORY SERVICE ====================
+class CollectionHistoryService {
+  List<CollectionHistoryModel> _collections = [];
+  Map<String, dynamic> _summary = {};
+  String? _currentDistributorId;
+  String? _currentSalesmanId;
+
+  void setDistributorId(String distributorId) {
+    _currentDistributorId = distributorId;
+  }
+
+  void setSalesmanId(String salesmanId) {
+    _currentSalesmanId = salesmanId;
+  }
+
+  Future<Map<String, dynamic>> getCollectionHistory({
+    DateTime? startDate,
+    DateTime? endDate,
+    String? salesmanId,
+  }) async {
+    if (_currentDistributorId != null) {
+      final data = await ApiService.getCollectionHistoryForDistributor(
+        _currentDistributorId!,
+        startDate: startDate,
+        endDate: endDate,
+        salesmanId: salesmanId,
+      );
+      _collections = (data['collections'] as List?)?.map((c) {
+        final id = c['_id']?.toString() ?? '';
+        return CollectionHistoryModel.fromMap(c, id);
+      }).toList() ?? [];
+      _summary = data['summary'] ?? {};
+      return data;
+    } else if (_currentSalesmanId != null) {
+      final data = await ApiService.getCollectionHistoryForSalesman(
+        _currentSalesmanId!,
+        startDate: startDate,
+        endDate: endDate,
+      );
+      _collections = (data['collections'] as List?)?.map((c) {
+        final id = c['_id']?.toString() ?? '';
+        return CollectionHistoryModel.fromMap(c, id);
+      }).toList() ?? [];
+      _summary = data['summary'] ?? {};
+      return data;
+    }
+    return {'collections': [], 'summary': {}};
+  }
+
+  Future<Map<String, dynamic>> reconcileCollections({
+    required double expectedAmount,
+    DateTime? date,
+  }) async {
+    if (_currentDistributorId == null) {
+      return {'is_matching': false, 'difference': expectedAmount};
+    }
+    return await ApiService.reconcileCollections(
+      _currentDistributorId!,
+      expectedAmount: expectedAmount,
+      date: date,
+    );
+  }
+
+  List<CollectionHistoryModel> get collections => _collections;
+  Map<String, dynamic> get summary => _summary;
+  double get totalCollected => _summary['total_collected'] ?? 0.0;
+  int get totalTransactions => _summary['total_transactions'] ?? 0;
+  List<dynamic> get salesmanWise => _summary['salesman_wise'] ?? [];
 }
 
 // ==================== PASSWORD CHANGE DIALOG ====================
@@ -2060,7 +2565,7 @@ class _ChangePasswordDialogState extends State<ChangePasswordDialog> {
   }
 }
 
-// ==================== IMPORT MASTER DATA DIALOG (FIXED - No Overflow) ====================
+// ==================== IMPORT MASTER DATA DIALOG ====================
 class ImportMasterDataDialog extends StatefulWidget {
   final String distributorId;
   final String createdBy;
@@ -2082,6 +2587,7 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
   File? _selectedFile;
   bool _isImporting = false;
   String? _importMessage;
+  bool _updateExisting = true;
 
   final List<Map<String, dynamic>> _masterTypes = [
     {'value': 'customer', 'label': 'Customers', 'icon': Icons.people},
@@ -2130,12 +2636,14 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
           filePath: _selectedFile!.path,
           distributorId: widget.distributorId,
           createdBy: widget.createdBy,
+          updateExisting: _updateExisting,
         );
       } else {
         result = await ApiService.importProductsFromExcel(
           filePath: _selectedFile!.path,
           distributorId: widget.distributorId,
           createdBy: widget.createdBy,
+          updateExisting: _updateExisting,
         );
       }
       
@@ -2191,7 +2699,6 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Header
               Row(
                 children: [
                   Icon(Icons.upload_file, color: const Color(0xFF1A3B70)),
@@ -2209,7 +2716,6 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
               const Divider(),
               const SizedBox(height: 12),
               
-              // Master Type Selection
               const Text(
                 'Select Master Type',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
@@ -2243,7 +2749,29 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
               ),
               const SizedBox(height: 20),
               
-              // Excel Format Info
+              Row(
+                children: [
+                  const Text(
+                    'Update Existing Records:',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                  ),
+                  const SizedBox(width: 12),
+                  Switch(
+                    value: _updateExisting,
+                    onChanged: (value) => setState(() => _updateExisting = value),
+                    activeColor: const Color(0xFF00A68A),
+                  ),
+                  Text(
+                    _updateExisting ? 'Yes (Update)' : 'No (Skip)',
+                    style: TextStyle(
+                      color: _updateExisting ? const Color(0xFF00A68A) : Colors.grey[600],
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              
               const Text(
                 'Excel File Format',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
@@ -2283,7 +2811,6 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
               ),
               const SizedBox(height: 20),
               
-              // File Selection Button
               ElevatedButton.icon(
                 onPressed: _pickFile,
                 icon: const Icon(Icons.attach_file),
@@ -2299,7 +2826,6 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
                 ),
               ),
               
-              // File Status
               if (_selectedFile != null) ...[
                 const SizedBox(height: 8),
                 Container(
@@ -2324,7 +2850,6 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
                 ),
               ],
               
-              // Import Message
               if (_importMessage != null) ...[
                 const SizedBox(height: 12),
                 Container(
@@ -2348,7 +2873,6 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
               
               const SizedBox(height: 20),
               
-              // Action Buttons
               Row(
                 children: [
                   Expanded(
@@ -2389,6 +2913,507 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
   }
 }
 
+// ==================== COLLECTION HISTORY DIALOG ====================
+class CollectionHistoryDialog extends StatefulWidget {
+  final CollectionHistoryService collectionHistoryService;
+  final List<SalesmanModel> salesmen;
+  final bool isDistributor;
+
+  const CollectionHistoryDialog({
+    super.key,
+    required this.collectionHistoryService,
+    required this.salesmen,
+    required this.isDistributor,
+  });
+
+  @override
+  State<CollectionHistoryDialog> createState() => _CollectionHistoryDialogState();
+}
+
+class _CollectionHistoryDialogState extends State<CollectionHistoryDialog> {
+  DateTime? _startDate;
+  DateTime? _endDate;
+  String? _selectedSalesmanId;
+  bool _isLoading = false;
+  List<CollectionHistoryModel> _collections = [];
+  Map<String, dynamic> _summary = {};
+  String? _reconciliationMessage;
+  bool _showReconcile = false;
+  final TextEditingController _expectedAmountController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCollections();
+  }
+
+  Future<void> _loadCollections() async {
+    setState(() => _isLoading = true);
+    try {
+      final data = await widget.collectionHistoryService.getCollectionHistory(
+        startDate: _startDate,
+        endDate: _endDate,
+        salesmanId: _selectedSalesmanId,
+      );
+      setState(() {
+        _collections = widget.collectionHistoryService.collections;
+        _summary = widget.collectionHistoryService.summary;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() => _isLoading = false);
+      showSafeSnackBar(context, 'Error loading collections: $e', backgroundColor: Colors.red);
+    }
+  }
+
+  Future<void> _reconcileCollections() async {
+    if (_expectedAmountController.text.isEmpty) {
+      showSafeSnackBar(context, 'Please enter expected amount', backgroundColor: Colors.red);
+      return;
+    }
+    
+    final expectedAmount = double.tryParse(_expectedAmountController.text);
+    if (expectedAmount == null) {
+      showSafeSnackBar(context, 'Please enter a valid amount', backgroundColor: Colors.red);
+      return;
+    }
+    
+    setState(() => _isLoading = true);
+    try {
+      final result = await widget.collectionHistoryService.reconcileCollections(
+        expectedAmount: expectedAmount,
+        date: DateTime.now(),
+      );
+      setState(() {
+        _reconciliationMessage = result['message'];
+        _isLoading = false;
+      });
+      
+      showSafeSnackBar(
+        context,
+        result['message'],
+        backgroundColor: result['is_matching'] == true ? Colors.green : Colors.orange,
+      );
+    } catch (e) {
+      setState(() => _isLoading = false);
+      showSafeSnackBar(context, 'Error reconciling: $e', backgroundColor: Colors.red);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Container(
+        width: double.maxFinite,
+        constraints: BoxConstraints(
+          maxWidth: 500,
+          maxHeight: MediaQuery.of(context).size.height * 0.85,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1A3B70),
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(16),
+                  topRight: Radius.circular(16),
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.history, color: Colors.white),
+                  const SizedBox(width: 12),
+                  const Text(
+                    'Collection History',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            
+            Container(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.green[50],
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.green[200]!),
+                      ),
+                      child: Column(
+                        children: [
+                          const Icon(Icons.account_balance_wallet, color: Colors.green),
+                          const SizedBox(height: 4),
+                          Text(
+                            '₹${widget.collectionHistoryService.totalCollected.toStringAsFixed(0)}',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.green,
+                            ),
+                          ),
+                          const Text('Total Collected', style: TextStyle(fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue[50],
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.blue[200]!),
+                      ),
+                      child: Column(
+                        children: [
+                          const Icon(Icons.receipt_long, color: Colors.blue),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${widget.collectionHistoryService.totalTransactions}',
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue,
+                            ),
+                          ),
+                          const Text('Transactions', style: TextStyle(fontSize: 11)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (widget.isDistributor)
+                    DropdownButtonFormField<String>(
+                      value: _selectedSalesmanId,
+                      decoration: const InputDecoration(
+                        labelText: 'Filter by Salesman',
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
+                      items: [
+                        const DropdownMenuItem(value: null, child: Text('All Salesmen')),
+                        ...widget.salesmen.map((s) => DropdownMenuItem(
+                          value: s.id,
+                          child: Text(s.name),
+                        )),
+                      ],
+                      onChanged: (value) {
+                        setState(() => _selectedSalesmanId = value);
+                        _loadCollections();
+                      },
+                    ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () async {
+                            final date = await showDatePicker(
+                              context: context,
+                              initialDate: _startDate ?? DateTime.now(),
+                              firstDate: DateTime(2020),
+                              lastDate: DateTime.now(),
+                            );
+                            if (date != null) {
+                              setState(() => _startDate = date);
+                              _loadCollections();
+                            }
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.grey[300]!),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.calendar_today, size: 16),
+                                const SizedBox(width: 8),
+                                Text(_startDate != null
+                                    ? '${_startDate!.day}/${_startDate!.month}/${_startDate!.year}'
+                                    : 'Start Date'),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: () async {
+                            final date = await showDatePicker(
+                              context: context,
+                              initialDate: _endDate ?? DateTime.now(),
+                              firstDate: DateTime(2020),
+                              lastDate: DateTime.now(),
+                            );
+                            if (date != null) {
+                              setState(() => _endDate = date);
+                              _loadCollections();
+                            }
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.grey[300]!),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.calendar_today, size: 16),
+                                const SizedBox(width: 8),
+                                Text(_endDate != null
+                                    ? '${_endDate!.day}/${_endDate!.month}/${_endDate!.year}'
+                                    : 'End Date'),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            
+            if (widget.isDistributor)
+              Container(
+                margin: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.orange[50],
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.orange[200]!),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.compare_arrows, color: Colors.orange),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Cash Reconciliation',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: Icon(
+                            _showReconcile ? Icons.expand_less : Icons.expand_more,
+                            size: 20,
+                          ),
+                          onPressed: () => setState(() => _showReconcile = !_showReconcile),
+                        ),
+                      ],
+                    ),
+                    if (_showReconcile) ...[
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _expectedAmountController,
+                        decoration: const InputDecoration(
+                          labelText: 'Expected Cash Amount',
+                          border: OutlineInputBorder(),
+                          prefixText: '₹ ',
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: _reconcileCollections,
+                              icon: const Icon(Icons.calculate, size: 16),
+                              label: const Text('Reconcile'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.orange,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (_reconciliationMessage != null) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: _reconciliationMessage!.contains('match')
+                                ? Colors.green[100]
+                                : Colors.red[100],
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            _reconciliationMessage!,
+                            style: TextStyle(
+                              color: _reconciliationMessage!.contains('match')
+                                  ? Colors.green[800]
+                                  : Colors.red[800],
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
+            
+            Expanded(
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _collections.isEmpty
+                      ? const Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.history, size: 50, color: Colors.grey),
+                              SizedBox(height: 10),
+                              Text('No collection records found', style: TextStyle(color: Colors.grey)),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.all(12),
+                          itemCount: _collections.length,
+                          itemBuilder: (context, index) {
+                            final collection = _collections[index];
+                            return Container(
+                              margin: const EdgeInsets.only(bottom: 8),
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: Colors.grey[200]!),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        collection.billNo,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 4,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: Colors.blue[50],
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        child: Text(
+                                          collection.paymentMode,
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.blue,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    collection.customerName,
+                                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            'Order Amount: ₹${collection.orderAmount.toStringAsFixed(0)}',
+                                            style: const TextStyle(fontSize: 11),
+                                          ),
+                                          Text(
+                                            'Collected: ₹${collection.amountCollected.toStringAsFixed(0)}',
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.bold,
+                                              color: Colors.green,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      Column(
+                                        crossAxisAlignment: CrossAxisAlignment.end,
+                                        children: [
+                                          if (collection.salesmanDetails != null)
+                                            Text(
+                                              'By: ${collection.salesmanDetails!['name']}',
+                                              style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                            ),
+                                          Text(
+                                            'Date: ${collection.collectionDate.day}/${collection.collectionDate.month}/${collection.collectionDate.year}',
+                                            style: const TextStyle(fontSize: 10, color: Colors.grey),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                  if (collection.chequeNumber != null && collection.chequeNumber!.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Text(
+                                        'Cheque: ${collection.chequeNumber} (${collection.bankName ?? ''})',
+                                        style: const TextStyle(fontSize: 10, color: Colors.orange),
+                                      ),
+                                    ),
+                                  if (collection.transactionNumber != null && collection.transactionNumber!.isNotEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 4),
+                                      child: Text(
+                                        'UPI Transaction: ${collection.transactionNumber} (${collection.upiType ?? ''})',
+                                        style: const TextStyle(fontSize: 10, color: Colors.purple),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ==================== DISTRIBUTOR DASHBOARD (FULL FEATURED) ====================
 class DistributorDashboardEnhanced extends StatefulWidget {
   final UserModel? loggedInUser;
@@ -2400,9 +3425,7 @@ class DistributorDashboardEnhanced extends StatefulWidget {
       _DistributorDashboardEnhancedState();
 }
 
-class _DistributorDashboardEnhancedState
-    extends State<DistributorDashboardEnhanced> {
-  // Color constants
+class _DistributorDashboardEnhancedState extends State<DistributorDashboardEnhanced> {
   static const Color primaryBlue = Color(0xFF1A3B70);
   static const Color accentTeal = Color(0xFF00A68A);
   static const Color secondaryBlue = Color(0xFF2C599D);
@@ -2412,23 +3435,20 @@ class _DistributorDashboardEnhancedState
   static const Color errorRed = Color(0xFFE53935);
   static const Color cardPurple = Color(0xFF9B59B6);
 
-  // Theme mode
   ThemeMode _themeMode = ThemeMode.light;
 
   int _selectedIndex = 0;
   bool _isSidebarOpen = false;
 
-  // Services
   final CustomerService _customerService = CustomerService();
   final ProductService _productService = ProductService();
   final OrderService _orderService = OrderService();
   final SalesmanService _salesmanService = SalesmanService();
   final NotificationService _notificationService = NotificationService();
+  final CollectionHistoryService _collectionHistoryService = CollectionHistoryService();
 
-  // Current distributor - Load from logged in user
   late UserModel _currentDistributor;
 
-  // Data
   List<CustomerModel> _customers = [];
   List<ProductModel> _products = [];
   List<OrderModel> _orders = [];
@@ -2438,12 +3458,10 @@ class _DistributorDashboardEnhancedState
   bool _isLoading = true;
   int _unreadNotificationCount = 0;
 
-  // Sync from desktop
   final SyncService _syncService = SyncService();
   bool _isSyncing = false;
   final Map<String, CartItemData> _cart = {};
 
-  // Order creation state
   int _orderStep = 1;
   String? _selectedCustomerId;
   String? _selectedSalesmanId;
@@ -2453,79 +3471,55 @@ class _DistributorDashboardEnhancedState
   String _orderNotes = '';
   String _internalNotes = '';
 
-  // Stock alert tracking
   final Set<String> _stockAlertShown = {};
 
-  // Search & Filter
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   String? _selectedCategory;
   double? _minPrice;
   double? _maxPrice;
 
-  // Search type (Customer, Product, Order)
   String _searchType = 'All';
   final TextEditingController _orderSearchController = TextEditingController();
   String _orderSearchQuery = '';
 
-  // Order filter by salesman
   String? _selectedOrderSalesmanId;
-  
-  // Order filter by customer name
   String _orderCustomerFilter = '';
-  
-  // Order filter by date range
   DateTime? _orderStartDate;
   DateTime? _orderEndDate;
 
-  // Order selection for posting to desktop
   final Set<String> _selectedOrderIds = {};
   bool _isPostingToDesktop = false;
 
-  // Customer search for Create Order
-  final TextEditingController _customerSearchController =
-      TextEditingController();
+  final TextEditingController _customerSearchController = TextEditingController();
   String _customerSearchQuery = '';
 
-  // Product search for Create Order
-  final TextEditingController _productSearchController =
-      TextEditingController();
+  final TextEditingController _productSearchController = TextEditingController();
   String _productSearchQuery = '';
 
-  // Salesman search
-  final TextEditingController _salesmanSearchController =
-      TextEditingController();
+  final TextEditingController _salesmanSearchController = TextEditingController();
   String _salesmanSearchQuery = '';
 
-  // Payment collection
-  final TextEditingController _paymentAmountController =
-      TextEditingController();
+  final TextEditingController _paymentAmountController = TextEditingController();
   final TextEditingController _referenceController = TextEditingController();
   final TextEditingController _chequeNumberController = TextEditingController();
   final TextEditingController _chequeDateController = TextEditingController();
   final TextEditingController _chequeAmountController = TextEditingController();
   final TextEditingController _cashAmountController = TextEditingController();
-  final TextEditingController _transactionNumberController =
-      TextEditingController();
+  final TextEditingController _transactionNumberController = TextEditingController();
   final TextEditingController _remarkController = TextEditingController();
 
-  // Payment dialog state
   String? _selectedUpiType;
   File? _paymentScreenshotPath;
   String? _selectedBankName;
   List<String> _banksList = [];
   List<String> _upiTypesList = [];
 
-  // Analytics time filter
   String _analyticsTimeFilter = 'month';
-
-  // Monthly target
   double _monthlyTarget = 500000;
 
-  // Draft orders
   List<OrderModel> _draftOrders = [];
 
-  // Area and route selection for customer add
   List<String> _availableAreas = [];
   List<String> _availableRoutes = [];
   String? _selectedArea;
@@ -2534,15 +3528,24 @@ class _DistributorDashboardEnhancedState
   final TextEditingController _areaSearchController = TextEditingController();
   final TextEditingController _routeSearchController = TextEditingController();
 
-  // Password change
   List<Map<String, dynamic>> _usersUnderDistributor = [];
   bool _isLoadingUsers = false;
 
-  // Download orders with date filters
   bool _isDownloading = false;
   String? _downloadFilterType;
 
-  // Get filtered products
+  List<dynamic> _globalSearchProducts = [];
+  List<dynamic> _globalSearchCustomers = [];
+  List<dynamic> _globalSearchOrders = [];
+  bool _isGlobalSearching = false;
+
+  OrderModel? _orderToEdit;
+  bool _isEditingOrder = false;
+  final Map<String, CartItemData> _editCart = {};
+
+  Map<String, dynamic> _dashboardStats = {};
+  List<Map<String, dynamic>> _salesmanPerformance = [];
+
   List<ProductModel> get filteredProducts {
     var products = _products;
     if (_searchQuery.isNotEmpty) {
@@ -2570,12 +3573,10 @@ class _DistributorDashboardEnhancedState
     return products;
   }
 
-  // Get categories
   List<String> get categories {
     return _products.map((p) => p.category).toSet().toList();
   }
 
-  // Get filtered customers
   List<CustomerModel> get filteredCustomers {
     var customers = _customers;
     if (_searchQuery.isNotEmpty) {
@@ -2593,7 +3594,6 @@ class _DistributorDashboardEnhancedState
     return customers;
   }
 
-  // Get filtered customers for Create Order
   List<CustomerModel> get orderFilteredCustomers {
     if (_customerSearchQuery.isEmpty) return _customers;
     final query = _customerSearchQuery.toLowerCase();
@@ -2608,7 +3608,6 @@ class _DistributorDashboardEnhancedState
         .toList();
   }
 
-  // Get filtered products for Create Order
   List<ProductModel> get orderFilteredProducts {
     if (_productSearchQuery.isEmpty) return _products;
     final query = _productSearchQuery.toLowerCase();
@@ -2622,7 +3621,6 @@ class _DistributorDashboardEnhancedState
         .toList();
   }
 
-  // Get filtered salesmen
   List<SalesmanModel> get filteredSalesmen {
     var salesmen = _salesmen;
     if (_salesmanSearchQuery.isNotEmpty) {
@@ -2638,7 +3636,6 @@ class _DistributorDashboardEnhancedState
     return salesmen;
   }
 
-  // Get filtered orders
   List<OrderModel> get filteredOrders {
     var orders = _orders;
     if (_selectedOrderSalesmanId != null && _selectedOrderSalesmanId!.isNotEmpty && _selectedOrderSalesmanId != 'all') {
@@ -2687,12 +3684,10 @@ class _DistributorDashboardEnhancedState
     return orders;
   }
 
-  // Get customer outstanding
   Future<double> getCustomerOutstanding(String customerId) async {
     return await ApiService.getCustomerOutstanding(customerId);
   }
 
-  // Get last order for customer
   Future<OrderModel?> getLastOrderForCustomer(String customerId) async {
     try {
       final response = await ApiService.getLastOrderByCustomer(customerId);
@@ -2715,6 +3710,7 @@ class _DistributorDashboardEnhancedState
             quantity: item['quantity'] ?? 0,
             rate: (item['rate'] ?? 0).toDouble(),
             amount: (item['amount'] ?? 0).toDouble(),
+            mrp: (item['mrp'] ?? 0).toDouble(),
           )).toList() ?? [],
           totalAmount: (response['grand_total'] ?? 0).toDouble(),
           paidAmount: (response['paidAmount'] ?? 0).toDouble(),
@@ -2755,7 +3751,6 @@ class _DistributorDashboardEnhancedState
     }
   }
 
-  // Get last order for salesman
   OrderModel? getLastOrderForSalesman(String salesmanId) {
     final salesmanOrders = _orders
         .where((o) => o.salesmanId == salesmanId)
@@ -2765,12 +3760,10 @@ class _DistributorDashboardEnhancedState
     return salesmanOrders.first;
   }
 
-  // Get salesman orders count
   int getSalesmanOrderCount(String salesmanId) {
     return _orders.where((o) => o.salesmanId == salesmanId).length;
   }
 
-  // Get salesman total revenue
   double getSalesmanRevenue(String salesmanId) {
     return _orders
         .where(
@@ -2780,7 +3773,6 @@ class _DistributorDashboardEnhancedState
         .fold(0.0, (sum, o) => sum + o.totalAmount);
   }
 
-  // Get salesman total collection
   double getSalesmanCollection(String salesmanId) {
     return _orders
         .where(
@@ -2790,7 +3782,6 @@ class _DistributorDashboardEnhancedState
         .fold(0.0, (sum, o) => sum + o.paidAmount);
   }
 
-  // Get last sale for product - only when clicked
   Future<Map<String, dynamic>?> getLastSaleForProduct(String productId) async {
     try {
       final response = await ApiService.getLastSaleForProduct(productId);
@@ -2804,14 +3795,12 @@ class _DistributorDashboardEnhancedState
     }
   }
 
-  // Apply order filters
   Future<void> _applyOrderFilters() async {
     setState(() => _isLoading = true);
     await _loadOrders();
     setState(() => _isLoading = false);
   }
 
-  // Load orders with filters
   Future<void> _loadOrders() async {
     if (_currentDistributor.distributorId != null) {
       final orders = await _orderService.getOrders(
@@ -2827,7 +3816,34 @@ class _DistributorDashboardEnhancedState
     }
   }
 
-  // Helper method to get the correct save directory for Excel files
+  Future<void> _performGlobalSearch(String query) async {
+    if (query.trim().isEmpty || query.trim().length < 2) {
+      setState(() {
+        _globalSearchProducts = [];
+        _globalSearchCustomers = [];
+        _globalSearchOrders = [];
+      });
+      return;
+    }
+
+    if (_currentDistributor.distributorId == null) return;
+
+    setState(() => _isGlobalSearching = true);
+
+    try {
+      final result = await ApiService.searchGlobal(_currentDistributor.distributorId!, query);
+      setState(() {
+        _globalSearchProducts = result['products'] ?? [];
+        _globalSearchCustomers = result['customers'] ?? [];
+        _globalSearchOrders = result['orders'] ?? [];
+        _isGlobalSearching = false;
+      });
+    } catch (e) {
+      print('Error performing global search: $e');
+      setState(() => _isGlobalSearching = false);
+    }
+  }
+
   Future<Directory> _getExcelSaveDirectory() async {
     if (kIsWeb) {
       return await getTemporaryDirectory();
@@ -2864,7 +3880,6 @@ class _DistributorDashboardEnhancedState
     return targetDir;
   }
 
-  // Download orders with date filters
   Future<void> _downloadOrders({String? filterType, DateTime? startDate, DateTime? endDate}) async {
     if (_currentDistributor.distributorId == null) {
       showSafeSnackBar(context, 'Distributor ID not found', backgroundColor: errorRed);
@@ -2989,7 +4004,6 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  // NEW: Show import master data dialog
   void _showImportMasterDataDialog() {
     showDialog(
       context: context,
@@ -3003,7 +4017,18 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  // Post orders to desktop
+  void _showCollectionHistoryDialog() {
+    _collectionHistoryService.setDistributorId(_currentDistributor.distributorId!);
+    showDialog(
+      context: context,
+      builder: (context) => CollectionHistoryDialog(
+        collectionHistoryService: _collectionHistoryService,
+        salesmen: _salesmen,
+        isDistributor: true,
+      ),
+    );
+  }
+
   Future<void> _postOrdersToDesktop() async {
     if (_selectedOrderIds.isEmpty) {
       showSafeSnackBar(context, 'Please select at least one order to post', backgroundColor: warningOrange);
@@ -3082,7 +4107,6 @@ class _DistributorDashboardEnhancedState
     }
   }
 
-  // Toggle order selection
   void _toggleOrderSelection(String orderId) {
     setState(() {
       if (_selectedOrderIds.contains(orderId)) {
@@ -3093,7 +4117,6 @@ class _DistributorDashboardEnhancedState
     });
   }
 
-  // Select all orders
   void _selectAllOrders() {
     setState(() {
       if (_selectedOrderIds.length == filteredOrders.length) {
@@ -3103,6 +4126,472 @@ class _DistributorDashboardEnhancedState
         _selectedOrderIds.addAll(filteredOrders.map((o) => o.id));
       }
     });
+  }
+
+  void _showEditOrderDialog(OrderModel order) {
+    setState(() {
+      _orderToEdit = order;
+      _isEditingOrder = true;
+      _editCart.clear();
+      
+      for (var item in order.items) {
+        final product = _products.firstWhere(
+          (p) => p.id == item.productId,
+          orElse: () => ProductModel(
+            id: item.productId,
+            name: item.productName,
+            sku: item.sku,
+            price: item.rate,
+            mrp: item.rate,
+            category: '',
+            stock: 0,
+            createdAt: DateTime.now(),
+            updatedAt: DateTime.now(),
+          ),
+        );
+        
+        _editCart[item.productId] = CartItemData(
+          productId: item.productId,
+          productName: item.productName,
+          sku: item.sku,
+          quantity: item.quantity,
+          rate: item.rate,
+          mrp: item.mrp ?? item.rate,
+          stock: product.stock,
+          schEnabled: false,
+        );
+        _editCart[item.productId]!.calculate();
+      }
+      
+      _selectedCustomerId = order.customerId;
+      _selectedPaymentMode = order.paymentMode ?? PaymentMode.credit;
+      _orderNotes = order.notes ?? '';
+    });
+    
+    _showEditOrderDialogInternal();
+  }
+
+  void _showEditOrderDialogInternal() {
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: Text('Edit Order #${_orderToEdit?.orderNumber}'),
+            content: Container(
+              width: MediaQuery.of(context).size.width * 0.8,
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.7,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue[50],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Customer: ${_orderToEdit?.customerName}'),
+                        Text('Order Date: ${_orderToEdit?.createdAt.day}/${_orderToEdit?.createdAt.month}/${_orderToEdit?.createdAt.year}'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  const Text('Payment Mode:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      ChoiceChip(
+                        label: const Text('Credit'),
+                        selected: _selectedPaymentMode == PaymentMode.credit,
+                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.credit),
+                      ),
+                      ChoiceChip(
+                        label: const Text('Cash'),
+                        selected: _selectedPaymentMode == PaymentMode.cash,
+                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.cash),
+                      ),
+                      ChoiceChip(
+                        label: const Text('UPI'),
+                        selected: _selectedPaymentMode == PaymentMode.upi,
+                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.upi),
+                      ),
+                      ChoiceChip(
+                        label: const Text('Cheque'),
+                        selected: _selectedPaymentMode == PaymentMode.cheque,
+                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.cheque),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  const Text('Order Items:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _editCart.length,
+                      itemBuilder: (context, index) {
+                        final productId = _editCart.keys.elementAt(index);
+                        final cartItem = _editCart[productId]!;
+                        final product = _products.firstWhere(
+                          (p) => p.id == productId,
+                          orElse: () => ProductModel(
+                            id: productId,
+                            name: cartItem.productName,
+                            sku: cartItem.sku,
+                            price: cartItem.rate,
+                            mrp: cartItem.mrp,
+                            category: '',
+                            stock: cartItem.stock,
+                            createdAt: DateTime.now(),
+                            updatedAt: DateTime.now(),
+                          ),
+                        );
+                        
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.grey[100],
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(cartItem.productName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                    Text('MRP: ₹${cartItem.mrp.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                    Text('Rate: ₹${cartItem.rate.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11)),
+                                  ],
+                                ),
+                              ),
+                              Row(
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.remove, size: 20),
+                                    onPressed: () {
+                                      final newQty = cartItem.quantity - 1;
+                                      if (newQty <= 0) {
+                                        setDialogState(() {
+                                          _editCart.remove(productId);
+                                        });
+                                      } else {
+                                        setDialogState(() {
+                                          _editCart[productId]!.quantity = newQty;
+                                          _editCart[productId]!.calculate();
+                                        });
+                                      }
+                                    },
+                                  ),
+                                  Text('${cartItem.quantity}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                  IconButton(
+                                    icon: const Icon(Icons.add, size: 20),
+                                    onPressed: () {
+                                      if (cartItem.quantity < product.stock) {
+                                        setDialogState(() {
+                                          _editCart[productId]!.quantity++;
+                                          _editCart[productId]!.calculate();
+                                        });
+                                      } else {
+                                        showSafeSnackBar(context, 'Not enough stock', backgroundColor: warningOrange);
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(width: 8),
+                              Text('₹${cartItem.netAmt.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  
+                  const Divider(),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Total:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      Text('₹${_getEditCartTotal().toStringAsFixed(0)}', 
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: accentTeal)),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: TextEditingController(text: _orderNotes),
+                    decoration: const InputDecoration(
+                      labelText: 'Notes',
+                      border: OutlineInputBorder(),
+                    ),
+                    maxLines: 2,
+                    onChanged: (value) => _orderNotes = value,
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  await _submitEditOrder();
+                  if (mounted) {
+                    Navigator.pop(context);
+                  }
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+                child: const Text('Save Changes'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  double _getEditCartTotal() {
+    double total = 0;
+    for (var item in _editCart.values) {
+      total += item.netAmt;
+    }
+    return total;
+  }
+
+  Future<void> _submitEditOrder() async {
+    if (_orderToEdit == null || _editCart.isEmpty) return;
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
+      
+      final updatedOrder = OrderModel(
+        id: _orderToEdit!.id,
+        orderNumber: _orderToEdit!.orderNumber,
+        customerId: _selectedCustomerId!,
+        customerName: customer.name,
+        customerPhone: customer.phone ?? customer.mobile ?? '',
+        areaName: customer.area,
+        routeName: customer.route ?? '',
+        salesmanId: _orderToEdit!.salesmanId,
+        salesmanName: _orderToEdit!.salesmanName,
+        items: _editCart.entries.map((entry) {
+          final item = entry.value;
+          return OrderItemModel(
+            id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
+            productId: item.productId,
+            productName: item.productName,
+            sku: item.sku,
+            quantity: item.quantity,
+            rate: item.rate,
+            amount: item.netAmt,
+            mrp: item.mrp,
+          );
+        }).toList(),
+        totalAmount: _getEditCartTotal(),
+        paidAmount: _orderToEdit!.paidAmount,
+        dueAmount: _getEditCartTotal() - _orderToEdit!.paidAmount,
+        status: _orderToEdit!.status,
+        orderType: _orderToEdit!.orderType,
+        paymentMode: _selectedPaymentMode,
+        scheduledDate: _orderToEdit!.scheduledDate,
+        notes: _orderNotes,
+        internalNotes: _orderToEdit!.internalNotes,
+        createdAt: _orderToEdit!.createdAt,
+        timeline: _orderToEdit!.timeline,
+      );
+      
+      await _orderService.editOrder(updatedOrder);
+      await _loadData();
+      
+      if (mounted) {
+        showSafeSnackBar(context, '✅ Order updated successfully!', backgroundColor: successGreen);
+        setState(() {
+          _orderToEdit = null;
+          _isEditingOrder = false;
+          _editCart.clear();
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Error updating order: $e', backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _deleteOrder(OrderModel order) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Order'),
+        content: Text('Are you sure you want to delete order #${order.orderNumber}?\nThis action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: errorRed),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      await _orderService.deleteOrder(order.id);
+      await _loadData();
+      
+      if (mounted) {
+        showSafeSnackBar(context, '✅ Order deleted successfully!', backgroundColor: successGreen);
+      }
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Error deleting order: $e', backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _deleteCustomer(CustomerModel customer) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Customer'),
+        content: Text('Are you sure you want to delete customer ${customer.name}?\nThis will also delete all associated data.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: errorRed),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      await _customerService.deleteCustomer(customer.id);
+      await _loadData();
+      
+      if (mounted) {
+        showSafeSnackBar(context, '✅ Customer deleted successfully!', backgroundColor: successGreen);
+      }
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Error deleting customer: $e', backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _deleteProduct(ProductModel product) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Product'),
+        content: Text('Are you sure you want to delete product ${product.name}?\nThis will deactivate the product.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: errorRed),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      await _productService.deleteProduct(product.id);
+      await _loadData();
+      
+      if (mounted) {
+        showSafeSnackBar(context, '✅ Product deleted successfully!', backgroundColor: successGreen);
+      }
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Error deleting product: $e', backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _deleteSalesman(SalesmanModel salesman) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Deactivate Salesman'),
+        content: Text('Are you sure you want to deactivate salesman ${salesman.name}?\nThey will not be able to login.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: errorRed),
+            child: const Text('Deactivate'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      await _salesmanService.deleteSalesman(salesman.id);
+      await _loadData();
+      
+      if (mounted) {
+        showSafeSnackBar(context, '✅ Salesman deactivated successfully!', backgroundColor: successGreen);
+      }
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Error deactivating salesman: $e', backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -3128,6 +4617,7 @@ class _DistributorDashboardEnhancedState
       _productService.setDistributorInfo(_currentDistributor.distributorId!, _currentDistributor.email);
       _salesmanService.setDistributorInfo(_currentDistributor.distributorId!, _currentDistributor.email);
       _orderService.setDistributorId(_currentDistributor.distributorId!);
+      _collectionHistoryService.setDistributorId(_currentDistributor.distributorId!);
       
       _notificationService.init(_currentDistributor.distributorId!, onUnreadCountChanged: (count) {
         if (mounted) {
@@ -3138,11 +4628,25 @@ class _DistributorDashboardEnhancedState
       });
       
       _loadUsersUnderDistributor();
+      _loadDashboardStats();
     }
     
     _loadData();
     _loadBankAndUpiLists();
     _loadNotifications();
+  }
+
+  Future<void> _loadDashboardStats() async {
+    if (_currentDistributor.distributorId == null) return;
+    try {
+      final stats = await ApiService.getDashboardStats(_currentDistributor.distributorId!);
+      setState(() {
+        _dashboardStats = stats;
+        _salesmanPerformance = List<Map<String, dynamic>>.from(stats['salesman_performance'] ?? []);
+      });
+    } catch (e) {
+      print('Error loading dashboard stats: $e');
+    }
   }
 
   Future<void> _loadUsersUnderDistributor() async {
@@ -3236,6 +4740,8 @@ class _DistributorDashboardEnhancedState
       _draftOrders = _orderService.getDraftOrders();
       _isLoading = false;
     });
+    
+    _loadDashboardStats();
   }
 
   Future<void> _logout() async {
@@ -3391,9 +4897,13 @@ class _DistributorDashboardEnhancedState
                                     _unreadNotificationCount--;
                                   });
                                 }
-                                if (notification.orderData != null) {
-                                  Navigator.pop(context);
-                                }
+                                
+                                Navigator.pop(context);
+                                final order = _orders.firstWhere(
+                                  (o) => o.orderNumber == notification.orderNumber,
+                                  orElse: () => _orders.first,
+                                );
+                                _showOrderDetailsDialog(order);
                               },
                               child: Container(
                                 margin: const EdgeInsets.only(bottom: 8),
@@ -3481,19 +4991,20 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  // Cart methods
   void addToCart(String productId, String productName, String sku, double price, int stock) {
     setState(() {
       if (_cart.containsKey(productId)) {
         _cart[productId]!.quantity++;
         _cart[productId]!.calculate();
       } else {
+        final product = _products.firstWhere((p) => p.id == productId);
         _cart[productId] = CartItemData(
           productId: productId,
           productName: productName,
           sku: sku,
           quantity: 1,
           rate: price,
+          mrp: product.mrp,
           stock: stock,
           schEnabled: false,
         );
@@ -3601,6 +5112,7 @@ class _DistributorDashboardEnhancedState
             quantity: item.quantity,
             rate: item.rate,
             amount: item.netAmt,
+            mrp: item.mrp,
           );
         }).toList(),
         totalAmount: cartTotal,
@@ -3916,7 +5428,7 @@ class _DistributorDashboardEnhancedState
           children: [
             Icon(Icons.add, color: accentTeal),
             SizedBox(width: 8),
-            Text('Add New Product'),
+            const Text('Add New Product'),
           ],
         ),
         content: SingleChildScrollView(
@@ -4062,7 +5574,7 @@ class _DistributorDashboardEnhancedState
           children: [
             Icon(Icons.person_add, color: accentTeal),
             SizedBox(width: 8),
-            Text('Add New Salesman'),
+            const Text('Add New Salesman'),
           ],
         ),
         content: SingleChildScrollView(
@@ -4181,7 +5693,9 @@ class _DistributorDashboardEnhancedState
                 'canDeleteCustomer': false,
                 'canViewOrders': true,
                 'canCreateOrder': true,
-                'canCollectPayment': true
+                'canCollectPayment': true,
+                'canEditOrder': true,
+                'canDeleteOrder': true,
               };
               
               try {
@@ -4224,6 +5738,8 @@ class _DistributorDashboardEnhancedState
       'canViewOrders': true,
       'canCreateOrder': true,
       'canCollectPayment': true,
+      'canEditOrder': true,
+      'canDeleteOrder': true,
     });
     
     showDialog(
@@ -4268,6 +5784,18 @@ class _DistributorDashboardEnhancedState
                   title: const Text('Delete Customer'),
                   value: permissions['canDeleteCustomer'],
                   onChanged: (val) => setDialogState(() => permissions['canDeleteCustomer'] = val ?? false),
+                ),
+                const Divider(),
+                const Text('Order Permissions:', style: TextStyle(fontWeight: FontWeight.bold)),
+                CheckboxListTile(
+                  title: const Text('Edit Order'),
+                  value: permissions['canEditOrder'],
+                  onChanged: (val) => setDialogState(() => permissions['canEditOrder'] = val ?? false),
+                ),
+                CheckboxListTile(
+                  title: const Text('Delete Order'),
+                  value: permissions['canDeleteOrder'],
+                  onChanged: (val) => setDialogState(() => permissions['canDeleteOrder'] = val ?? false),
                 ),
               ],
             ),
@@ -4419,52 +5947,65 @@ class _DistributorDashboardEnhancedState
               onPressed: () => Navigator.pop(context),
               child: const Text('Cancel'),
             ),
-            ElevatedButton(
-              onPressed: () async {
-                if (nameController.text.trim().isEmpty) {
-                  showSafeSnackBar(context, 'Please enter customer name', backgroundColor: errorRed);
-                  return;
-                }
-                if (phoneController.text.trim().isEmpty) {
-                  showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
-                  return;
-                }
-                if (phoneController.text.trim().length != 10) {
-                  showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
-                  return;
-                }
-                if (selectedArea == null || selectedArea!.isEmpty) {
-                  showSafeSnackBar(context, 'Please select area', backgroundColor: errorRed);
-                  return;
-                }
-                
-                final updatedCustomer = CustomerModel(
-                  id: customer.id,
-                  name: nameController.text.trim(),
-                  phone: phoneController.text.trim(),
-                  area: selectedArea!,
-                  route: selectedRoute,
-                  address: addressController.text.trim().isNotEmpty ? addressController.text.trim() : null,
-                  createdAt: customer.createdAt,
-                  updatedAt: DateTime.now(),
-                  customerId: customer.customerId,
-                  createdBy: customer.createdBy,
-                  distributorId: customer.distributorId,
-                );
-                
-                try {
-                  await _customerService.updateCustomer(updatedCustomer);
-                  await _loadData();
-                  if (mounted) {
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                TextButton.icon(
+                  onPressed: () async {
                     Navigator.pop(context);
-                    showSafeSnackBar(context, '✅ Customer updated successfully!', backgroundColor: successGreen);
-                  }
-                } catch (e) {
-                  showSafeSnackBar(context, 'Error updating customer: $e', backgroundColor: errorRed);
-                }
-              },
-              style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-              child: const Text('Update Customer'),
+                    await _deleteCustomer(customer);
+                  },
+                  icon: const Icon(Icons.delete, color: errorRed),
+                  label: const Text('Delete', style: TextStyle(color: errorRed)),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    if (nameController.text.trim().isEmpty) {
+                      showSafeSnackBar(context, 'Please enter customer name', backgroundColor: errorRed);
+                      return;
+                    }
+                    if (phoneController.text.trim().isEmpty) {
+                      showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
+                      return;
+                    }
+                    if (phoneController.text.trim().length != 10) {
+                      showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
+                      return;
+                    }
+                    if (selectedArea == null || selectedArea!.isEmpty) {
+                      showSafeSnackBar(context, 'Please select area', backgroundColor: errorRed);
+                      return;
+                    }
+                    
+                    final updatedCustomer = CustomerModel(
+                      id: customer.id,
+                      name: nameController.text.trim(),
+                      phone: phoneController.text.trim(),
+                      area: selectedArea!,
+                      route: selectedRoute,
+                      address: addressController.text.trim().isNotEmpty ? addressController.text.trim() : null,
+                      createdAt: customer.createdAt,
+                      updatedAt: DateTime.now(),
+                      customerId: customer.customerId,
+                      createdBy: customer.createdBy,
+                      distributorId: customer.distributorId,
+                    );
+                    
+                    try {
+                      await _customerService.updateCustomer(updatedCustomer);
+                      await _loadData();
+                      if (mounted) {
+                        Navigator.pop(context);
+                        showSafeSnackBar(context, '✅ Customer updated successfully!', backgroundColor: successGreen);
+                      }
+                    } catch (e) {
+                      showSafeSnackBar(context, 'Error updating customer: $e', backgroundColor: errorRed);
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+                  child: const Text('Update Customer'),
+                ),
+              ],
             ),
           ],
         ),
@@ -4564,53 +6105,66 @@ class _DistributorDashboardEnhancedState
             onPressed: () => Navigator.pop(context),
             child: const Text('Cancel'),
           ),
-          ElevatedButton(
-            onPressed: () async {
-              if (nameController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter product name', backgroundColor: errorRed);
-                return;
-              }
-              if (skuController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter SKU', backgroundColor: errorRed);
-                return;
-              }
-              if (priceController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter selling price', backgroundColor: errorRed);
-                return;
-              }
-              if (categoryController.text.trim().isEmpty) {
-                showSafeSnackBar(context, 'Please enter category', backgroundColor: errorRed);
-                return;
-              }
-              
-              final updatedProduct = ProductModel(
-                id: product.id,
-                name: nameController.text.trim(),
-                sku: skuController.text.trim(),
-                price: double.tryParse(priceController.text) ?? 0,
-                mrp: double.tryParse(mrpController.text) ?? double.tryParse(priceController.text) ?? 0,
-                category: categoryController.text.trim(),
-                stock: int.tryParse(stockController.text) ?? 0,
-                description: descriptionController.text.trim().isNotEmpty ? descriptionController.text.trim() : null,
-                createdAt: product.createdAt,
-                updatedAt: DateTime.now(),
-                createdBy: product.createdBy,
-                distributorId: product.distributorId,
-              );
-              
-              try {
-                await _productService.updateProduct(updatedProduct);
-                await _loadData();
-                if (mounted) {
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              TextButton.icon(
+                onPressed: () async {
                   Navigator.pop(context);
-                  showSafeSnackBar(context, '✅ Product updated successfully!', backgroundColor: successGreen);
-                }
-              } catch (e) {
-                showSafeSnackBar(context, 'Error updating product: $e', backgroundColor: errorRed);
-              }
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-            child: const Text('Update Product'),
+                  await _deleteProduct(product);
+                },
+                icon: const Icon(Icons.delete, color: errorRed),
+                label: const Text('Delete', style: TextStyle(color: errorRed)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  if (nameController.text.trim().isEmpty) {
+                    showSafeSnackBar(context, 'Please enter product name', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (skuController.text.trim().isEmpty) {
+                    showSafeSnackBar(context, 'Please enter SKU', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (priceController.text.trim().isEmpty) {
+                    showSafeSnackBar(context, 'Please enter selling price', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (categoryController.text.trim().isEmpty) {
+                    showSafeSnackBar(context, 'Please enter category', backgroundColor: errorRed);
+                    return;
+                  }
+                  
+                  final updatedProduct = ProductModel(
+                    id: product.id,
+                    name: nameController.text.trim(),
+                    sku: skuController.text.trim(),
+                    price: double.tryParse(priceController.text) ?? 0,
+                    mrp: double.tryParse(mrpController.text) ?? double.tryParse(priceController.text) ?? 0,
+                    category: categoryController.text.trim(),
+                    stock: int.tryParse(stockController.text) ?? 0,
+                    description: descriptionController.text.trim().isNotEmpty ? descriptionController.text.trim() : null,
+                    createdAt: product.createdAt,
+                    updatedAt: DateTime.now(),
+                    createdBy: product.createdBy,
+                    distributorId: product.distributorId,
+                  );
+                  
+                  try {
+                    await _productService.updateProduct(updatedProduct);
+                    await _loadData();
+                    if (mounted) {
+                      Navigator.pop(context);
+                      showSafeSnackBar(context, '✅ Product updated successfully!', backgroundColor: successGreen);
+                    }
+                  } catch (e) {
+                    showSafeSnackBar(context, 'Error updating product: $e', backgroundColor: errorRed);
+                  }
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+                child: const Text('Update Product'),
+              ),
+            ],
           ),
         ],
       ),
@@ -4761,61 +6315,74 @@ class _DistributorDashboardEnhancedState
             onPressed: () => Navigator.pop(context),
             child: const Text('Cancel'),
           ),
-          ElevatedButton(
-            onPressed: () async {
-              if (nameController.text.isEmpty) {
-                showSafeSnackBar(context, 'Please enter name', backgroundColor: errorRed);
-                return;
-              }
-              if (emailController.text.isEmpty) {
-                showSafeSnackBar(context, 'Please enter email', backgroundColor: errorRed);
-                return;
-              }
-              if (phoneController.text.isEmpty) {
-                showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
-                return;
-              }
-              if (phoneController.text.length != 10) {
-                showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
-                return;
-              }
-              
-              final updatedSalesman = SalesmanModel(
-                id: salesman.id,
-                salesmanId: salesman.salesmanId,
-                name: nameController.text,
-                email: emailController.text,
-                phone: phoneController.text,
-                distributorId: salesman.distributorId,
-                createdBy: salesman.createdBy,
-                createdAt: salesman.createdAt,
-                updatedAt: DateTime.now(),
-                status: salesman.status,
-                targetAmount: double.tryParse(targetController.text) ?? 0,
-                achievedAmount: salesman.achievedAmount,
-                commissionRate: salesman.commissionRate,
-                areaAssigned: areaController.text,
-                address: addressController.text,
-                joiningDate: salesman.joiningDate,
-                performanceMetrics: salesman.performanceMetrics,
-                bankDetails: salesman.bankDetails,
-                documents: salesman.documents,
-                notes: salesman.notes,
-              );
-              
-              try {
-                await _salesmanService.updateSalesman(updatedSalesman);
-                await _loadData();
-                if (mounted) {
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              TextButton.icon(
+                onPressed: () async {
                   Navigator.pop(context);
-                  showSafeSnackBar(context, '✅ Salesman updated successfully!', backgroundColor: successGreen);
-                  await _loadUsersUnderDistributor();
-                }
-              } catch (e) {
-                showSafeSnackBar(context, 'Error updating salesman: $e', backgroundColor: errorRed);
-              }
-            },
-            child: const Text('Update Salesman'),
+                  await _deleteSalesman(salesman);
+                },
+                icon: const Icon(Icons.delete, color: errorRed),
+                label: const Text('Deactivate', style: TextStyle(color: errorRed)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  if (nameController.text.isEmpty) {
+                    showSafeSnackBar(context, 'Please enter name', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (emailController.text.isEmpty) {
+                    showSafeSnackBar(context, 'Please enter email', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (phoneController.text.isEmpty) {
+                    showSafeSnackBar(context, 'Please enter phone number', backgroundColor: errorRed);
+                    return;
+                  }
+                  if (phoneController.text.length != 10) {
+                    showSafeSnackBar(context, 'Phone number must be exactly 10 digits', backgroundColor: errorRed);
+                    return;
+                  }
+                  
+                  final updatedSalesman = SalesmanModel(
+                    id: salesman.id,
+                    salesmanId: salesman.salesmanId,
+                    name: nameController.text,
+                    email: emailController.text,
+                    phone: phoneController.text,
+                    distributorId: salesman.distributorId,
+                    createdBy: salesman.createdBy,
+                    createdAt: salesman.createdAt,
+                    updatedAt: DateTime.now(),
+                    status: salesman.status,
+                    targetAmount: double.tryParse(targetController.text) ?? 0,
+                    achievedAmount: salesman.achievedAmount,
+                    commissionRate: salesman.commissionRate,
+                    areaAssigned: areaController.text,
+                    address: addressController.text,
+                    joiningDate: salesman.joiningDate,
+                    performanceMetrics: salesman.performanceMetrics,
+                    bankDetails: salesman.bankDetails,
+                    documents: salesman.documents,
+                    notes: salesman.notes,
+                  );
+                  
+                  try {
+                    await _salesmanService.updateSalesman(updatedSalesman);
+                    await _loadData();
+                    if (mounted) {
+                      Navigator.pop(context);
+                      showSafeSnackBar(context, '✅ Salesman updated successfully!', backgroundColor: successGreen);
+                      await _loadUsersUnderDistributor();
+                    }
+                  } catch (e) {
+                    showSafeSnackBar(context, 'Error updating salesman: $e', backgroundColor: errorRed);
+                  }
+                },
+                child: const Text('Update Salesman'),
+              ),
+            ],
           ),
         ],
       ),
@@ -4932,6 +6499,11 @@ class _DistributorDashboardEnhancedState
                               ),
                               _buildSidebarItem(Icons.payment, 'Payments', 7),
                               _buildSidebarItem(
+                                Icons.history,
+                                'Collection History',
+                                12,
+                              ),
+                              _buildSidebarItem(
                                 Icons.download,
                                 'Download Order',
                                 10,
@@ -4940,16 +6512,6 @@ class _DistributorDashboardEnhancedState
                                 Icons.upload_file,
                                 'Import Master Data',
                                 11,
-                              ),
-                              _buildSidebarItem(
-                                Icons.description,
-                                'Templates',
-                                8,
-                              ),
-                              _buildSidebarItem(
-                                Icons.analytics,
-                                'Analytics',
-                                9,
                               ),
                               const Divider(height: 32),
                               _buildSidebarItem(
@@ -5013,6 +6575,9 @@ class _DistributorDashboardEnhancedState
         } else if (index == 11) {
           setState(() => _isSidebarOpen = false);
           _showImportMasterDataDialog();
+        } else if (index == 12) {
+          setState(() => _isSidebarOpen = false);
+          _showCollectionHistoryDialog();
         } else {
           setState(() {
             _selectedIndex = index;
@@ -5139,42 +6704,6 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  Widget _buildTemplatesSection() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.description, size: 60, color: Colors.grey[400]),
-          const SizedBox(height: 16),
-          Text(
-            'Order Templates',
-            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
-          ),
-          const SizedBox(height: 8),
-          Text('Coming soon...', style: TextStyle(color: Colors.grey[500])),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAnalyticsSection() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.analytics, size: 60, color: Colors.grey[400]),
-          const SizedBox(height: 16),
-          Text(
-            'Analytics',
-            style: TextStyle(fontSize: 18, color: Colors.grey[600]),
-          ),
-          const SizedBox(height: 8),
-          Text('Coming soon...', style: TextStyle(color: Colors.grey[500])),
-        ],
-      ),
-    );
-  }
-
   void _showOrderDetailsDialog(OrderModel order) {
     showDialog(
       context: context,
@@ -5201,9 +6730,29 @@ class _DistributorDashboardEnhancedState
                       color: primaryBlue,
                     ),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
+                  Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.edit, color: primaryBlue),
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _showEditOrderDialog(order);
+                        },
+                        tooltip: 'Edit Order',
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: errorRed),
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _deleteOrder(order);
+                        },
+                        tooltip: 'Delete Order',
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -5310,8 +6859,12 @@ class _DistributorDashboardEnhancedState
                                   ),
                                 ),
                                 Text(
+                                  'MRP: ₹${item.mrp?.toStringAsFixed(0) ?? 'N/A'}',
+                                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                ),
+                                Text(
                                   'SKU: ${item.sku}',
-                                  style: const TextStyle(fontSize: 12),
+                                  style: const TextStyle(fontSize: 11, color: Colors.grey),
                                 ),
                               ],
                             ),
@@ -5429,6 +6982,21 @@ class _DistributorDashboardEnhancedState
         ),
       ),
     );
+  }
+
+  Color _getStatusColor(OrderStatus status) {
+    switch (status) {
+      case OrderStatus.pending:
+        return warningOrange;
+      case OrderStatus.taken:
+        return Colors.blue;
+      case OrderStatus.dispatched:
+        return cardPurple;
+      case OrderStatus.delivered:
+        return accentTeal;
+      case OrderStatus.cancelled:
+        return errorRed;
+    }
   }
 
   @override
@@ -5585,12 +7153,100 @@ class _DistributorDashboardEnhancedState
                       border: InputBorder.none,
                       icon: Icon(Icons.search, color: Colors.white70),
                     ),
-                    onChanged: (value) => setState(() => _searchQuery = value),
+                    onChanged: (value) {
+                      setState(() => _searchQuery = value);
+                      _performGlobalSearch(value);
+                    },
                   ),
                 ),
               ),
             ],
           ),
+          if (_searchQuery.isNotEmpty && _searchQuery.trim().length >= 2)
+            Container(
+              margin: const EdgeInsets.only(top: 8),
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.4,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: _isGlobalSearching
+                  ? const Center(child: CircularProgressIndicator())
+                  : SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (_globalSearchProducts.isNotEmpty) ...[
+                            const Padding(
+                              padding: EdgeInsets.all(8),
+                              child: Text('Products', style: TextStyle(fontWeight: FontWeight.bold, color: primaryBlue)),
+                            ),
+                            ..._globalSearchProducts.take(5).map((product) => ListTile(
+                              dense: true,
+                              leading: const Icon(Icons.inventory_2, size: 18),
+                              title: Text(product['productName'] ?? product['name'] ?? ''),
+                              subtitle: Text('SKU: ${product['sku']} | ₹${product['price']} | MRP: ₹${product['mrp'] ?? product['price']}'),
+                              onTap: () {
+                                setState(() {
+                                  _selectedIndex = 3;
+                                  _searchQuery = '';
+                                  _searchController.clear();
+                                });
+                              },
+                            )),
+                            const Divider(),
+                          ],
+                          if (_globalSearchCustomers.isNotEmpty) ...[
+                            const Padding(
+                              padding: EdgeInsets.all(8),
+                              child: Text('Customers', style: TextStyle(fontWeight: FontWeight.bold, color: primaryBlue)),
+                            ),
+                            ..._globalSearchCustomers.take(5).map((customer) => ListTile(
+                              dense: true,
+                              leading: const Icon(Icons.person, size: 18),
+                              title: Text(customer['name'] ?? ''),
+                              subtitle: Text('Area: ${customer['area']}'),
+                              onTap: () {
+                                setState(() {
+                                  _selectedIndex = 2;
+                                  _searchQuery = '';
+                                  _searchController.clear();
+                                });
+                              },
+                            )),
+                            const Divider(),
+                          ],
+                          if (_globalSearchOrders.isNotEmpty) ...[
+                            const Padding(
+                              padding: EdgeInsets.all(8),
+                              child: Text('Orders', style: TextStyle(fontWeight: FontWeight.bold, color: primaryBlue)),
+                            ),
+                            ..._globalSearchOrders.take(5).map((order) => ListTile(
+                              dense: true,
+                              leading: const Icon(Icons.receipt, size: 18),
+                              title: Text(order['orderNumber'] ?? ''),
+                              subtitle: Text('Customer: ${order['customerName']} | ₹${order['grand_total']}'),
+                              onTap: () {
+                                setState(() {
+                                  _selectedIndex = 5;
+                                  _searchQuery = '';
+                                  _searchController.clear();
+                                });
+                              },
+                            )),
+                            const Divider(),
+                          ],
+                          if (_globalSearchProducts.isEmpty && _globalSearchCustomers.isEmpty && _globalSearchOrders.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.all(16),
+                              child: Center(child: Text('No results found')),
+                            ),
+                        ],
+                      ),
+                    ),
+            ),
         ],
       ),
     );
@@ -5614,10 +7270,6 @@ class _DistributorDashboardEnhancedState
         return _buildCreateOrderSection();
       case 7:
         return _buildPaymentCollectionSection();
-      case 8:
-        return _buildTemplatesSection();
-      case 9:
-        return _buildAnalyticsSection();
       case 10:
         return _buildDownloadOrderSection();
       default:
@@ -6151,21 +7803,6 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  Color _getStatusColor(OrderStatus status) {
-    switch (status) {
-      case OrderStatus.pending:
-        return warningOrange;
-      case OrderStatus.taken:
-        return Colors.blue;
-      case OrderStatus.dispatched:
-        return cardPurple;
-      case OrderStatus.delivered:
-        return accentTeal;
-      case OrderStatus.cancelled:
-        return errorRed;
-    }
-  }
-
   Widget _buildOverviewSection() {
     final totalRevenue = _orders
         .where((o) => o.status == OrderStatus.delivered)
@@ -6603,8 +8240,21 @@ class _DistributorDashboardEnhancedState
               ),
           ],
         ),
-        trailing: outstanding > 0
-            ? Container(
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.edit, size: 20),
+              onPressed: () => _showEditCustomerDialog(customer),
+              color: primaryBlue,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete, size: 20, color: errorRed),
+              onPressed: () => _deleteCustomer(customer),
+              tooltip: 'Delete Customer',
+            ),
+            if (outstanding > 0)
+              Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: errorRed.withOpacity(0.1),
@@ -6619,7 +8269,10 @@ class _DistributorDashboardEnhancedState
                   ),
                 ),
               )
-            : const Icon(Icons.check_circle, color: successGreen),
+            else
+              const Icon(Icons.check_circle, color: successGreen),
+          ],
+        ),
         children: [
           Padding(
             padding: const EdgeInsets.all(16),
@@ -6743,11 +8396,6 @@ class _DistributorDashboardEnhancedState
                       style: ElevatedButton.styleFrom(
                         backgroundColor: accentTeal,
                       ),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () => _showEditCustomerDialog(customer),
-                      icon: const Icon(Icons.edit, size: 16),
-                      label: const Text('Edit'),
                     ),
                   ],
                 ),
@@ -6903,14 +8551,8 @@ class _DistributorDashboardEnhancedState
             subtitle: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('SKU: ${product.sku} | Stock: ${product.stock}'),
-                Row(
-                  children: [
-                    Text('MRP: ₹${product.mrp.toStringAsFixed(0)} | '),
-                    Text('Price: ₹${product.price.toStringAsFixed(0)}'),
-                  ],
-                ),
-                Text('Category: ${product.category}'),
+                Text('MRP: ₹${product.mrp.toStringAsFixed(0)} | Stock: ${product.stock}'),
+                Text('Price: ₹${product.price.toStringAsFixed(0)} | Category: ${product.category}'),
               ],
             ),
             trailing: Row(
@@ -6919,6 +8561,11 @@ class _DistributorDashboardEnhancedState
                 if (product.stock < 10)
                   const Icon(Icons.warning, color: errorRed, size: 16),
                 const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.delete, size: 20, color: errorRed),
+                  onPressed: () => _deleteProduct(product),
+                  tooltip: 'Delete Product',
+                ),
                 Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.end,
@@ -7260,6 +8907,16 @@ class _DistributorDashboardEnhancedState
               onPressed: () => _showPermissionsDialog(salesman),
               tooltip: 'Set Permissions',
             ),
+            IconButton(
+              icon: const Icon(Icons.edit, color: primaryBlue, size: 20),
+              onPressed: () => _showEditSalesmanDialog(salesman),
+              tooltip: 'Edit Salesman',
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete, size: 20, color: errorRed),
+              onPressed: () => _deleteSalesman(salesman),
+              tooltip: 'Deactivate Salesman',
+            ),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
@@ -7391,11 +9048,6 @@ class _DistributorDashboardEnhancedState
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    ElevatedButton.icon(
-                      onPressed: () => _showEditSalesmanDialog(salesman),
-                      icon: const Icon(Icons.edit, size: 16),
-                      label: const Text('Edit'),
-                    ),
                     OutlinedButton.icon(
                       onPressed: () {
                         setState(() {
@@ -8343,7 +9995,7 @@ class _DistributorDashboardEnhancedState
                                     style: const TextStyle(fontWeight: FontWeight.bold),
                                   ),
                                   Text(
-                                    'SKU: ${product.sku} | Stock: ${product.stock}',
+                                    'MRP: ₹${product.mrp.toStringAsFixed(0)} | Stock: ${product.stock}',
                                     style: TextStyle(
                                       fontSize: 11,
                                       color: Colors.grey[600],
@@ -8830,6 +10482,7 @@ class _DistributorDashboardEnhancedState
     );
   }
 
+  // FIXED: Enhanced payment dialog with proper cheque and UPI details
   void _showEnhancedPaymentDialog(OrderModel order, double customerOutstanding) {
     final paymentAmountController = TextEditingController(text: order.dueAmount.toStringAsFixed(0));
     PaymentMode selectedMode = PaymentMode.cash;
@@ -9152,6 +10805,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   List<ProductModel> _products = [];
   List<OrderModel> _orders = [];
   Map<String, dynamic> _permissions = {};
+  List<CollectionHistoryModel> _collectionHistory = [];
 
   final Map<String, CartItemData> _cart = {};
 
@@ -9167,9 +10821,14 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   List<String> _upiTypesList = [];
 
   final OrderService _orderService = OrderService();
+  final CollectionHistoryService _collectionHistoryService = CollectionHistoryService();
   final Map<String, Map<String, dynamic>> _lastSaleCache = {};
   
   final Set<String> _stockAlertShown = {};
+
+  OrderModel? _orderToEdit;
+  bool _isEditingOrder = false;
+  final Map<String, CartItemData> _editCart = {};
 
   @override
   void initState() {
@@ -9177,6 +10836,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     if (widget.loggedInUser != null) {
       _currentSalesman = widget.loggedInUser!;
       _orderService.setSalesmanId(_currentSalesman.salesmanId ?? _currentSalesman.id);
+      _collectionHistoryService.setSalesmanId(_currentSalesman.salesmanId ?? _currentSalesman.id);
     } else {
       _currentSalesman = UserModel(
         id: 'salesman_001',
@@ -9189,9 +10849,11 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         salesmanId: 'SM0001',
       );
       _orderService.setSalesmanId('SM0001');
+      _collectionHistoryService.setSalesmanId('SM0001');
     }
     _loadData();
     _loadBankAndUpiLists();
+    _loadCollectionHistory();
   }
 
   Future<void> _loadBankAndUpiLists() async {
@@ -9201,6 +10863,17 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       _banksList = banks.cast<String>();
       _upiTypesList = upiTypes.cast<String>();
     });
+  }
+
+  Future<void> _loadCollectionHistory() async {
+    try {
+      await _collectionHistoryService.getCollectionHistory();
+      setState(() {
+        _collectionHistory = _collectionHistoryService.collections;
+      });
+    } catch (e) {
+      print('Error loading collection history: $e');
+    }
   }
 
   Future<void> _loadData() async {
@@ -9245,6 +10918,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                 quantity: item['quantity'] ?? 0,
                 rate: (item['rate'] ?? 0).toDouble(),
                 amount: (item['amount'] ?? 0).toDouble(),
+                mrp: (item['mrp'] ?? 0).toDouble(),
               )).toList() ?? [],
               totalAmount: (o['grand_total'] ?? o['totalAmount'] ?? 0).toDouble(),
               paidAmount: (o['paidAmount'] ?? 0).toDouble(),
@@ -9260,6 +10934,11 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             );
           }).toList() ?? [];
           
+          _collectionHistory = (data['collectionHistory'] as List?)?.map((c) {
+            final id = c['_id']?.toString() ?? '';
+            return CollectionHistoryModel.fromMap(c, id);
+          }).toList() ?? [];
+          
           _permissions = data['permissions'] ?? {
             'canAddProduct': false,
             'canEditProduct': false,
@@ -9270,6 +10949,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             'canViewOrders': true,
             'canCreateOrder': true,
             'canCollectPayment': true,
+            'canEditOrder': false,
+            'canDeleteOrder': false,
           };
         });
       }
@@ -9289,6 +10970,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
           'canViewOrders': true,
           'canCreateOrder': true,
           'canCollectPayment': true,
+          'canEditOrder': false,
+          'canDeleteOrder': false,
         };
       });
     } finally {
@@ -9327,6 +11010,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       default: return PaymentMode.credit;
     }
   }
+
+  bool get canEditOrder => _permissions['canEditOrder'] ?? false;
+  bool get canDeleteOrder => _permissions['canDeleteOrder'] ?? false;
 
   Future<Map<String, dynamic>?> getLastSaleForProduct(String productId) async {
     if (_lastSaleCache.containsKey(productId)) {
@@ -9367,6 +11053,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             quantity: item['quantity'] ?? 0,
             rate: (item['rate'] ?? 0).toDouble(),
             amount: (item['amount'] ?? 0).toDouble(),
+            mrp: (item['mrp'] ?? 0).toDouble(),
           )).toList() ?? [],
           totalAmount: (response['grand_total'] ?? 0).toDouble(),
           paidAmount: (response['paidAmount'] ?? 0).toDouble(),
@@ -9442,6 +11129,18 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     );
   }
 
+  void _showCollectionHistoryDialog() {
+    _collectionHistoryService.setSalesmanId(_currentSalesman.salesmanId ?? _currentSalesman.id);
+    showDialog(
+      context: context,
+      builder: (context) => CollectionHistoryDialog(
+        collectionHistoryService: _collectionHistoryService,
+        salesmen: [],
+        isDistributor: false,
+      ),
+    );
+  }
+
   double get cartTotal {
     double total = 0;
     for (var item in _cart.values) {
@@ -9479,12 +11178,14 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         _cart[productId]!.quantity++;
         _cart[productId]!.calculate();
       } else {
+        final product = _products.firstWhere((p) => p.id == productId);
         _cart[productId] = CartItemData(
           productId: productId,
           productName: productName,
           sku: sku,
           quantity: 1,
           rate: price,
+          mrp: product.mrp,
           stock: stock,
           schEnabled: false,
         );
@@ -9557,6 +11258,352 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     });
   }
 
+  void _showEditOrderDialog(OrderModel order) {
+    setState(() {
+      _orderToEdit = order;
+      _isEditingOrder = true;
+      _editCart.clear();
+      
+      for (var item in order.items) {
+        final product = _products.firstWhere(
+          (p) => p.id == item.productId,
+          orElse: () => ProductModel(
+            id: item.productId,
+            name: item.productName,
+            sku: item.sku,
+            price: item.rate,
+            mrp: item.rate,
+            category: '',
+            stock: 0,
+            createdAt: DateTime.now(),
+            updatedAt: DateTime.now(),
+          ),
+        );
+        
+        _editCart[item.productId] = CartItemData(
+          productId: item.productId,
+          productName: item.productName,
+          sku: item.sku,
+          quantity: item.quantity,
+          rate: item.rate,
+          mrp: item.mrp ?? item.rate,
+          stock: product.stock,
+          schEnabled: false,
+        );
+        _editCart[item.productId]!.calculate();
+      }
+      
+      _selectedCustomerId = order.customerId;
+      _selectedPaymentMode = order.paymentMode ?? PaymentMode.credit;
+      _orderNotes = order.notes ?? '';
+    });
+    
+    _showEditOrderDialogInternal();
+  }
+
+  void _showEditOrderDialogInternal() {
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: Text('Edit Order #${_orderToEdit?.orderNumber}'),
+            content: Container(
+              width: MediaQuery.of(context).size.width * 0.8,
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.7,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.blue[50],
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Customer: ${_orderToEdit?.customerName}'),
+                        Text('Order Date: ${_orderToEdit?.createdAt.day}/${_orderToEdit?.createdAt.month}/${_orderToEdit?.createdAt.year}'),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  const Text('Payment Mode:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      ChoiceChip(
+                        label: const Text('Credit'),
+                        selected: _selectedPaymentMode == PaymentMode.credit,
+                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.credit),
+                      ),
+                      ChoiceChip(
+                        label: const Text('Cash'),
+                        selected: _selectedPaymentMode == PaymentMode.cash,
+                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.cash),
+                      ),
+                      ChoiceChip(
+                        label: const Text('UPI'),
+                        selected: _selectedPaymentMode == PaymentMode.upi,
+                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.upi),
+                      ),
+                      ChoiceChip(
+                        label: const Text('Cheque'),
+                        selected: _selectedPaymentMode == PaymentMode.cheque,
+                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.cheque),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  const Text('Order Items:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _editCart.length,
+                      itemBuilder: (context, index) {
+                        final productId = _editCart.keys.elementAt(index);
+                        final cartItem = _editCart[productId]!;
+                        final product = _products.firstWhere(
+                          (p) => p.id == productId,
+                          orElse: () => ProductModel(
+                            id: productId,
+                            name: cartItem.productName,
+                            sku: cartItem.sku,
+                            price: cartItem.rate,
+                            mrp: cartItem.mrp,
+                            category: '',
+                            stock: cartItem.stock,
+                            createdAt: DateTime.now(),
+                            updatedAt: DateTime.now(),
+                          ),
+                        );
+                        
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.grey[100],
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(cartItem.productName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                    Text('MRP: ₹${cartItem.mrp.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                    Text('Rate: ₹${cartItem.rate.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11)),
+                                  ],
+                                ),
+                              ),
+                              Row(
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.remove, size: 20),
+                                    onPressed: () {
+                                      final newQty = cartItem.quantity - 1;
+                                      if (newQty <= 0) {
+                                        setDialogState(() {
+                                          _editCart.remove(productId);
+                                        });
+                                      } else {
+                                        setDialogState(() {
+                                          _editCart[productId]!.quantity = newQty;
+                                          _editCart[productId]!.calculate();
+                                        });
+                                      }
+                                    },
+                                  ),
+                                  Text('${cartItem.quantity}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                                  IconButton(
+                                    icon: const Icon(Icons.add, size: 20),
+                                    onPressed: () {
+                                      if (cartItem.quantity < product.stock) {
+                                        setDialogState(() {
+                                          _editCart[productId]!.quantity++;
+                                          _editCart[productId]!.calculate();
+                                        });
+                                      } else {
+                                        showSafeSnackBar(context, 'Not enough stock', backgroundColor: warningOrange);
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(width: 8),
+                              Text('₹${cartItem.netAmt.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  
+                  const Divider(),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Total:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      Text('₹${_getEditCartTotal().toStringAsFixed(0)}', 
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: accentTeal)),
+                    ],
+                  ),
+                  
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: TextEditingController(text: _orderNotes),
+                    decoration: const InputDecoration(
+                      labelText: 'Notes',
+                      border: OutlineInputBorder(),
+                    ),
+                    maxLines: 2,
+                    onChanged: (value) => _orderNotes = value,
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  await _submitEditOrder();
+                  if (mounted) {
+                    Navigator.pop(context);
+                  }
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+                child: const Text('Save Changes'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  double _getEditCartTotal() {
+    double total = 0;
+    for (var item in _editCart.values) {
+      total += item.netAmt;
+    }
+    return total;
+  }
+
+  Future<void> _submitEditOrder() async {
+    if (_orderToEdit == null || _editCart.isEmpty) return;
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
+      
+      final updatedOrder = OrderModel(
+        id: _orderToEdit!.id,
+        orderNumber: _orderToEdit!.orderNumber,
+        customerId: _selectedCustomerId!,
+        customerName: customer.name,
+        customerPhone: customer.phone ?? customer.mobile ?? '',
+        areaName: customer.area,
+        routeName: customer.route ?? '',
+        salesmanId: _orderToEdit!.salesmanId,
+        salesmanName: _orderToEdit!.salesmanName,
+        items: _editCart.entries.map((entry) {
+          final item = entry.value;
+          return OrderItemModel(
+            id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
+            productId: item.productId,
+            productName: item.productName,
+            sku: item.sku,
+            quantity: item.quantity,
+            rate: item.rate,
+            amount: item.netAmt,
+            mrp: item.mrp,
+          );
+        }).toList(),
+        totalAmount: _getEditCartTotal(),
+        paidAmount: _orderToEdit!.paidAmount,
+        dueAmount: _getEditCartTotal() - _orderToEdit!.paidAmount,
+        status: _orderToEdit!.status,
+        orderType: _orderToEdit!.orderType,
+        paymentMode: _selectedPaymentMode,
+        scheduledDate: _orderToEdit!.scheduledDate,
+        notes: _orderNotes,
+        internalNotes: _orderToEdit!.internalNotes,
+        createdAt: _orderToEdit!.createdAt,
+        timeline: _orderToEdit!.timeline,
+      );
+      
+      await _orderService.editOrder(updatedOrder);
+      await _loadData();
+      
+      if (mounted) {
+        showSafeSnackBar(context, '✅ Order updated successfully!', backgroundColor: successGreen);
+        setState(() {
+          _orderToEdit = null;
+          _isEditingOrder = false;
+          _editCart.clear();
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Error updating order: $e', backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _deleteOrder(OrderModel order) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Order'),
+        content: Text('Are you sure you want to delete order #${order.orderNumber}?\nThis action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: errorRed),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed != true) return;
+    
+    setState(() => _isLoading = true);
+    
+    try {
+      await _orderService.deleteOrder(order.id);
+      await _loadData();
+      
+      if (mounted) {
+        showSafeSnackBar(context, '✅ Order deleted successfully!', backgroundColor: successGreen);
+      }
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Error deleting order: $e', backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   Future<void> submitOrder() async {
     if (_selectedCustomerId == null || _cart.isEmpty) return;
 
@@ -9587,6 +11634,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             quantity: item.quantity,
             rate: item.rate,
             amount: item.netAmt,
+            mrp: item.mrp,
           );
         }).toList(),
         totalAmount: cartTotal,
@@ -10131,6 +12179,11 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                   3,
                                 ),
                               _buildSidebarItem(
+                                Icons.history,
+                                'Collection History',
+                                6,
+                              ),
+                              _buildSidebarItem(
                                 Icons.inventory_2,
                                 'Products',
                                 4,
@@ -10199,6 +12252,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         } else if (index == -2) {
           setState(() => _isSidebarOpen = false);
           _showChangePasswordDialog();
+        } else if (index == 6) {
+          setState(() => _isSidebarOpen = false);
+          _showCollectionHistoryDialog();
         } else {
           setState(() {
             _selectedIndex = index;
@@ -10223,6 +12279,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         return _buildProductsSection();
       case 5:
         return _buildCustomersSection();
+      case 6:
+        return _buildCollectionHistorySection();
       default:
         return _buildDashboard();
     }
@@ -10234,6 +12292,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         .fold<double>(0, (sum, o) => sum + o.totalAmount);
     final totalCollection = _orders.fold<double>(0, (sum, o) => sum + o.paidAmount);
     final totalPending = _orders.fold<double>(0, (sum, o) => sum + o.dueAmount);
+    final totalCollectedByMe = _collectionHistory.fold<double>(0, (sum, c) => sum + c.amountCollected);
 
     return RefreshIndicator(
       onRefresh: _loadData,
@@ -10326,8 +12385,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
               children: [
                 Expanded(
                   child: _buildStatCard(
-                    'Collection',
-                    '₹${(totalCollection / 1000).toStringAsFixed(1)}K',
+                    'My Collection',
+                    '₹${(totalCollectedByMe / 1000).toStringAsFixed(1)}K',
                     Icons.account_balance_wallet,
                     accentTeal,
                   ),
@@ -10485,70 +12544,355 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   Widget _buildOrderCard(OrderModel order) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: _getStatusColor(order.status).withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
+    return GestureDetector(
+      onTap: () => _showOrderDetailsDialog(order),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: _getStatusColor(order.status).withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(
+                Icons.receipt,
+                color: _getStatusColor(order.status),
+                size: 20,
+              ),
             ),
-            child: Icon(
-              Icons.receipt,
-              color: _getStatusColor(order.status),
-              size: 20,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    order.orderNumber,
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    '${order.customerName} • ${order.items.length} items',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Text(
-                  order.orderNumber,
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                  '₹${order.totalAmount.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
+                    fontSize: 16,
+                  ),
                 ),
+                if (order.dueAmount > 0)
+                  Text(
+                    'Due: ₹${order.dueAmount.toStringAsFixed(0)}',
+                    style: const TextStyle(fontSize: 10, color: warningOrange),
+                  ),
                 Text(
-                  '${order.customerName} • ${order.items.length} items',
-                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  order.statusDisplay,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: _getStatusColor(order.status),
+                  ),
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showOrderDetailsDialog(OrderModel order) {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Container(
+          width: double.maxFinite,
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                '₹${order.totalAmount.toStringAsFixed(0)}',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: primaryBlue,
-                  fontSize: 16,
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Order ${order.orderNumber}',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: primaryBlue,
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      if (canEditOrder)
+                        IconButton(
+                          icon: const Icon(Icons.edit, color: primaryBlue),
+                          onPressed: () {
+                            Navigator.pop(context);
+                            _showEditOrderDialog(order);
+                          },
+                          tooltip: 'Edit Order',
+                        ),
+                      if (canDeleteOrder)
+                        IconButton(
+                          icon: const Icon(Icons.delete, color: errorRed),
+                          onPressed: () {
+                            Navigator.pop(context);
+                            _deleteOrder(order);
+                          },
+                          tooltip: 'Delete Order',
+                        ),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const Divider(),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Customer:',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(order.customerName),
+                      ],
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Phone:',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(order.customerPhone),
+                      ],
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Area:',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(order.areaName),
+                      ],
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'Status:',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: _getStatusColor(
+                              order.status,
+                            ).withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            order.statusDisplay,
+                            style: TextStyle(
+                              color: _getStatusColor(order.status),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
+              const SizedBox(height: 16),
+              const Text(
+                'Items:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const Divider(),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: order.items.length,
+                  itemBuilder: (context, index) {
+                    final item = order.items[index];
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 8),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[100],
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  item.productName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                Text(
+                                  'MRP: ₹${item.mrp?.toStringAsFixed(0) ?? 'N/A'}',
+                                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                ),
+                                Text(
+                                  'SKU: ${item.sku}',
+                                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text('Qty: ${item.quantity}'),
+                              Text('Rate: ₹${item.rate.toStringAsFixed(2)}'),
+                              Text(
+                                '₹${item.amount.toStringAsFixed(2)}',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+              const Divider(),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Total:',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  Text(
+                    '₹${order.totalAmount.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                      color: accentTeal,
+                    ),
+                  ),
+                ],
+              ),
+              if (order.paidAmount > 0)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Paid:', style: TextStyle(color: Colors.green)),
+                    Text(
+                      '₹${order.paidAmount.toStringAsFixed(2)}',
+                      style: const TextStyle(color: Colors.green),
+                    ),
+                  ],
+                ),
               if (order.dueAmount > 0)
-                Text(
-                  'Due: ₹${order.dueAmount.toStringAsFixed(0)}',
-                  style: const TextStyle(fontSize: 10, color: warningOrange),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Due:', style: TextStyle(color: errorRed)),
+                    Text(
+                      '₹${order.dueAmount.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        color: errorRed,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
                 ),
-              Text(
-                order.statusDisplay,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: _getStatusColor(order.status),
-                ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        try {
+                          final path = await PdfService.downloadOrderPdf(order);
+                          if (mounted) {
+                            Navigator.pop(context);
+                            showSafeSnackBar(context, path != null ? 'PDF saved to: $path' : 'Failed to download PDF', backgroundColor: path != null ? successGreen : errorRed);
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            showSafeSnackBar(context, 'Error: $e', backgroundColor: errorRed);
+                          }
+                        }
+                      },
+                      icon: const Icon(Icons.download, size: 18),
+                      label: const Text('Download PDF'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: primaryBlue,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        try {
+                          await PdfService.shareOrderPdf(order);
+                        } catch (e) {
+                          if (mounted) {
+                            showSafeSnackBar(context, 'Error sharing: $e', backgroundColor: errorRed);
+                          }
+                        }
+                      },
+                      icon: const Icon(Icons.share, size: 18),
+                      label: const Text('Share to WhatsApp'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: successGreen,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -10696,14 +13040,12 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'SKU: ${product.sku} | Stock: ${product.stock}',
+                  'MRP: ₹${product.mrp.toStringAsFixed(0)} | Stock: ${product.stock}',
                   style: const TextStyle(fontSize: 11, color: Colors.grey),
                 ),
-                Row(
-                  children: [
-                    Text('MRP: ₹${product.mrp.toStringAsFixed(0)} | '),
-                    Text('Price: ₹${product.price.toStringAsFixed(0)}'),
-                  ],
+                Text(
+                  'Price: ₹${product.price.toStringAsFixed(0)}',
+                  style: const TextStyle(fontSize: 11, color: Colors.grey),
                 ),
               ],
             ),
@@ -11309,7 +13651,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                     style: const TextStyle(fontWeight: FontWeight.bold),
                                   ),
                                   Text(
-                                    'SKU: ${product.sku} | Stock: ${product.stock}',
+                                    'MRP: ₹${product.mrp.toStringAsFixed(0)} | Stock: ${product.stock}',
                                     style: TextStyle(
                                       fontSize: 11,
                                       color: Colors.grey[600],
@@ -11773,6 +14115,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     );
   }
 
+  // FIXED: Enhanced payment dialog for salesman with proper cheque and UPI details
   void _showEnhancedPaymentDialogForSalesman(OrderModel order, TextEditingController paymentAmountController, double customerOutstanding) {
     PaymentMode selectedMode = PaymentMode.cash;
     String? selectedBank;
@@ -12046,6 +14389,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                     paymentPhoto: paymentPhoto,
                   );
                   await _loadData();
+                  await _loadCollectionHistory();
                   if (mounted) {
                     showSafeSnackBar(context, 'Payment collected successfully!', backgroundColor: successGreen);
                   }
@@ -12062,6 +14406,167 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildCollectionHistorySection() {
+    final totalCollected = _collectionHistory.fold<double>(0, (sum, c) => sum + c.amountCollected);
+    
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(16),
+          color: Colors.white,
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'My Collection History',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: successGreen.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  'Total: ₹${totalCollected.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    color: successGreen,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _collectionHistory.isEmpty
+              ? const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.history, size: 60, color: Colors.grey),
+                      SizedBox(height: 10),
+                      Text(
+                        'No collection records yet',
+                        style: TextStyle(color: Colors.grey, fontSize: 16),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _collectionHistory.length,
+                  itemBuilder: (context, index) {
+                    final collection = _collectionHistory[index];
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                collection.billNo,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue[50],
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  collection.paymentMode,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.blue,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                collection.customerName,
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                              Text(
+                                'Date: ${collection.collectionDate.day}/${collection.collectionDate.month}/${collection.collectionDate.year}',
+                                style: const TextStyle(fontSize: 11, color: Colors.grey),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                'Order Amount: ₹${collection.orderAmount.toStringAsFixed(0)}',
+                                style: const TextStyle(fontSize: 12, color: Colors.grey),
+                              ),
+                              Text(
+                                'Collected: ₹${collection.amountCollected.toStringAsFixed(0)}',
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: successGreen,
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (collection.chequeNumber != null && collection.chequeNumber!.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                'Cheque: ${collection.chequeNumber} (${collection.bankName ?? ''})',
+                                style: const TextStyle(fontSize: 10, color: Colors.orange),
+                              ),
+                            ),
+                          if (collection.transactionNumber != null && collection.transactionNumber!.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                'UPI Transaction: ${collection.transactionNumber} (${collection.upiType ?? ''})',
+                                style: const TextStyle(fontSize: 10, color: Colors.purple),
+                              ),
+                            ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 
@@ -12609,10 +15114,23 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(25),
-            child: Container(
-              color: Colors.white,
-              child: const Icon(Icons.business, size: 80, color: primaryBlue),
-            ),
+            child: kIsWeb
+                ? Image.network(
+                    'https://totalmobileapp.onrender.com/isset/image/TotalSolution.png',
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => Container(
+                      color: Colors.white,
+                      child: const Icon(Icons.business, size: 80, color: primaryBlue),
+                    ),
+                  )
+                : Image.asset(
+                    'assets/images/TotalSolution.png',
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => Container(
+                      color: Colors.white,
+                      child: const Icon(Icons.business, size: 80, color: primaryBlue),
+                    ),
+                  ),
           ),
         ),
         const SizedBox(height: 20),

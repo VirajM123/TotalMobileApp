@@ -43,6 +43,9 @@ const excelStorage = multer.diskStorage({
 });
 const excelUpload = multer({ storage: excelStorage });
 
+// Serve static files for logo
+app.use('/isset', express.static(path.join(__dirname, 'isset')));
+
 // Middleware
 app.use(cors({
   origin: '*',
@@ -65,7 +68,8 @@ const COLLECTIONS = {
   DISTRIBUTOR: 'mas_distributor',
   ORDER: 'mas_order',
   PAYMENT: 'mas_payment',
-  NOTIFICATION: 'mas_notification'
+  NOTIFICATION: 'mas_notification',
+  COLLECTION_HISTORY: 'mas_collection_history'
 };
 
 let db;
@@ -87,6 +91,7 @@ async function connectToMongoDB() {
         collections.order = db.collection(COLLECTIONS.ORDER);
         collections.payment = db.collection(COLLECTIONS.PAYMENT);
         collections.notification = db.collection(COLLECTIONS.NOTIFICATION);
+        collections.collectionHistory = db.collection(COLLECTIONS.COLLECTION_HISTORY);
         
         console.log('Connected to MongoDB successfully');
         console.log(`Database: ${DB_NAME}`);
@@ -107,12 +112,17 @@ async function connectToMongoDB() {
         await collections.order.createIndex({ customerId: 1 });
         await collections.order.createIndex({ customerName: 1 });
         await collections.order.createIndex({ order_date: 1 });
+        await collections.order.createIndex({ status: 1 }); // Added index for status field
         await collections.payment.createIndex({ collection_id: 1 }, { unique: true });
         await collections.payment.createIndex({ customer_id: 1 });
         await collections.payment.createIndex({ 'collected_by.id': 1 });
+        await collections.payment.createIndex({ 'salesman_details.id': 1 });
         await collections.notification.createIndex({ distributor_id: 1 });
         await collections.notification.createIndex({ isRead: 1 });
         await collections.notification.createIndex({ createdAt: -1 });
+        await collections.collectionHistory.createIndex({ distributor_id: 1 });
+        await collections.collectionHistory.createIndex({ salesman_id: 1 });
+        await collections.collectionHistory.createIndex({ created_at: -1 });
         
         console.log('Indexes created successfully');
     } catch (error) {
@@ -168,30 +178,406 @@ const INDIAN_BANKS = [
 
 const UPI_APPS = ['GPay', 'PhonePe', 'Paytm', 'Amazon Pay', 'WhatsApp Pay', 'Other'];
 
+// Helper function to get customer by ID (either ObjectId or customer_id string)
+async function getCustomerById(customerIdentifier) {
+    let customer = null;
+    
+    // Try to find by ObjectId
+    if (ObjectId.isValid(customerIdentifier) && customerIdentifier.length === 24) {
+        customer = await collections.customer.findOne({ _id: new ObjectId(customerIdentifier) });
+    }
+    
+    // If not found, try by customer_id string
+    if (!customer && customerIdentifier) {
+        customer = await collections.customer.findOne({ customer_id: customerIdentifier });
+    }
+    
+    return customer;
+}
+
+// Helper function to get salesman by ID (either ObjectId or salesman_id string)
+async function getSalesmanById(salesmanIdentifier) {
+    let salesman = null;
+    
+    // Try to find by ObjectId
+    if (ObjectId.isValid(salesmanIdentifier) && salesmanIdentifier.length === 24) {
+        salesman = await collections.salesman.findOne({ _id: new ObjectId(salesmanIdentifier) });
+    }
+    
+    // If not found, try by salesman_id string
+    if (!salesman && salesmanIdentifier) {
+        salesman = await collections.salesman.findOne({ salesman_id: salesmanIdentifier });
+    }
+    
+    // If still not found, try by email in register
+    if (!salesman && salesmanIdentifier && salesmanIdentifier.includes('@')) {
+        const registerUser = await collections.register.findOne({ email: salesmanIdentifier, role: 'salesman' });
+        if (registerUser && registerUser.salesman_id) {
+            salesman = await collections.salesman.findOne({ salesman_id: registerUser.salesman_id });
+        }
+    }
+    
+    return salesman;
+}
+
+// Helper function to get distributor by ID
+async function getDistributorById(distributorIdentifier) {
+    let distributor = null;
+    
+    // Try to find by ObjectId
+    if (ObjectId.isValid(distributorIdentifier) && distributorIdentifier.length === 24) {
+        distributor = await collections.distributor.findOne({ _id: new ObjectId(distributorIdentifier) });
+    }
+    
+    // If not found, try by distributor_id string
+    if (!distributor && distributorIdentifier) {
+        distributor = await collections.distributor.findOne({ distributor_id: distributorIdentifier });
+    }
+    
+    return distributor;
+}
+
+// Helper function to get register user by ID
+async function getRegisterUserById(userId) {
+    let user = null;
+    
+    // Try to find by ObjectId
+    if (ObjectId.isValid(userId) && userId.length === 24) {
+        user = await collections.register.findOne({ _id: new ObjectId(userId) });
+    }
+    
+    // If not found, try by salesman_id
+    if (!user && userId) {
+        user = await collections.register.findOne({ salesman_id: userId });
+    }
+    
+    // If not found, try by distributor_id
+    if (!user && userId) {
+        user = await collections.register.findOne({ distributor_id: userId });
+    }
+    
+    return user;
+}
+
+// Helper function to get product MRP by product ID or SKU
+async function getProductMrp(productId, sku) {
+    try {
+        let product = null;
+        
+        // Try to find by ObjectId
+        if (productId && ObjectId.isValid(productId)) {
+            product = await collections.product.findOne({ _id: new ObjectId(productId) });
+        }
+        
+        // If not found, try by sku
+        if (!product && sku) {
+            product = await collections.product.findOne({ sku: sku });
+        }
+        
+        // If not found, try by productId as string
+        if (!product && productId && !ObjectId.isValid(productId)) {
+            product = await collections.product.findOne({ _id: productId });
+        }
+        
+        // Return MRP if found, otherwise return 0
+        if (product) {
+            return product.mrp || product.price || 0;
+        }
+        return 0;
+    } catch (error) {
+        console.error('Error fetching product MRP:', error);
+        return 0;
+    }
+}
+
+// Helper function to process order items and ensure MRP is included
+async function processOrderItems(items) {
+    const processedItems = [];
+    
+    for (const item of items) {
+        // Get MRP from database if not provided
+        let mrpValue = item.mrp || 0;
+        
+        if (!mrpValue || mrpValue === 0) {
+            mrpValue = await getProductMrp(item.productId, item.sku);
+            console.log(`Fetched MRP for product ${item.productName || item.sku}: ${mrpValue}`);
+        }
+        
+        // Calculate amount if not provided
+        const quantity = parseInt(item.quantity) || 0;
+        const rate = parseFloat(item.rate) || parseFloat(item.price) || 0;
+        const amount = (quantity * rate) || item.amount || 0;
+        
+        processedItems.push({
+            productId: item.productId,
+            productName: item.productName,
+            sku: item.sku,
+            quantity: quantity,
+            rate: rate,
+            amount: amount,
+            mrp: mrpValue,
+            price: rate, // For backward compatibility
+            product_id: item.productId // For backward compatibility
+        });
+    }
+    
+    return processedItems;
+}
+
+// ==================== COLLECTION HISTORY APIs ====================
+
+// Create collection history entry - FIXED: Now uses proper IDs
+async function createCollectionHistory(order, paymentAmount, paymentMode, collectedBy, collectedByName, collectedByType, salesmanId, salesmanName) {
+    try {
+        // Get the actual customer to get the correct customer_id
+        let actualCustomerId = order.customerId;
+        let actualCustomerName = order.customerName;
+        
+        const customer = await getCustomerById(order.customerId);
+        if (customer) {
+            actualCustomerId = customer.customer_id || order.customerId;
+            actualCustomerName = customer.name || order.customerName;
+        }
+        
+        // Get the actual salesman details
+        let actualSalesmanId = salesmanId;
+        let actualSalesmanName = salesmanName;
+        
+        if (salesmanId) {
+            const salesman = await getSalesmanById(salesmanId);
+            if (salesman) {
+                actualSalesmanId = salesman.salesman_id || salesmanId;
+                actualSalesmanName = salesman.name || salesmanName;
+            } else {
+                // Try to find in register
+                const registerUser = await getRegisterUserById(salesmanId);
+                if (registerUser && registerUser.salesman_id) {
+                    actualSalesmanId = registerUser.salesman_id;
+                    actualSalesmanName = registerUser.fullName || salesmanName;
+                }
+            }
+        }
+        
+        // Get distributor ID from order
+        const distributorId = order.distributor_id;
+        
+        const collectionHistory = {
+            collection_id: generateCollectionId(),
+            order_id: order.orderNumber,
+            order_amount: order.grand_total,
+            amount_collected: paymentAmount,
+            payment_mode: paymentMode,
+            customer_id: actualCustomerId,
+            customer_name: actualCustomerName,
+            distributor_id: distributorId,
+            collected_by: {
+                type: collectedByType,
+                id: collectedBy,
+                name: collectedByName
+            },
+            salesman_details: actualSalesmanId ? {
+                id: actualSalesmanId,
+                name: actualSalesmanName
+            } : null,
+            bill_no: order.orderNumber,
+            collection_date: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+            status: 'completed'
+        };
+        
+        await collections.collectionHistory.insertOne(collectionHistory);
+        console.log(`Collection history created for order ${order.orderNumber} with customer_id: ${actualCustomerId}, salesman_id: ${actualSalesmanId}, distributor_id: ${distributorId}`);
+        
+        return collectionHistory;
+    } catch (error) {
+        console.error('Error creating collection history:', error);
+    }
+}
+
+// Get collection history for distributor
+app.get('/api/collection-history/distributor/:distributorId', async (req, res) => {
+    try {
+        const { distributorId } = req.params;
+        const { startDate, endDate, salesmanId } = req.query;
+        
+        let query = { distributor_id: distributorId };
+        
+        if (salesmanId && salesmanId !== 'all') {
+            query['salesman_details.id'] = salesmanId;
+        }
+        
+        if (startDate || endDate) {
+            query.collection_date = {};
+            if (startDate) {
+                query.collection_date.$gte = new Date(startDate).toISOString();
+            }
+            if (endDate) {
+                query.collection_date.$lte = new Date(endDate).toISOString();
+            }
+        }
+        
+        const collections = await collections.collectionHistory
+            .find(query)
+            .sort({ collection_date: -1 })
+            .toArray();
+        
+        // Calculate totals
+        const totalCollected = collections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        
+        // Group by salesman
+        const salesmanSummary = {};
+        collections.forEach(c => {
+            if (c.salesman_details && c.salesman_details.id) {
+                const salesmanIdKey = c.salesman_details.id;
+                if (!salesmanSummary[salesmanIdKey]) {
+                    salesmanSummary[salesmanIdKey] = {
+                        salesman_id: c.salesman_details.id,
+                        salesman_name: c.salesman_details.name,
+                        total_collected: 0,
+                        count: 0
+                    };
+                }
+                salesmanSummary[salesmanIdKey].total_collected += c.amount_collected;
+                salesmanSummary[salesmanIdKey].count++;
+            }
+        });
+        
+        res.json({
+            collections: collections,
+            summary: {
+                total_collected: totalCollected,
+                total_transactions: collections.length,
+                salesman_wise: Object.values(salesmanSummary)
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching collection history:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get collection history for salesman
+app.get('/api/collection-history/salesman/:salesmanId', async (req, res) => {
+    try {
+        const { salesmanId } = req.params;
+        const { startDate, endDate } = req.query;
+        
+        let query = { 'salesman_details.id': salesmanId };
+        
+        if (startDate || endDate) {
+            query.collection_date = {};
+            if (startDate) {
+                query.collection_date.$gte = new Date(startDate).toISOString();
+            }
+            if (endDate) {
+                query.collection_date.$lte = new Date(endDate).toISOString();
+            }
+        }
+        
+        const collections = await collections.collectionHistory
+            .find(query)
+            .sort({ collection_date: -1 })
+            .toArray();
+        
+        const totalCollected = collections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        
+        res.json({
+            collections: collections,
+            summary: {
+                total_collected: totalCollected,
+                total_transactions: collections.length
+            }
+        });
+    } catch (error) {
+        console.error('Error fetching salesman collection history:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Get collection reconciliation report
+app.get('/api/collection-history/reconcile/:distributorId', async (req, res) => {
+    try {
+        const { distributorId } = req.params;
+        const { expectedAmount, date } = req.query;
+        
+        let query = { distributor_id: distributorId };
+        
+        if (date) {
+            const startDate = new Date(date);
+            startDate.setHours(0, 0, 0, 0);
+            const endDate = new Date(date);
+            endDate.setHours(23, 59, 59, 999);
+            query.collection_date = {
+                $gte: startDate.toISOString(),
+                $lte: endDate.toISOString()
+            };
+        }
+        
+        const collections = await collections.collectionHistory
+            .find(query)
+            .sort({ collection_date: -1 })
+            .toArray();
+        
+        const totalCollected = collections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        const expected = parseFloat(expectedAmount) || totalCollected;
+        const difference = expected - totalCollected;
+        
+        // Group by salesman for discrepancy tracking
+        const salesmanCollections = {};
+        collections.forEach(c => {
+            if (c.salesman_details && c.salesman_details.id) {
+                const id = c.salesman_details.id;
+                if (!salesmanCollections[id]) {
+                    salesmanCollections[id] = {
+                        salesman_id: id,
+                        salesman_name: c.salesman_details.name,
+                        total_collected: 0,
+                        collections: []
+                    };
+                }
+                salesmanCollections[id].total_collected += c.amount_collected;
+                salesmanCollections[id].collections.push(c);
+            }
+        });
+        
+        res.json({
+            total_collected: totalCollected,
+            expected_amount: expected,
+            difference: difference,
+            is_matching: difference === 0,
+            message: difference === 0 ? 'Collections match expected amount' : (difference > 0 ? `Cash short by ₹${difference}` : `Cash excess by ₹${Math.abs(difference)}`),
+            collections: collections,
+            salesman_breakdown: Object.values(salesmanCollections)
+        });
+    } catch (error) {
+        console.error('Error reconciling collections:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ==================== IMPORT MASTER DATA APIs ====================
 
 // Import customers from Excel
 app.post('/api/import/customers', excelUpload.single('file'), async (req, res) => {
     try {
-        const { distributorId, createdBy } = req.body;
+        const { distributorId, createdBy, updateExisting } = req.body;
         
         console.log('Import customers request received');
         console.log('Distributor ID:', distributorId);
+        console.log('Update existing:', updateExisting);
         console.log('File received:', req.file ? req.file.originalname : 'No file');
         
         if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
+            return res.status(400).json({ error: 'No file uploaded', success: false });
         }
         
-        if (!distributorId) {
-            // Clean up uploaded file
+        if (!distributorId || distributorId === 'undefined' || distributorId === 'null') {
             if (fs.existsSync(req.file.path)) {
                 fs.unlinkSync(req.file.path);
             }
-            return res.status(400).json({ error: 'Distributor ID is required' });
+            return res.status(400).json({ error: 'Valid Distributor ID is required', success: false });
         }
         
-        // Read the Excel file
         const workbook = XLSX.readFile(req.file.path);
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
@@ -203,17 +589,17 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
             if (fs.existsSync(req.file.path)) {
                 fs.unlinkSync(req.file.path);
             }
-            return res.status(400).json({ error: 'No data found in Excel file' });
+            return res.status(400).json({ error: 'No data found in Excel file', success: false });
         }
         
         let importedCount = 0;
+        let updatedCount = 0;
         let skippedCount = 0;
         const errors = [];
         
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
             try {
-                // Support multiple column name variations
                 const customerCode = row['Customer Code'] || row['customer_code'] || row['CustomerCode'] || row['Customer code'] || '';
                 const customerName = row['Customer Name'] || row['customer_name'] || row['CustomerName'] || row['Customer name'] || '';
                 const area = row['Area'] || row['area'] || '';
@@ -224,7 +610,6 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 
                 console.log(`Processing row ${i + 1}: Name=${customerName}, Area=${area}, Code=${customerCode}`);
                 
-                // Validate required fields
                 if (!customerName || !customerName.toString().trim()) {
                     console.log(`Skipping row ${i + 1}: Missing customer name`);
                     skippedCount++;
@@ -246,7 +631,6 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const trimmedPhone = phone ? phone.toString().trim() : '';
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
                 
-                // Check for existing customer
                 const existingCustomer = await collections.customer.findOne({ 
                     $or: [
                         { name: trimmedCustomerName, distributor_id: trimmedDistributorId },
@@ -255,13 +639,31 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 });
                 
                 if (existingCustomer) {
-                    console.log(`Skipping row ${i + 1}: Customer "${trimmedCustomerName}" already exists`);
-                    skippedCount++;
-                    errors.push(`Row ${i + 1}: Customer "${trimmedCustomerName}" already exists`);
+                    if (updateExisting === 'true') {
+                        const updateResult = await collections.customer.updateOne(
+                            { _id: existingCustomer._id },
+                            { 
+                                $set: {
+                                    name: trimmedCustomerName,
+                                    phone: trimmedPhone || existingCustomer.phone,
+                                    area: trimmedArea,
+                                    route: trimmedRoute || existingCustomer.route,
+                                    address: trimmedAddress || existingCustomer.address,
+                                    updated_at: new Date().toISOString(),
+                                    updated_by: createdBy || 'import'
+                                }
+                            }
+                        );
+                        updatedCount++;
+                        console.log(`Updated customer ${updatedCount}: ${trimmedCustomerName}`);
+                    } else {
+                        console.log(`Skipping row ${i + 1}: Customer "${trimmedCustomerName}" already exists`);
+                        skippedCount++;
+                        errors.push(`Row ${i + 1}: Customer "${trimmedCustomerName}" already exists (use updateExisting=true to update)`);
+                    }
                     continue;
                 }
                 
-                // Generate customer ID if not provided
                 const customerId = (customerCode && customerCode.toString().trim()) 
                     ? customerCode.toString().trim() 
                     : `GK${Date.now()}${Math.floor(Math.random() * 1000)}`;
@@ -282,7 +684,7 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 
                 await collections.customer.insertOne(customer);
                 importedCount++;
-                console.log(`Imported customer ${importedCount}: ${trimmedCustomerName}`);
+                console.log(`Imported customer ${importedCount}: ${trimmedCustomerName} with ID: ${customerId}`);
                 
             } catch (rowError) {
                 console.error(`Error importing row ${i + 1}:`, rowError);
@@ -291,17 +693,17 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
             }
         }
         
-        // Clean up uploaded file
         if (fs.existsSync(req.file.path)) {
             fs.unlinkSync(req.file.path);
         }
         
-        console.log(`Import completed: ${importedCount} imported, ${skippedCount} skipped`);
+        console.log(`Import completed: ${importedCount} imported, ${updatedCount} updated, ${skippedCount} skipped`);
         
         res.json({
             success: true,
-            message: `Imported ${importedCount} customers successfully. Skipped ${skippedCount} entries.`,
+            message: `Imported ${importedCount} customers, updated ${updatedCount} customers successfully. Skipped ${skippedCount} entries.`,
             importedCount: importedCount,
+            updatedCount: updatedCount,
             skippedCount: skippedCount,
             errors: errors.length > 0 ? errors.slice(0, 10) : []
         });
@@ -315,31 +717,31 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 console.error('Error cleaning up file:', unlinkError);
             }
         }
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: error.message, success: false });
     }
 });
 
 // Import products from Excel
 app.post('/api/import/products', excelUpload.single('file'), async (req, res) => {
     try {
-        const { distributorId, createdBy } = req.body;
+        const { distributorId, createdBy, updateExisting } = req.body;
         
         console.log('Import products request received');
         console.log('Distributor ID:', distributorId);
+        console.log('Update existing:', updateExisting);
         console.log('File received:', req.file ? req.file.originalname : 'No file');
         
         if (!req.file) {
-            return res.status(400).json({ error: 'No file uploaded' });
+            return res.status(400).json({ error: 'No file uploaded', success: false });
         }
         
-        if (!distributorId) {
+        if (!distributorId || distributorId === 'undefined' || distributorId === 'null') {
             if (fs.existsSync(req.file.path)) {
                 fs.unlinkSync(req.file.path);
             }
-            return res.status(400).json({ error: 'Distributor ID is required' });
+            return res.status(400).json({ error: 'Valid Distributor ID is required', success: false });
         }
         
-        // Read the Excel file
         const workbook = XLSX.readFile(req.file.path);
         const sheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[sheetName];
@@ -351,17 +753,17 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
             if (fs.existsSync(req.file.path)) {
                 fs.unlinkSync(req.file.path);
             }
-            return res.status(400).json({ error: 'No data found in Excel file' });
+            return res.status(400).json({ error: 'No data found in Excel file', success: false });
         }
         
         let importedCount = 0;
+        let updatedCount = 0;
         let skippedCount = 0;
         const errors = [];
         
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
             try {
-                // Support multiple column name variations
                 const productName = row['product name'] || row['product_name'] || row['Product Name'] || row['ProductName'] || row['Product name'] || '';
                 const productCode = row['Product code'] || row['product_code'] || row['ProductCode'] || row['Product Code'] || row['SKU'] || row['sku'] || '';
                 const mrp = parseFloat(row['MRP'] || row['mrp'] || 0);
@@ -373,7 +775,6 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 
                 console.log(`Processing row ${i + 1}: Name=${productName}, Code=${productCode}, Price=${price}`);
                 
-                // Validate required fields
                 if (!productName || !productName.toString().trim()) {
                     console.log(`Skipping row ${i + 1}: Missing product name`);
                     skippedCount++;
@@ -403,7 +804,6 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 const validStock = isNaN(stockQuantity) ? 0 : stockQuantity;
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
                 
-                // Check for existing product
                 const existingProduct = await collections.product.findOne({ 
                     $or: [
                         { productName: trimmedProductName, distributorId: trimmedDistributorId },
@@ -412,9 +812,30 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 });
                 
                 if (existingProduct) {
-                    console.log(`Skipping row ${i + 1}: Product "${trimmedProductName}" already exists`);
-                    skippedCount++;
-                    errors.push(`Row ${i + 1}: Product "${trimmedProductName}" already exists`);
+                    if (updateExisting === 'true') {
+                        const updateResult = await collections.product.updateOne(
+                            { _id: existingProduct._id },
+                            {
+                                $set: {
+                                    productName: trimmedProductName,
+                                    mrp: validMRP,
+                                    price: price,
+                                    category: trimmedCategory,
+                                    stock: validStock,
+                                    stockQuantity: validStock,
+                                    description: trimmedDescription,
+                                    updatedAt: new Date().toISOString(),
+                                    updatedBy: createdBy || 'import'
+                                }
+                            }
+                        );
+                        updatedCount++;
+                        console.log(`Updated product ${updatedCount}: ${trimmedProductName}`);
+                    } else {
+                        console.log(`Skipping row ${i + 1}: Product "${trimmedProductName}" already exists`);
+                        skippedCount++;
+                        errors.push(`Row ${i + 1}: Product "${trimmedProductName}" already exists (use updateExisting=true to update)`);
+                    }
                     continue;
                 }
                 
@@ -447,17 +868,17 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
             }
         }
         
-        // Clean up uploaded file
         if (fs.existsSync(req.file.path)) {
             fs.unlinkSync(req.file.path);
         }
         
-        console.log(`Import completed: ${importedCount} imported, ${skippedCount} skipped`);
+        console.log(`Import completed: ${importedCount} imported, ${updatedCount} updated, ${skippedCount} skipped`);
         
         res.json({
             success: true,
-            message: `Imported ${importedCount} products successfully. Skipped ${skippedCount} entries.`,
+            message: `Imported ${importedCount} products, updated ${updatedCount} products successfully. Skipped ${skippedCount} entries.`,
             importedCount: importedCount,
+            updatedCount: updatedCount,
             skippedCount: skippedCount,
             errors: errors.length > 0 ? errors.slice(0, 10) : []
         });
@@ -471,6 +892,143 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 console.error('Error cleaning up file:', unlinkError);
             }
         }
+        res.status(500).json({ error: error.message, success: false });
+    }
+});
+
+// ==================== CUSTOMER APIs ====================
+
+app.get('/api/customers/:distributorId', async (req, res) => {
+    try {
+        const { distributorId } = req.params;
+        const customers = await collections.customer
+            .find({ distributor_id: distributorId })
+            .sort({ created_at: -1 })
+            .toArray();
+        res.json(customers);
+    } catch (error) {
+        console.error('Error fetching customers:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/customers/id/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const customer = await collections.customer.findOne({ _id: new ObjectId(id) });
+        if (!customer) {
+            return res.status(404).json({ error: 'Customer not found' });
+        }
+        res.json(customer);
+    } catch (error) {
+        console.error('Error fetching customer:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/customers/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updateData = req.body;
+        updateData.updated_at = new Date().toISOString();
+        
+        delete updateData._id;
+        delete updateData.created_at;
+        
+        const result = await collections.customer.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: updateData }
+        );
+        
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ error: 'Customer not found' });
+        }
+        
+        res.json({ success: true, message: 'Customer updated successfully' });
+    } catch (error) {
+        console.error('Error updating customer:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/customers/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const customer = await collections.customer.findOne({ _id: new ObjectId(id) });
+        if (customer) {
+            const orders = await collections.order.find({ customerId: customer.customer_id }).toArray();
+            if (orders.length > 0) {
+                return res.status(400).json({ error: 'Cannot delete customer with existing orders. Please delete orders first or deactivate the customer.' });
+            }
+        }
+        
+        const result = await collections.customer.deleteOne({ _id: new ObjectId(id) });
+        
+        if (result.deletedCount === 0) {
+            return res.status(404).json({ error: 'Customer not found' });
+        }
+        
+        res.json({ success: true, message: 'Customer deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting customer:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== SEARCH API ====================
+app.get('/api/search/:distributorId', async (req, res) => {
+    try {
+        const { distributorId } = req.params;
+        const { query } = req.query;
+        
+        console.log(`Global search - Distributor: ${distributorId}, Query: ${query}`);
+        
+        if (!query || query.trim().length < 2) {
+            return res.json({ products: [], customers: [], orders: [] });
+        }
+        
+        const searchTerm = query.trim();
+        const searchRegex = new RegExp(searchTerm, 'i');
+        
+        const products = await collections.product.find({
+            distributorId: distributorId,
+            isActive: true,
+            $or: [
+                { productName: searchRegex },
+                { sku: searchRegex },
+                { category: searchRegex }
+            ]
+        }).limit(20).toArray();
+        
+        const customers = await collections.customer.find({
+            distributor_id: distributorId,
+            $or: [
+                { name: searchRegex },
+                { customer_id: searchRegex },
+                { phone: searchRegex },
+                { area: searchRegex }
+            ]
+        }).limit(20).toArray();
+        
+        const orders = await collections.order.find({
+            distributor_id: distributorId,
+            $or: [
+                { orderNumber: searchRegex },
+                { customerName: searchRegex },
+                { salesmanName: searchRegex }
+            ]
+        }).limit(20).sort({ createdAt: -1 }).toArray();
+        
+        console.log(`Search results - Products: ${products.length}, Customers: ${customers.length}, Orders: ${orders.length}`);
+        
+        res.json({
+            products: products,
+            customers: customers,
+            orders: orders
+        });
+    } catch (error) {
+        console.error('Error searching:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -701,7 +1259,8 @@ async function createOrderNotification(order, distributorId, salesmanId, salesma
             type: 'new_order',
             isRead: false,
             createdAt: new Date().toISOString(),
-            order_data: order
+            order_data: order,
+            redirect_to: `/orders/${order.orderNumber}`
         };
         
         await collections.notification.insertOne(notification);
@@ -710,6 +1269,91 @@ async function createOrderNotification(order, distributorId, salesmanId, salesma
         return notification;
     } catch (error) {
         console.error('Error creating notification:', error);
+    }
+}
+
+async function createOrderUpdateNotification(order, distributorId, salesmanId, salesmanName, action, oldData = null) {
+    try {
+        let actionMessage = '';
+        switch(action) {
+            case 'edit':
+                actionMessage = `edited order #${order.orderNumber}`;
+                break;
+            case 'delete':
+                actionMessage = `deleted order #${order.orderNumber}`;
+                break;
+            default:
+                actionMessage = `updated order #${order.orderNumber}`;
+        }
+        
+        let actualSalesmanName = salesmanName;
+        if (!actualSalesmanName && salesmanId) {
+            const salesman = await collections.salesman.findOne({ salesman_id: salesmanId });
+            if (salesman) {
+                actualSalesmanName = salesman.name;
+            } else {
+                const registerUser = await collections.register.findOne({ salesman_id: salesmanId });
+                if (registerUser) {
+                    actualSalesmanName = registerUser.fullName;
+                }
+            }
+        }
+        
+        const finalSalesmanName = actualSalesmanName || salesmanId || 'Salesman';
+        
+        const notification = {
+            _id: new ObjectId(),
+            distributor_id: distributorId,
+            order_id: order.orderNumber,
+            order_number: order.orderNumber,
+            customer_name: order.customerName,
+            salesman_name: finalSalesmanName,
+            amount: order.grand_total || order.totalAmount,
+            message: `Salesman ${finalSalesmanName} ${actionMessage} for customer ${order.customerName}`,
+            type: `order_${action}`,
+            isRead: false,
+            createdAt: new Date().toISOString(),
+            order_data: order,
+            old_data: oldData,
+            redirect_to: `/orders/${order.orderNumber}`
+        };
+        
+        await collections.notification.insertOne(notification);
+        console.log(`Order update notification created for distributor ${distributorId}`);
+        
+        return notification;
+    } catch (error) {
+        console.error('Error creating order update notification:', error);
+    }
+}
+
+async function createPaymentNotification(order, paymentAmount, paymentMode, salesmanId, salesmanName, distributorId) {
+    try {
+        console.log(`Creating payment notification: Order ${order.orderNumber}, Amount ₹${paymentAmount}, Distributor ${distributorId}, Salesman ${salesmanName}`);
+        
+        const notification = {
+            _id: new ObjectId(),
+            distributor_id: distributorId,
+            order_id: order.orderNumber,
+            order_number: order.orderNumber,
+            customer_name: order.customerName,
+            salesman_name: salesmanName,
+            amount: paymentAmount,
+            message: `💰 Payment of ₹${paymentAmount} collected by salesman ${salesmanName} for order #${order.orderNumber} via ${paymentMode}`,
+            type: 'payment_collected',
+            isRead: false,
+            createdAt: new Date().toISOString(),
+            payment_amount: paymentAmount,
+            payment_mode: paymentMode,
+            redirect_to: `/orders/${order.orderNumber}`
+        };
+        
+        const result = await collections.notification.insertOne(notification);
+        console.log(`✅ Payment notification created for distributor ${distributorId} with ID: ${result.insertedId}`);
+        
+        return notification;
+    } catch (error) {
+        console.error('Error creating payment notification:', error);
     }
 }
 
@@ -753,7 +1397,13 @@ app.put('/api/notifications/:notificationId/read', async (req, res) => {
             return res.status(404).json({ error: 'Notification not found' });
         }
         
-        res.json({ success: true, message: 'Notification marked as read' });
+        const notification = await collections.notification.findOne({ _id: new ObjectId(notificationId) });
+        
+        res.json({ 
+            success: true, 
+            message: 'Notification marked as read',
+            redirect_to: notification?.redirect_to || null
+        });
     } catch (error) {
         console.error('Error marking notification as read:', error);
         res.status(500).json({ error: error.message });
@@ -800,7 +1450,7 @@ app.get('/api/distributors', async (req, res) => {
     }
 });
 
-// ==================== CUSTOMER APIs ====================
+// ==================== CUSTOMER APIs (continued) ====================
 
 app.post('/api/customers', async (req, res) => {
     try {
@@ -825,74 +1475,6 @@ app.post('/api/customers', async (req, res) => {
         });
     } catch (error) {
         console.error('Error adding customer:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/customers/:distributorId', async (req, res) => {
-    try {
-        const { distributorId } = req.params;
-        const customers = await collections.customer
-            .find({ distributor_id: distributorId })
-            .sort({ created_at: -1 })
-            .toArray();
-        res.json(customers);
-    } catch (error) {
-        console.error('Error fetching customers:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.get('/api/customers/id/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const customer = await collections.customer.findOne({ _id: new ObjectId(id) });
-        if (!customer) {
-            return res.status(404).json({ error: 'Customer not found' });
-        }
-        res.json(customer);
-    } catch (error) {
-        console.error('Error fetching customer:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.put('/api/customers/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const updateData = req.body;
-        updateData.updated_at = new Date().toISOString();
-        
-        delete updateData._id;
-        
-        const result = await collections.customer.updateOne(
-            { _id: new ObjectId(id) },
-            { $set: updateData }
-        );
-        
-        if (result.matchedCount === 0) {
-            return res.status(404).json({ error: 'Customer not found' });
-        }
-        
-        res.json({ success: true, message: 'Customer updated successfully' });
-    } catch (error) {
-        console.error('Error updating customer:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
-
-app.delete('/api/customers/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const result = await collections.customer.deleteOne({ _id: new ObjectId(id) });
-        
-        if (result.deletedCount === 0) {
-            return res.status(404).json({ error: 'Customer not found' });
-        }
-        
-        res.json({ success: true, message: 'Customer deleted successfully' });
-    } catch (error) {
-        console.error('Error deleting customer:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1021,6 +1603,19 @@ app.put('/api/products/:id/stock', async (req, res) => {
 app.delete('/api/products/:id', async (req, res) => {
     try {
         const { id } = req.params;
+        
+        const product = await collections.product.findOne({ _id: new ObjectId(id) });
+        if (product) {
+            const orders = await collections.order.find({ 
+                'items.productId': id,
+                'items.sku': product.sku 
+            }).toArray();
+            
+            if (orders.length > 0) {
+                return res.status(400).json({ error: 'Cannot delete product that is used in existing orders. Deactivate the product instead.' });
+            }
+        }
+        
         const result = await collections.product.updateOne(
             { _id: new ObjectId(id) },
             { $set: { isActive: false, updatedAt: new Date().toISOString() } }
@@ -1030,7 +1625,7 @@ app.delete('/api/products/:id', async (req, res) => {
             return res.status(404).json({ error: 'Product not found' });
         }
         
-        res.json({ success: true, message: 'Product deleted successfully' });
+        res.json({ success: true, message: 'Product deactivated successfully' });
     } catch (error) {
         console.error('Error deleting product:', error);
         res.status(500).json({ error: error.message });
@@ -1088,7 +1683,9 @@ app.post('/api/salesmen', async (req, res) => {
             canDeleteCustomer: false,
             canViewOrders: true,
             canCreateOrder: true,
-            canCollectPayment: true
+            canCollectPayment: true,
+            canEditOrder: true,
+            canDeleteOrder: true
         };
         
         const loginEntry = {
@@ -1210,6 +1807,15 @@ app.put('/api/salesmen/:id', async (req, res) => {
 app.delete('/api/salesmen/:id', async (req, res) => {
     try {
         const { id } = req.params;
+        
+        const salesman = await collections.salesman.findOne({ _id: new ObjectId(id) });
+        if (salesman) {
+            const orders = await collections.order.find({ salesman_id: salesman.salesman_id }).toArray();
+            if (orders.length > 0) {
+                return res.status(400).json({ error: 'Cannot delete salesman with existing orders. Deactivate the salesman instead.' });
+            }
+        }
+        
         const result = await collections.salesman.updateOne(
             { _id: new ObjectId(id) },
             { $set: { status: 'inactive', updated_at: new Date().toISOString() } }
@@ -1325,15 +1931,34 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
             canDeleteCustomer: false,
             canViewOrders: true,
             canCreateOrder: true,
-            canCollectPayment: true
+            canCollectPayment: true,
+            canEditOrder: true,
+            canDeleteOrder: true
         };
+        
+        const collectionHistory = await collections.collectionHistory
+            .find({ 'salesman_details.id': salesmanId })
+            .sort({ collection_date: -1 })
+            .toArray();
+        
+        console.log(`Found ${collectionHistory.length} collection history records for salesman ${salesmanId}`);
+        
+        const totalCollection = collectionHistory.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        
+        const payments = await collections.payment
+            .find({ 'salesman_details.id': salesmanId })
+            .sort({ created_at: -1 })
+            .toArray();
         
         res.json({
             customers: customers,
             products: products,
             orders: orders,
             permissions: permissions,
-            salesmanName: salesmanName
+            salesmanName: salesmanName,
+            collectionHistory: collectionHistory,
+            payments: payments,
+            totalCollection: totalCollection
         });
     } catch (error) {
         console.error('Error fetching salesman data:', error);
@@ -1371,6 +1996,20 @@ app.post('/api/orders', async (req, res) => {
         orderData.distributor_id = distributorId;
         orderData.distributorId = distributorId;
         
+        // FIXED: Store customer_id as string from customer object
+        if (orderData.customerId) {
+            const customer = await getCustomerById(orderData.customerId);
+            if (customer && customer.customer_id) {
+                orderData.customerId = customer.customer_id;
+            }
+        }
+        
+        // FIXED: Process order items to ensure MRP is saved
+        if (orderData.items && Array.isArray(orderData.items) && orderData.items.length > 0) {
+            orderData.items = await processOrderItems(orderData.items);
+            console.log(`Processed ${orderData.items.length} order items with MRP values`);
+        }
+        
         orderData.created_by_type = orderData.created_by_type || (orderData.salesman_id ? 'salesman' : 'distributor');
         
         orderData.status = orderData.status || 'pending';
@@ -1381,7 +2020,7 @@ app.post('/api/orders', async (req, res) => {
         const result = await collections.order.insertOne(orderData);
         
         console.log(`Order created: ${orderNumber} with ID: ${result.insertedId}`);
-        console.log(`Order created by: ${orderData.created_by_type}, Distributor ID: ${distributorId}, Salesman ID: ${orderData.salesman_id || 'N/A'}`);
+        console.log(`Order created by: ${orderData.created_by_type}, Distributor ID: ${distributorId}, Salesman ID: ${orderData.salesman_id || 'N/A'}, Customer ID: ${orderData.customerId}`);
         
         if (orderData.items && Array.isArray(orderData.items) && orderData.items.length > 0) {
             for (const item of orderData.items) {
@@ -1396,7 +2035,7 @@ app.post('/api/orders', async (req, res) => {
                     }
                     
                     if (product) {
-                        const quantitySold = item.quantity || item.qty || 0;
+                        const quantitySold = parseInt(item.quantity) || parseInt(item.qty) || 0;
                         const currentStock = product.stock || 0;
                         const newStock = currentStock - quantitySold;
                         const finalStock = newStock < 0 ? 0 : newStock;
@@ -1446,6 +2085,183 @@ app.post('/api/orders', async (req, res) => {
         });
     } catch (error) {
         console.error('Error creating order:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.put('/api/orders/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const updateData = req.body;
+        
+        let order = null;
+        if (ObjectId.isValid(orderId)) {
+            order = await collections.order.findOne({ _id: new ObjectId(orderId) });
+        }
+        if (!order) {
+            order = await collections.order.findOne({ orderNumber: orderId });
+        }
+        
+        if (!order) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        
+        const oldItems = order.items || [];
+        const newItems = updateData.items || [];
+        
+        for (const item of oldItems) {
+            try {
+                let product = null;
+                if (item.productId && ObjectId.isValid(item.productId)) {
+                    product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
+                } else if (item.sku) {
+                    product = await collections.product.findOne({ sku: item.sku });
+                }
+                
+                if (product) {
+                    const oldQuantity = parseInt(item.quantity) || parseInt(item.qty) || 0;
+                    const currentStock = product.stock || 0;
+                    const newStock = currentStock + oldQuantity;
+                    
+                    await collections.product.updateOne(
+                        { _id: product._id },
+                        { $set: { stock: newStock, updatedAt: new Date().toISOString() } }
+                    );
+                    console.log(`Stock restored for product ${product.productName}: +${oldQuantity}, New stock: ${newStock}`);
+                }
+            } catch (stockError) {
+                console.error(`Error restoring stock for product ${item.productId}:`, stockError);
+            }
+        }
+        
+        // Process new items to ensure MRP is included
+        let processedNewItems = newItems;
+        if (newItems && newItems.length > 0) {
+            processedNewItems = await processOrderItems(newItems);
+            updateData.items = processedNewItems;
+        }
+        
+        for (const item of processedNewItems) {
+            try {
+                let product = null;
+                if (item.productId && ObjectId.isValid(item.productId)) {
+                    product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
+                } else if (item.sku) {
+                    product = await collections.product.findOne({ sku: item.sku });
+                }
+                
+                if (product) {
+                    const newQuantity = parseInt(item.quantity) || parseInt(item.qty) || 0;
+                    const currentStock = product.stock || 0;
+                    const newStock = currentStock - newQuantity;
+                    const finalStock = newStock < 0 ? 0 : newStock;
+                    
+                    await collections.product.updateOne(
+                        { _id: product._id },
+                        { $set: { stock: finalStock, updatedAt: new Date().toISOString() } }
+                    );
+                    console.log(`Stock deducted for product ${product.productName}: -${newQuantity}, New stock: ${finalStock}`);
+                }
+            } catch (stockError) {
+                console.error(`Error deducting stock for product ${item.productId}:`, stockError);
+            }
+        }
+        
+        updateData.updatedAt = new Date().toISOString();
+        delete updateData._id;
+        
+        const result = await collections.order.updateOne(
+            { _id: order._id },
+            { $set: updateData }
+        );
+        
+        if (order.distributor_id && order.salesman_id) {
+            let salesmanName = updateData.salesmanName || order.salesmanName;
+            if (!salesmanName && order.salesman_id) {
+                const salesman = await collections.salesman.findOne({ salesman_id: order.salesman_id });
+                if (salesman) {
+                    salesmanName = salesman.name;
+                }
+            }
+            await createOrderUpdateNotification(updateData, order.distributor_id, order.salesman_id, salesmanName, 'edit', order);
+        }
+        
+        res.json({ success: true, message: 'Order updated successfully' });
+    } catch (error) {
+        console.error('Error updating order:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/orders/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        
+        let order = null;
+        if (ObjectId.isValid(orderId)) {
+            order = await collections.order.findOne({ _id: new ObjectId(orderId) });
+        }
+        if (!order) {
+            order = await collections.order.findOne({ orderNumber: orderId });
+        }
+        
+        if (!order) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        
+        if (order.paidAmount > 0) {
+            return res.status(400).json({ error: 'Cannot delete order with payments already made. Please refund the payment first.' });
+        }
+        
+        if (order.items && Array.isArray(order.items)) {
+            for (const item of order.items) {
+                try {
+                    let product = null;
+                    if (item.productId && ObjectId.isValid(item.productId)) {
+                        product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
+                    } else if (item.sku) {
+                        product = await collections.product.findOne({ sku: item.sku });
+                    }
+                    
+                    if (product) {
+                        const quantity = parseInt(item.quantity) || parseInt(item.qty) || 0;
+                        const currentStock = product.stock || 0;
+                        const newStock = currentStock + quantity;
+                        
+                        await collections.product.updateOne(
+                            { _id: product._id },
+                            { $set: { stock: newStock, updatedAt: new Date().toISOString() } }
+                        );
+                        console.log(`Stock restored for product ${product.productName}: +${quantity}, New stock: ${newStock}`);
+                    }
+                } catch (stockError) {
+                    console.error(`Error restoring stock for product ${item.productId}:`, stockError);
+                }
+            }
+        }
+        
+        await collections.notification.deleteMany({ order_id: order.orderNumber });
+        
+        const result = await collections.order.deleteOne({ _id: order._id });
+        
+        if (result.deletedCount === 0) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        
+        if (order.distributor_id && order.salesman_id) {
+            let salesmanName = order.salesmanName;
+            if (!salesmanName && order.salesman_id) {
+                const salesman = await collections.salesman.findOne({ salesman_id: order.salesman_id });
+                if (salesman) {
+                    salesmanName = salesman.name;
+                }
+            }
+            await createOrderUpdateNotification(order, order.distributor_id, order.salesman_id, salesmanName, 'delete');
+        }
+        
+        res.json({ success: true, message: 'Order deleted successfully' });
+    } catch (error) {
+        console.error('Error deleting order:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1508,6 +2324,60 @@ app.get('/api/orders/distributor/:distributorId', async (req, res) => {
         res.json(orders);
     } catch (error) {
         console.error('Error fetching orders:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ==================== ORDER DOWNLOAD WITH STATUS TRACKING ====================
+
+// New endpoint to update order status to 'downloaded'
+app.put('/api/orders/status/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const { status, orderNumber } = req.body;
+        
+        console.log(`Updating order status - Order ID: ${orderId}, New Status: ${status}, Order Number: ${orderNumber}`);
+        
+        let order = null;
+        
+        // Try to find order by _id first
+        if (ObjectId.isValid(orderId)) {
+            order = await collections.order.findOne({ _id: new ObjectId(orderId) });
+        }
+        
+        // If not found, try by orderNumber
+        if (!order && orderNumber) {
+            order = await collections.order.findOne({ orderNumber: orderNumber });
+        }
+        
+        if (!order) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        
+        const result = await collections.order.updateOne(
+            { _id: order._id },
+            { 
+                $set: { 
+                    status: status,
+                    downloadedAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString()
+                } 
+            }
+        );
+        
+        if (result.matchedCount === 0) {
+            return res.status(404).json({ error: 'Order not found' });
+        }
+        
+        console.log(`✅ Order ${order.orderNumber} status updated to '${status}'`);
+        
+        res.json({ 
+            success: true, 
+            message: `Order status updated to ${status} successfully`,
+            orderId: order.orderNumber
+        });
+    } catch (error) {
+        console.error('Error updating order status:', error);
         res.status(500).json({ error: error.message });
     }
 });
@@ -1586,6 +2456,29 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
             
             if (order.items && Array.isArray(order.items) && order.items.length > 0) {
                 for (const item of order.items) {
+                    let mrpValue = item.mrp || 0;
+                    if (!mrpValue && item.productId) {
+                        try {
+                            let product = null;
+                            if (ObjectId.isValid(item.productId)) {
+                                product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
+                            } else if (item.sku) {
+                                product = await collections.product.findOne({ sku: item.sku });
+                            }
+                            if (product && product.mrp) {
+                                mrpValue = product.mrp;
+                            } else if (product && product.price) {
+                                mrpValue = product.price;
+                            }
+                        } catch (err) {
+                            console.log('Error fetching product MRP:', err);
+                        }
+                    }
+                    
+                    const quantity = parseInt(item.quantity) || parseInt(item.qty) || 0;
+                    const rate = parseFloat(item.rate) || parseFloat(item.price) || 0;
+                    const netAmount = quantity * rate;
+                    
                     excelData.push({
                         'Order No': order.orderNumber,
                         'Order Date': new Date(order.order_date).toLocaleDateString('en-IN'),
@@ -1593,12 +2486,13 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
                         'Party name': order.customerName || '',
                         'Product code': item.productCode || item.sku || item.productId || '',
                         'Product name': item.productName || item.name || '',
-                        'MRP': item.mrp || item.price || 0,
-                        'Rate': item.rate || item.price || 0,
+                        'MRP': mrpValue,
+                        'QTY': quantity,
+                        'Rate': rate,
                         'Unit': 'PCS',
                         'SSMcode': salesmanCode,
                         'Salesman name': salesmanName,
-                        'Net amount': (item.quantity || item.qty || 0) * (item.rate || item.price || 0)
+                        'Net amount': netAmount
                     });
                 }
             } else {
@@ -1610,6 +2504,7 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
                     'Product code': '',
                     'Product name': '',
                     'MRP': 0,
+                    'QTY': 0,
                     'Rate': 0,
                     'Unit': 'PCS',
                     'SSMcode': salesmanCode,
@@ -1623,8 +2518,8 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
         
         const colWidths = [
             { wch: 15 }, { wch: 12 }, { wch: 15 }, { wch: 25 }, { wch: 15 },
-            { wch: 30 }, { wch: 10 }, { wch: 10 }, { wch: 6 }, { wch: 12 },
-            { wch: 20 }, { wch: 12 }
+            { wch: 30 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 6 }, 
+            { wch: 12 }, { wch: 20 }, { wch: 12 }
         ];
         worksheet['!cols'] = colWidths;
         
@@ -1748,7 +2643,7 @@ app.put('/api/orders/:orderId/status', async (req, res) => {
     }
 });
 
-// ==================== PAYMENT APIs ====================
+// ==================== PAYMENT APIs - FIXED ====================
 
 app.get('/api/payments', async (req, res) => {
     try {
@@ -1805,27 +2700,36 @@ app.get('/api/payments/order/:orderId', async (req, res) => {
     }
 });
 
+// FIXED: Payment recording with correct IDs and cheque/UPI details
 app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (req, res) => {
     try {
         const { orderId } = req.params;
-        const { 
-            amount, 
-            paymentMode, 
-            reference, 
-            collectedBy, 
-            collectedByName,
-            collectedByType,
-            salesmanId,
-            salesmanName,
-            chequeNumber,
-            chequeDate,
-            bankName,
-            upiType,
-            transactionNumber,
-            remark
-        } = req.body;
         
-        console.log(`Looking for order with ID: ${orderId}`);
+        // Log all fields received for debugging
+        console.log('=== PAYMENT REQUEST RECEIVED ===');
+        console.log('Order ID:', orderId);
+        console.log('Body fields:', req.body);
+        console.log('File received:', req.file ? req.file.originalname : 'No file');
+        
+        // Extract fields from request body - support both form-data and JSON
+        const amount = req.body.amount;
+        const paymentMode = req.body.paymentMode;
+        const reference = req.body.reference;
+        const collectedBy = req.body.collectedBy;
+        const collectedByName = req.body.collectedByName;
+        const collectedByType = req.body.collectedByType;
+        const salesmanId = req.body.salesmanId;
+        const salesmanName = req.body.salesmanName;
+        const chequeNumber = req.body.chequeNumber;
+        const chequeDate = req.body.chequeDate;
+        const bankName = req.body.bankName;
+        const upiType = req.body.upiType;
+        const transactionNumber = req.body.transactionNumber;
+        const remark = req.body.remark;
+        
+        console.log('Extracted payment details:', {
+            amount, paymentMode, chequeNumber, chequeDate, bankName, upiType, transactionNumber, remark
+        });
         
         let order = null;
         
@@ -1844,109 +2748,199 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
         
         console.log(`Order found: ${order.orderNumber}`);
         
+        // FIXED: Get the actual customer to get the correct customer_id (string like GK30800)
+        let actualCustomerId = order.customerId;
+        let actualCustomerName = order.customerName;
+        
+        const customer = await getCustomerById(order.customerId);
+        if (customer) {
+            actualCustomerId = customer.customer_id || order.customerId;
+            actualCustomerName = customer.name || order.customerName;
+            console.log(`Found customer: ${actualCustomerName} with ID: ${actualCustomerId}`);
+        } else {
+            console.log(`Customer not found for ID: ${order.customerId}, using order values`);
+        }
+        
+        // FIXED: Get the actual salesman details
+        let actualSalesmanId = salesmanId || collectedBy;
+        let actualSalesmanName = salesmanName || collectedByName;
+        
+        if (salesmanId) {
+            const salesman = await getSalesmanById(salesmanId);
+            if (salesman) {
+                actualSalesmanId = salesman.salesman_id || salesmanId;
+                actualSalesmanName = salesman.name || salesmanName;
+                console.log(`Found salesman: ${actualSalesmanName} with ID: ${actualSalesmanId}`);
+            } else {
+                const registerUser = await getRegisterUserById(salesmanId);
+                if (registerUser && registerUser.salesman_id) {
+                    actualSalesmanId = registerUser.salesman_id;
+                    actualSalesmanName = registerUser.fullName || salesmanName;
+                    console.log(`Found salesman in register: ${actualSalesmanName} with ID: ${actualSalesmanId}`);
+                } else {
+                    console.log(`Salesman not found for ID: ${salesmanId}, using provided values`);
+                }
+            }
+        }
+        
+        // FIXED: Get distributor ID for collected_by.id if needed
+        let actualCollectedById = collectedBy;
+        let actualCollectedByName = collectedByName;
+        
+        if (collectedByType === 'distributor' && collectedBy) {
+            const distributor = await getDistributorById(collectedBy);
+            if (distributor) {
+                actualCollectedById = distributor.distributor_id || collectedBy;
+                actualCollectedByName = distributor.name || collectedByName;
+                console.log(`Found distributor: ${actualCollectedByName} with ID: ${actualCollectedById}`);
+            }
+        }
+        
         const paymentAmount = parseFloat(amount);
         const newPaidAmount = (order.paidAmount || 0) + paymentAmount;
         const newDueAmount = order.grand_total - newPaidAmount;
         
         const collectionId = generateCollectionId();
         
+        // FIXED: Properly save UPI and Cheque details with all required fields
         let paymentModesDetails = {};
+        let photoPath = null;
         
-        if (paymentMode === 'Cheque' || paymentMode === 'cheque') {
+        if (req.file) {
+            photoPath = req.file.path;
+            console.log(`Payment photo saved at: ${photoPath}`);
+        }
+        
+        // Normalize payment mode
+        const normalizedPaymentMode = paymentMode ? paymentMode.toLowerCase() : '';
+        
+        if (normalizedPaymentMode === 'cheque') {
             paymentModesDetails = {
                 mode: 'Cheque',
-                reference_number: chequeNumber,
-                bank_name: bankName,
-                cheque_date: chequeDate
-            };
-        } else if (paymentMode === 'UPI' || paymentMode === 'upi') {
-            let photoPath = null;
-            if (req.file) {
-                photoPath = req.file.path;
-                console.log(`UPI payment photo saved at: ${photoPath}`);
-            } else if (req.body.paymentPhoto) {
-                console.log(`UPI payment photo provided as string`);
-            }
-            
-            paymentModesDetails = {
-                mode: 'UPI',
-                reference_number: transactionNumber,
-                upi_type: upiType,
+                cheque_number: chequeNumber || null,
+                bank_name: bankName || null,
+                cheque_date: chequeDate || null,
+                reference_number: reference || chequeNumber || null,
                 photo_path: photoPath
             };
-        } else if (paymentMode === 'Cash' || paymentMode === 'cash') {
+            console.log(`Saving Cheque details: Number=${chequeNumber}, Bank=${bankName}, Date=${chequeDate}`);
+        } else if (normalizedPaymentMode === 'upi') {
+            paymentModesDetails = {
+                mode: 'UPI',
+                reference_number: transactionNumber || reference || null,
+                upi_type: upiType || null,
+                transaction_number: transactionNumber || null,
+                photo_path: photoPath
+            };
+            console.log(`Saving UPI details: Type=${upiType}, Transaction=${transactionNumber}`);
+        } else if (normalizedPaymentMode === 'cash') {
             paymentModesDetails = {
                 mode: 'Cash',
                 reference_number: null,
-                bank_name: null,
-                cheque_date: null
+                photo_path: photoPath
             };
         } else {
             paymentModesDetails = {
-                mode: paymentMode,
+                mode: paymentMode || 'Unknown',
                 reference_number: reference || null,
-                bank_name: null,
-                cheque_date: null
+                photo_path: photoPath
             };
         }
         
+        // FIXED: Payment record with correct IDs and all payment details
         const paymentRecord = {
             collection_id: collectionId,
             collection_date: new Date().toISOString(),
-            customer_id: order.customerId,
-            customer_name: order.customerName,
+            customer_id: actualCustomerId,
+            customer_name: actualCustomerName,
             amount_collected: paymentAmount,
             payment_mode: paymentMode,
             collected_by: {
-                type: collectedByType || (collectedByType === 'salesman' ? 'salesman' : 'distributor'),
-                id: collectedBy,
-                name: collectedByName,
+                type: collectedByType || (salesmanId ? 'salesman' : 'distributor'),
+                id: actualSalesmanId || actualCollectedById || collectedBy,
+                name: actualSalesmanName || actualCollectedByName || collectedByName,
                 time: new Date().toISOString()
             },
-            salesman_details: salesmanId ? {
-                id: salesmanId,
-                name: salesmanName,
+            salesman_details: actualSalesmanId ? {
+                id: actualSalesmanId,
+                name: actualSalesmanName,
+                time: new Date().toISOString()
+            } : null,
+            distributor_details: collectedByType === 'distributor' ? {
+                id: actualCollectedById,
+                name: actualCollectedByName,
                 time: new Date().toISOString()
             } : null,
             payment_modes_details: paymentModesDetails,
+            // FIXED: Store cheque and UPI specific fields at top level for easy access
+            cheque_number: (normalizedPaymentMode === 'cheque') ? (chequeNumber || null) : null,
+            bank_name: (normalizedPaymentMode === 'cheque') ? (bankName || null) : null,
+            cheque_date: (normalizedPaymentMode === 'cheque') ? (chequeDate || null) : null,
+            upi_type: (normalizedPaymentMode === 'upi') ? (upiType || null) : null,
+            transaction_number: (normalizedPaymentMode === 'upi') ? (transactionNumber || null) : null,
+            reference_number: reference || chequeNumber || transactionNumber || null,
+            photo_path: photoPath,
+            remark: remark || null,
             order_details: {
                 order_id: order.orderNumber,
                 order_amount: order.grand_total,
                 previous_paid: order.paidAmount || 0,
-                previous_due: order.dueAmount || order.grand_total
-            },
-            remark: remark || null,
-            status: newDueAmount <= 0 ? 'completed' : 'partial',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
+                previous_due: order.dueAmount || order.grand_total,
+                status: newDueAmount <= 0 ? 'completed' : 'partial',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }
         };
         
+        console.log('Payment record to save:', JSON.stringify(paymentRecord, null, 2));
+        
         const paymentResult = await collections.payment.insertOne(paymentRecord);
-        console.log(`Payment recorded with ID: ${paymentResult.insertedId}, Collection ID: ${collectionId}`);
+        console.log(`✅ Payment recorded with ID: ${paymentResult.insertedId}, Collection ID: ${collectionId}`);
+        console.log(`   Customer ID saved: ${actualCustomerId}`);
+        console.log(`   Salesman ID saved: ${actualSalesmanId}`);
+        console.log(`   Payment Mode: ${paymentMode}`);
+        console.log(`   Cheque Number: ${chequeNumber}`);
+        console.log(`   Bank Name: ${bankName}`);
+        console.log(`   Cheque Date: ${chequeDate}`);
+        
+        // Create collection history entry with correct IDs
+        await createCollectionHistory(
+            order, 
+            paymentAmount, 
+            paymentMode, 
+            actualSalesmanId || actualCollectedById || collectedBy, 
+            actualSalesmanName || actualCollectedByName || collectedByName, 
+            salesmanId ? 'salesman' : 'distributor', 
+            actualSalesmanId, 
+            actualSalesmanName
+        );
         
         const updateData = { 
             paidAmount: newPaidAmount,
             dueAmount: newDueAmount,
             payment_method: paymentMode,
             paymentReference: reference || chequeNumber || transactionNumber,
-            collectedBy: collectedBy,
-            paymentCollectedBySalesman: salesmanId || null,
+            collectedBy: actualSalesmanId || actualCollectedById || collectedBy,
+            paymentCollectedBySalesman: actualSalesmanId || null,
             paymentCollectedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             payment_status: newDueAmount <= 0 ? 'paid' : 'partial',
             status: newDueAmount <= 0 ? 'delivered' : order.status
         };
         
-        if (paymentMode === 'Cheque' || paymentMode === 'cheque') {
+        // FIXED: Store cheque and UPI details in order as well
+        if (normalizedPaymentMode === 'cheque') {
             updateData.chequeNumber = chequeNumber;
             updateData.chequeDate = chequeDate;
             updateData.bankName = bankName;
-        } else if (paymentMode === 'UPI' || paymentMode === 'upi') {
+        } else if (normalizedPaymentMode === 'upi') {
             updateData.upiType = upiType;
             updateData.transactionNumber = transactionNumber;
-            if (req.file) {
-                updateData.paymentPhoto = req.file.path;
+            if (photoPath) {
+                updateData.paymentPhoto = photoPath;
             }
+        } else if (photoPath) {
+            updateData.paymentPhoto = photoPath;
         }
         
         const result = await collections.order.updateOne(
@@ -1956,13 +2950,32 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
         
         console.log(`Order ${order.orderNumber} updated with payment info`);
         
+        // Create payment notification for distributor when salesman collects payment
+        if (order.distributor_id && actualSalesmanId && actualSalesmanId !== order.distributor_id) {
+            await createPaymentNotification(order, paymentAmount, paymentMode, actualSalesmanId, actualSalesmanName, order.distributor_id);
+            console.log(`✅ Payment notification sent to distributor ${order.distributor_id} for collection of ₹${paymentAmount} from salesman ${actualSalesmanName}`);
+        } else if (order.distributor_id && actualCollectedById && actualCollectedById !== order.distributor_id) {
+            await createPaymentNotification(order, paymentAmount, paymentMode, actualCollectedById, actualCollectedByName, order.distributor_id);
+            console.log(`✅ Payment notification sent to distributor ${order.distributor_id} for collection of ₹${paymentAmount}`);
+        }
+        
         res.json({ 
             success: true, 
             message: 'Payment recorded successfully',
             payment_id: paymentResult.insertedId,
             collection_id: collectionId,
             new_due_amount: newDueAmount,
-            order_updated: true
+            order_updated: true,
+            customer_id_saved: actualCustomerId,
+            salesman_id_saved: actualSalesmanId,
+            payment_details: {
+                mode: paymentMode,
+                cheque_number: chequeNumber,
+                bank_name: bankName,
+                cheque_date: chequeDate,
+                upi_type: upiType,
+                transaction_number: transactionNumber
+            }
         });
     } catch (error) {
         console.error('Error recording payment:', error);
@@ -1974,9 +2987,12 @@ app.get('/api/customers/:customerId/outstanding', async (req, res) => {
     try {
         const { customerId } = req.params;
         
+        const customer = await getCustomerById(customerId);
+        const actualCustomerId = customer ? customer.customer_id : customerId;
+        
         const orders = await collections.order
             .find({ 
-                customerId: customerId,
+                customerId: actualCustomerId,
                 status: { $ne: 'cancelled' }
             })
             .toArray();
@@ -1996,6 +3012,85 @@ app.get('/api/banks', (req, res) => {
 
 app.get('/api/upi-types', (req, res) => {
     res.json({ upiTypes: UPI_APPS });
+});
+
+// ==================== DASHBOARD STATS APIs ====================
+app.get('/api/dashboard/stats/:distributorId', async (req, res) => {
+    try {
+        const { distributorId } = req.params;
+        
+        const totalSalesmen = await collections.salesman.countDocuments({ distributor_id: distributorId });
+        
+        const totalCustomers = await collections.customer.countDocuments({ distributor_id: distributorId });
+        
+        const totalProducts = await collections.product.countDocuments({ distributorId: distributorId, isActive: true });
+        
+        const orders = await collections.order.find({ distributor_id: distributorId }).toArray();
+        const totalOrders = orders.length;
+        
+        const totalOrderValue = orders.reduce((sum, order) => sum + (order.grand_total || 0), 0);
+        
+        const collectionsData = await collections.collectionHistory.find({ distributor_id: distributorId }).toArray();
+        const totalCollected = collectionsData.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        const totalTransactions = collectionsData.length;
+        
+        const totalOutstanding = orders.reduce((sum, order) => sum + (order.dueAmount || 0), 0);
+        
+        const recentOrders = await collections.order
+            .find({ distributor_id: distributorId })
+            .sort({ createdAt: -1 })
+            .limit(10)
+            .toArray();
+        
+        const recentCollections = await collections.collectionHistory
+            .find({ distributor_id: distributorId })
+            .sort({ collection_date: -1 })
+            .limit(10)
+            .toArray();
+        
+        const salesmanPerformance = [];
+        const salesmen = await collections.salesman.find({ distributor_id: distributorId }).toArray();
+        
+        for (const salesman of salesmen) {
+            const salesmanOrders = orders.filter(o => o.salesman_id === salesman.salesman_id);
+            const salesmanCollections = collectionsData.filter(c => c.salesman_details?.id === salesman.salesman_id);
+            
+            const totalSales = salesmanOrders.reduce((sum, o) => sum + (o.grand_total || 0), 0);
+            const totalCollection = salesmanCollections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+            const collectionRatio = totalSales > 0 ? (totalCollection / totalSales) * 100 : 0;
+            
+            salesmanPerformance.push({
+                salesman_id: salesman.salesman_id,
+                name: salesman.name,
+                total_sales: totalSales,
+                total_collection: totalCollection,
+                collection_ratio: collectionRatio,
+                orders_count: salesmanOrders.length,
+                collections_count: salesmanCollections.length
+            });
+        }
+        
+        salesmanPerformance.sort((a, b) => b.collection_ratio - a.collection_ratio);
+        
+        res.json({
+            summary: {
+                total_salesmen: totalSalesmen,
+                total_customers: totalCustomers,
+                total_products: totalProducts,
+                total_orders: totalOrders,
+                total_order_value: totalOrderValue,
+                total_collected: totalCollected,
+                total_transactions: totalTransactions,
+                total_outstanding: totalOutstanding
+            },
+            recent_orders: recentOrders,
+            recent_collections: recentCollections,
+            salesman_performance: salesmanPerformance
+        });
+    } catch (error) {
+        console.error('Error fetching dashboard stats:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // ==================== AUTH APIs ====================
@@ -2188,14 +3283,17 @@ app.listen(PORT, async () => {
     await connectToMongoDB();
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`API endpoints available at http://localhost:${PORT}/api`);
+    console.log(`Logo available at http://localhost:${PORT}/isset/image/TotalSolution.png`);
     console.log(`\nAPI Endpoints:`);
     console.log(`\nAuth:`);
     console.log(`  POST /api/login - User login`);
     console.log(`  POST /api/logout - User logout`);
     console.log(`  POST /api/register - User registration`);
-    console.log(`\nImport Master Data (NEW):`);
-    console.log(`  POST /api/import/customers - Import customers from Excel`);
-    console.log(`  POST /api/import/products - Import products from Excel`);
+    console.log(`\nSearch:`);
+    console.log(`  GET /api/search/:distributorId?query=term - Global search for products, customers, orders`);
+    console.log(`\nImport Master Data:`);
+    console.log(`  POST /api/import/customers - Import customers from Excel (with updateExisting flag)`);
+    console.log(`  POST /api/import/products - Import products from Excel (with updateExisting flag)`);
     console.log(`\nDistributors:`);
     console.log(`  GET /api/distributors - Get all distributors`);
     console.log(`  GET /api/distributors/:distributorId - Get distributor by ID`);
@@ -2203,15 +3301,15 @@ app.listen(PORT, async () => {
     console.log(`  GET /api/customers/:distributorId - Get all customers`);
     console.log(`  POST /api/customers - Add new customer`);
     console.log(`  GET /api/customers/id/:id - Get single customer`);
-    console.log(`  PUT /api/customers/:id - Update customer`);
-    console.log(`  DELETE /api/customers/:id - Delete customer`);
+    console.log(`  PUT /api/customers/:id - Update customer (ALL fields editable for imported customers)`);
+    console.log(`  DELETE /api/customers/:id - Delete customer (only if no orders exist)`);
     console.log(`\nProducts:`);
     console.log(`  GET /api/products/:distributorId - Get all products (includes MRP field)`);
     console.log(`  POST /api/products - Add new product (includes MRP)`);
     console.log(`  GET /api/products/id/:id - Get single product`);
     console.log(`  PUT /api/products/:id - Update product`);
-    console.log(`  DELETE /api/products/:id - Delete product`);
-    console.log(`  PUT /api/products/:id/stock - Update product stock (FIXED: correct calculation)`);
+    console.log(`  DELETE /api/products/:id - Delete product (deactivate if used in orders)`);
+    console.log(`  PUT /api/products/:id/stock - Update product stock (correct calculation)`);
     console.log(`  GET /api/products/:productId/last-sale - Get last sale for product`);
     console.log(`\nSalesmen:`);
     console.log(`  GET /api/salesmen/:distributorId - Get all salesmen`);
@@ -2219,34 +3317,41 @@ app.listen(PORT, async () => {
     console.log(`  GET /api/salesmen/id/:id - Get single salesman`);
     console.log(`  GET /api/salesmen/by-id/:salesmanId - Get salesman by salesman_id`);
     console.log(`  PUT /api/salesmen/:id - Update salesman`);
-    console.log(`  DELETE /api/salesmen/:id - Delete salesman`);
+    console.log(`  DELETE /api/salesmen/:id - Delete salesman (deactivate if has orders)`);
     console.log(`\nPermissions:`);
     console.log(`  GET /api/salesmen/permissions/:salesmanId - Get permissions`);
     console.log(`  PUT /api/salesmen/permissions/:salesmanId - Update permissions`);
     console.log(`\nSalesman Data:`);
-    console.log(`  GET /api/salesman-data/:salesmanId - Get all data for salesman`);
+    console.log(`  GET /api/salesman-data/:salesmanId - Get all data for salesman (includes totalCollection from collection history)`);
     console.log(`\nOrders:`);
-    console.log(`  POST /api/orders - Create order (auto-updates stock and sets distributor_id, includes MRP)`);
+    console.log(`  POST /api/orders - Create order (auto-updates stock and saves MRP)`);
+    console.log(`  PUT /api/orders/:orderId - Edit order (adjusts stock and sends notification)`);
+    console.log(`  DELETE /api/orders/:orderId - Delete order (restores stock and sends notification)`);
     console.log(`  GET /api/orders/salesman/:salesmanId - Get orders by salesman`);
     console.log(`  GET /api/orders/distributor/:distributorId - Get orders by distributor`);
-    console.log(`  GET /api/orders/download/:distributorId - Download orders as Excel with MRP column`);
+    console.log(`  GET /api/orders/download/:distributorId - Download orders as Excel with MRP and QTY columns`);
+    console.log(`  PUT /api/orders/status/:orderId - Update order status to 'downloaded' (for tracking downloaded orders)`);
     console.log(`  GET /api/orders/customer/:customerId - Get orders by customer`);
     console.log(`  GET /api/orders/customer/:customerId/last - Get last order by customer`);
     console.log(`  GET /api/orders/:orderId - Get single order`);
     console.log(`  PUT /api/orders/:orderId/status - Update order status`);
-    console.log(`\nPayments:`);
-    console.log(`  POST /api/orders/:orderId/payment - Record payment with file upload`);
+    console.log(`\nPayments & Collection History:`);
+    console.log(`  POST /api/orders/:orderId/payment - Record payment with file upload (sends notification to distributor)`);
     console.log(`  GET /api/payments - Get all payments`);
-    console.log(`  GET /api/payments/distributor/:distributorId - Get payments by distributor`);
-    console.log(`  GET /api/payments/salesman/:salesmanId - Get payments by salesman`);
-    console.log(`  GET /api/payments/order/:orderId - Get payments by order`);
+    console.log(`  GET /api/payments/distributor/:distributorId - Get payments for distributor`);
+    console.log(`  GET /api/payments/salesman/:salesmanId - Get payments for salesman`);
+    console.log(`  GET /api/collection-history/distributor/:distributorId - Get collection history for distributor (from mas_payment collection)`);
+    console.log(`  GET /api/collection-history/salesman/:salesmanId - Get collection history for salesman (from mas_payment collection)`);
+    console.log(`  GET /api/collection-history/reconcile/:distributorId - Reconcile collections with expected amount`);
     console.log(`  GET /api/customers/:customerId/outstanding - Get customer outstanding balance`);
     console.log(`  GET /api/banks - Get list of Indian banks`);
     console.log(`  GET /api/upi-types - Get list of UPI types`);
+    console.log(`\nDashboard:`);
+    console.log(`  GET /api/dashboard/stats/:distributorId - Get dashboard statistics with salesman performance (Revenue = sum of order amounts, Collection = sum of collection history)`);
     console.log(`\nNotifications:`);
     console.log(`  GET /api/notifications/:distributorId - Get notifications for distributor`);
     console.log(`  GET /api/notifications/unread-count/:distributorId - Get unread count`);
-    console.log(`  PUT /api/notifications/:notificationId/read - Mark notification as read`);
+    console.log(`  PUT /api/notifications/:notificationId/read - Mark notification as read (returns redirect_to URL)`);
     console.log(`  PUT /api/notifications/mark-all-read/:distributorId - Mark all as read`);
     console.log(`\nAreas & Routes:`);
     console.log(`  GET /api/areas - Get major Indian cities and areas`);
@@ -2254,11 +3359,9 @@ app.listen(PORT, async () => {
     console.log(`\nPassword Change:`);
     console.log(`  POST /api/change-password - Change user password`);
     console.log(`  GET /api/users-under-distributor/:distributorId - Get users under distributor`);
-    console.log(`\nAll issues fixed in this version:`);
-    console.log(`  1) MRP field added to products - products now have both MRP and Rate/Price`);
-    console.log(`  2) Excel download now includes MRP column for orders`);
-    console.log(`  3) Stock calculation is CORRECT - subtracts sold quantity from current stock`);
-    console.log(`  4) Import Master Data - Customers and Products can be imported from Excel`);
-    console.log(`  5) FIXED: Import button activation - better validation and error handling`);
-    console.log(`  6) FIXED: Support for multiple column name variations in Excel files`);
+    console.log(`\n✅ NEW FEATURE ADDED:`);
+    console.log(`  1) ✅ Added PUT /api/orders/status/:orderId endpoint to update order status to 'downloaded'`);
+    console.log(`  2) ✅ Orders now have a 'status' field that can be set to 'downloaded' when orders are downloaded to desktop`);
+    console.log(`  3) ✅ Added 'downloadedAt' timestamp to track when order was downloaded`);
+    console.log(`  4) ✅ Added index on 'status' field for faster queries`);
 });
