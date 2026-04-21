@@ -10817,6 +10817,10 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   final TextEditingController _productSearchController = TextEditingController();
   String _productSearchQuery = '';
   
+  // ==================== ADDED: Customer search controller for salesman create order ====================
+  final TextEditingController _customerSearchController = TextEditingController();
+  String _customerSearchQuery = '';
+  
   List<String> _banksList = [];
   List<String> _upiTypesList = [];
 
@@ -10829,6 +10833,18 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   OrderModel? _orderToEdit;
   bool _isEditingOrder = false;
   final Map<String, CartItemData> _editCart = {};
+
+  // ==================== ADDED: Filtered customers for salesman create order ====================
+  List<CustomerModel> get orderFilteredCustomers {
+    if (_customerSearchQuery.isEmpty) return _customers;
+    final query = _customerSearchQuery.toLowerCase();
+    return _customers.where((c) =>
+      c.name.toLowerCase().contains(query) ||
+      c.area.toLowerCase().contains(query) ||
+      (c.phone?.toLowerCase().contains(query) ?? false) ||
+      (c.mobile?.toLowerCase().contains(query) ?? false)
+    ).toList();
+  }
 
   @override
   void initState() {
@@ -13328,6 +13344,177 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     );
   }
 
+  // ==================== MODIFIED: Customer selection step with search bar ====================
+  Widget _buildCustomerSelectionStep() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Select Customer',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: primaryBlue,
+                ),
+              ),
+              if (canAddCustomer)
+                TextButton.icon(
+                  onPressed: _showAddCustomerDialog,
+                  icon: const Icon(Icons.person_add, size: 16),
+                  label: const Text('Add New Customer'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          // ==================== ADDED: Search bar for customers ====================
+          TextField(
+            controller: _customerSearchController,
+            decoration: InputDecoration(
+              hintText: 'Search by name, area, or phone...',
+              prefixIcon: const Icon(Icons.search, color: primaryBlue),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              filled: true,
+              fillColor: Colors.grey[50],
+              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            ),
+            onChanged: (value) {
+              setState(() {
+                _customerSearchQuery = value;
+              });
+            },
+          ),
+          const SizedBox(height: 16),
+          // Display search results count
+          if (_customerSearchQuery.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Found ${orderFilteredCustomers.length} customer(s)',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: orderFilteredCustomers.isEmpty ? errorRed : successGreen,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          // ==================== MODIFIED: Use filtered customers list ====================
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: orderFilteredCustomers.length,
+            itemBuilder: (context, index) {
+              final customer = orderFilteredCustomers[index];
+              final isSelected = _selectedCustomerId == customer.id;
+              final outstanding = _orders
+                  .where((o) => o.customerId == customer.id && o.status != OrderStatus.cancelled)
+                  .fold(0.0, (sum, o) => sum + o.dueAmount);
+              return GestureDetector(
+                onTap: () => setState(() {
+                  _selectedCustomerId = customer.id;
+                  _orderStep = 2;
+                }),
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? primaryBlue.withOpacity(0.1)
+                        : Colors.grey[50],
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: isSelected ? primaryBlue : Colors.grey[300]!,
+                      width: isSelected ? 2 : 1,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: isSelected
+                            ? primaryBlue
+                            : primaryBlue.withOpacity(0.1),
+                        child: Icon(
+                          Icons.person,
+                          color: isSelected ? Colors.white : primaryBlue,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              customer.name,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: isSelected ? primaryBlue : Colors.black,
+                              ),
+                            ),
+                            Text(
+                              'Area: ${customer.area}',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                              ),
+                            ),
+                            Text(
+                              'Phone: ${customer.phone ?? "N/A"}',
+                              style: TextStyle(
+                                color: Colors.grey[600],
+                                fontSize: 12,
+                              ),
+                            ),
+                            if (outstanding > 0)
+                              Text(
+                                'Outstanding: ₹${outstanding.toStringAsFixed(0)}',
+                                style: const TextStyle(
+                                  color: errorRed,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      if (isSelected)
+                        const Icon(Icons.check_circle, color: primaryBlue),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+          // Show message when no customers match search
+          if (_customerSearchQuery.isNotEmpty && orderFilteredCustomers.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.grey[50],
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Center(
+                child: Text(
+                  'No customers found matching your search.\nTry a different name or area.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCreateOrderSection() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -13407,119 +13594,6 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       child: Container(
         height: 2,
         color: _orderStep > afterStep ? accentTeal : Colors.grey[300],
-      ),
-    );
-  }
-
-  Widget _buildCustomerSelectionStep() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Select Customer',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: primaryBlue,
-                ),
-              ),
-              if (canAddCustomer)
-                TextButton.icon(
-                  onPressed: _showAddCustomerDialog,
-                  icon: const Icon(Icons.person_add, size: 16),
-                  label: const Text('Add New Customer'),
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: _customers.length,
-            itemBuilder: (context, index) {
-              final customer = _customers[index];
-              final isSelected = _selectedCustomerId == customer.id;
-              final outstanding = _orders
-                  .where((o) => o.customerId == customer.id && o.status != OrderStatus.cancelled)
-                  .fold(0.0, (sum, o) => sum + o.dueAmount);
-              return GestureDetector(
-                onTap: () => setState(() {
-                  _selectedCustomerId = customer.id;
-                  _orderStep = 2;
-                }),
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? primaryBlue.withOpacity(0.1)
-                        : Colors.grey[50],
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: isSelected ? primaryBlue : Colors.grey[300]!,
-                      width: isSelected ? 2 : 1,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        backgroundColor: isSelected
-                            ? primaryBlue
-                            : primaryBlue.withOpacity(0.1),
-                        child: Icon(
-                          Icons.person,
-                          color: isSelected ? Colors.white : primaryBlue,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              customer.name,
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: isSelected ? primaryBlue : Colors.black,
-                              ),
-                            ),
-                            Text(
-                              'Area: ${customer.area}',
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 12,
-                              ),
-                            ),
-                            if (outstanding > 0)
-                              Text(
-                                'Outstanding: ₹${outstanding.toStringAsFixed(0)}',
-                                style: const TextStyle(
-                                  color: errorRed,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      if (isSelected)
-                        const Icon(Icons.check_circle, color: primaryBlue),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
       ),
     );
   }
