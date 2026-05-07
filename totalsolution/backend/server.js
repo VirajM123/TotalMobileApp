@@ -306,6 +306,7 @@ async function processOrderItems(items) {
         // Calculate amount if not provided
         const quantity = parseInt(item.quantity) || 0;
         const rate = parseFloat(item.rate) || parseFloat(item.price) || 0;
+// No rounding - keep as is
         const amount = (quantity * rate) || item.amount || 0;
         
         processedItems.push({
@@ -1513,6 +1514,13 @@ app.get('/api/products/:distributorId', async (req, res) => {
             .sort({ createdAt: -1 })
             .toArray();
         
+        // Ensure price and mrp are returned as-is without rounding
+        products.forEach(product => {
+            // Keep original decimal values
+            if (product.price) product.price = parseFloat(product.price);
+            if (product.mrp) product.mrp = parseFloat(product.mrp);
+        });
+        
         console.log(`Found ${products.length} products for distributor ${distributorId}`);
         res.json(products);
     } catch (error) {
@@ -1540,6 +1548,14 @@ app.put('/api/products/:id', async (req, res) => {
         const { id } = req.params;
         const updateData = req.body;
         updateData.updatedAt = new Date().toISOString();
+        
+        // Ensure price and mrp are stored as-is without rounding
+        if (updateData.price) {
+            updateData.price = parseFloat(updateData.price);
+        }
+        if (updateData.mrp) {
+            updateData.mrp = parseFloat(updateData.mrp);
+        }
         
         delete updateData._id;
         
