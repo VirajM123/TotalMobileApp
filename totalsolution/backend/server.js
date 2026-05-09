@@ -604,7 +604,7 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
             try {
-                const customerCode = row['Customer Code'] || row['customer_code'] || row['CustomerCode'] || row['Customer code'] || '';
+               const customerCode = (row['Customer Code'] || row['customer_code'] || row['CustomerCode'] || row['Customer code'] || '').trim();
                 const customerName = row['Customer Name'] || row['customer_name'] || row['CustomerName'] || row['Customer name'] || '';
                 const area = row['Area'] || row['area'] || '';
                 const route = row['Route'] || row['route'] || '';
