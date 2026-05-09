@@ -97,7 +97,10 @@ async function connectToMongoDB() {
         console.log(`Database: ${DB_NAME}`);
         
         await collections.register.createIndex({ email: 1, role: 1 }, { unique: true });
-        await collections.customer.createIndex({ customer_id: 1 }, { unique: true });
+        await collections.customer.createIndex(
+  { customer_id: 1, distributor_id: 1 },
+  { unique: true }
+);
         await collections.customer.createIndex({ distributor_id: 1 });
         await collections.product.createIndex({ sku: 1 }, { unique: true });
         await collections.product.createIndex({ distributorId: 1 });
@@ -632,38 +635,48 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const trimmedPhone = phone ? phone.toString().trim() : '';
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
                 
-                const existingCustomer = await collections.customer.findOne({ 
-                    $or: [
-                        { name: trimmedCustomerName, distributor_id: trimmedDistributorId },
-                        { customer_id: customerCode ? customerCode.toString().trim() : null }
-                    ]
-                });
-                
-                if (existingCustomer) {
-                    if (updateExisting === 'true') {
-                        const updateResult = await collections.customer.updateOne(
-                            { _id: existingCustomer._id },
-                            { 
-                                $set: {
-                                    name: trimmedCustomerName,
-                                    phone: trimmedPhone || existingCustomer.phone,
-                                    area: trimmedArea,
-                                    route: trimmedRoute || existingCustomer.route,
-                                    address: trimmedAddress || existingCustomer.address,
-                                    updated_at: new Date().toISOString(),
-                                    updated_by: createdBy || 'import'
-                                }
-                            }
-                        );
-                        updatedCount++;
-                        console.log(`Updated customer ${updatedCount}: ${trimmedCustomerName}`);
-                    } else {
-                        console.log(`Skipping row ${i + 1}: Customer "${trimmedCustomerName}" already exists`);
-                        skippedCount++;
-                        errors.push(`Row ${i + 1}: Customer "${trimmedCustomerName}" already exists (use updateExisting=true to update)`);
-                    }
-                    continue;
+                const existingCustomer = await collections.customer.findOne({
+    customer_id: customerCode ? customerCode.toString().trim() : null,
+    name: trimmedCustomerName,
+    distributor_id: trimmedDistributorId
+});
+
+if (existingCustomer) {
+
+    if (updateExisting === 'true') {
+
+        const updateResult = await collections.customer.updateOne(
+            {
+                customer_id: customerCode ? customerCode.toString().trim() : null,
+                name: trimmedCustomerName,
+                distributor_id: trimmedDistributorId
+            },
+            {
+                $set: {
+                    phone: trimmedPhone || existingCustomer.phone,
+                    area: trimmedArea,
+                    route: trimmedRoute || existingCustomer.route,
+                    address: trimmedAddress || existingCustomer.address,
+                    updated_at: new Date().toISOString(),
+                    updated_by: createdBy || 'import'
                 }
+            }
+        );
+
+        updatedCount++;
+        console.log(`Updated customer ${updatedCount}: ${trimmedCustomerName}`);
+
+    } else {
+
+        console.log(`Skipping row ${i + 1}: Customer "${trimmedCustomerName}" already exists for this distributor`);
+        skippedCount++;
+
+        errors.push(`Row ${i + 1}: Customer "${trimmedCustomerName}" already exists for this distributor`);
+
+    }
+
+    continue;
+}
                 
                 const customerId = (customerCode && customerCode.toString().trim()) 
                     ? customerCode.toString().trim() 
