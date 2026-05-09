@@ -99,7 +99,7 @@ async function connectToMongoDB() {
         await collections.register.createIndex({ email: 1, role: 1 }, { unique: true });
         await collections.customer.createIndex(
   { customer_id: 1, distributor_id: 1 },
-  { unique: true }
+{ unique: true }
 );
         await collections.customer.createIndex({ distributor_id: 1 });
         await collections.product.createIndex({ sku: 1 }, { unique: true });
@@ -635,9 +635,8 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const trimmedPhone = phone ? phone.toString().trim() : '';
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
                 
-                const existingCustomer = await collections.customer.findOne({
+              const existingCustomer = await collections.customer.findOne({
     customer_id: customerCode ? customerCode.toString().trim() : null,
-    name: trimmedCustomerName,
     distributor_id: trimmedDistributorId
 });
 
@@ -646,22 +645,23 @@ if (existingCustomer) {
     if (updateExisting === 'true') {
 
         const updateResult = await collections.customer.updateOne(
-            {
-                customer_id: customerCode ? customerCode.toString().trim() : null,
-                name: trimmedCustomerName,
-                distributor_id: trimmedDistributorId
-            },
-            {
-                $set: {
-                    phone: trimmedPhone || existingCustomer.phone,
-                    area: trimmedArea,
-                    route: trimmedRoute || existingCustomer.route,
-                    address: trimmedAddress || existingCustomer.address,
-                    updated_at: new Date().toISOString(),
-                    updated_by: createdBy || 'import'
-                }
-            }
-        );
+           {
+    customer_id: customerCode ? customerCode.toString().trim() : null,
+    distributor_id: trimmedDistributorId
+  },
+  {
+    $set: {
+      name: trimmedCustomerName,
+      phone: trimmedPhone,
+      area: trimmedArea,
+      route: trimmedRoute,
+      address: trimmedAddress,
+      updated_at: new Date().toISOString(),
+      updated_by: createdBy || 'import'
+    }
+  },
+  { upsert: true }
+);
 
         updatedCount++;
         console.log(`Updated customer ${updatedCount}: ${trimmedCustomerName}`);
