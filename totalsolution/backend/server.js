@@ -97,7 +97,10 @@ async function connectToMongoDB() {
         console.log(`Database: ${DB_NAME}`);
         
         await collections.register.createIndex({ email: 1, role: 1 }, { unique: true });
-        await collections.customer.createIndex({ customer_id: 1 }, { unique: true });
+        await collections.customer.createIndex(
+  { customer_id: 1, distributor_id: 1 },
+  { unique: true }
+);
         await collections.customer.createIndex({ distributor_id: 1 });
         await collections.product.createIndex({ sku: 1 }, { unique: true });
         await collections.product.createIndex({ distributorId: 1 });
@@ -306,6 +309,7 @@ async function processOrderItems(items) {
         // Calculate amount if not provided
         const quantity = parseInt(item.quantity) || 0;
         const rate = parseFloat(item.rate) || parseFloat(item.price) || 0;
+// No rounding - keep as is
         const amount = (quantity * rate) || item.amount || 0;
         
         processedItems.push({
@@ -631,38 +635,48 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const trimmedPhone = phone ? phone.toString().trim() : '';
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
                 
-                const existingCustomer = await collections.customer.findOne({ 
-                    $or: [
-                        { name: trimmedCustomerName, distributor_id: trimmedDistributorId },
-                        { customer_id: customerCode ? customerCode.toString().trim() : null }
-                    ]
-                });
-                
-                if (existingCustomer) {
-                    if (updateExisting === 'true') {
-                        const updateResult = await collections.customer.updateOne(
-                            { _id: existingCustomer._id },
-                            { 
-                                $set: {
-                                    name: trimmedCustomerName,
-                                    phone: trimmedPhone || existingCustomer.phone,
-                                    area: trimmedArea,
-                                    route: trimmedRoute || existingCustomer.route,
-                                    address: trimmedAddress || existingCustomer.address,
-                                    updated_at: new Date().toISOString(),
-                                    updated_by: createdBy || 'import'
-                                }
-                            }
-                        );
-                        updatedCount++;
-                        console.log(`Updated customer ${updatedCount}: ${trimmedCustomerName}`);
-                    } else {
-                        console.log(`Skipping row ${i + 1}: Customer "${trimmedCustomerName}" already exists`);
-                        skippedCount++;
-                        errors.push(`Row ${i + 1}: Customer "${trimmedCustomerName}" already exists (use updateExisting=true to update)`);
-                    }
-                    continue;
+                const existingCustomer = await collections.customer.findOne({
+    customer_id: customerCode ? customerCode.toString().trim() : null,
+    name: trimmedCustomerName,
+    distributor_id: trimmedDistributorId
+});
+
+if (existingCustomer) {
+
+    if (updateExisting === 'true') {
+
+        const updateResult = await collections.customer.updateOne(
+            {
+                customer_id: customerCode ? customerCode.toString().trim() : null,
+                name: trimmedCustomerName,
+                distributor_id: trimmedDistributorId
+            },
+            {
+                $set: {
+                    phone: trimmedPhone || existingCustomer.phone,
+                    area: trimmedArea,
+                    route: trimmedRoute || existingCustomer.route,
+                    address: trimmedAddress || existingCustomer.address,
+                    updated_at: new Date().toISOString(),
+                    updated_by: createdBy || 'import'
                 }
+            }
+        );
+
+        updatedCount++;
+        console.log(`Updated customer ${updatedCount}: ${trimmedCustomerName}`);
+
+    } else {
+
+        console.log(`Skipping row ${i + 1}: Customer "${trimmedCustomerName}" already exists for this distributor`);
+        skippedCount++;
+
+        errors.push(`Row ${i + 1}: Customer "${trimmedCustomerName}" already exists for this distributor`);
+
+    }
+
+    continue;
+}
                 
                 const customerId = (customerCode && customerCode.toString().trim()) 
                     ? customerCode.toString().trim() 
@@ -1513,6 +1527,13 @@ app.get('/api/products/:distributorId', async (req, res) => {
             .sort({ createdAt: -1 })
             .toArray();
         
+        // Ensure price and mrp are returned as-is without rounding
+        products.forEach(product => {
+            // Keep original decimal values
+            if (product.price) product.price = parseFloat(product.price);
+            if (product.mrp) product.mrp = parseFloat(product.mrp);
+        });
+        
         console.log(`Found ${products.length} products for distributor ${distributorId}`);
         res.json(products);
     } catch (error) {
@@ -1540,6 +1561,14 @@ app.put('/api/products/:id', async (req, res) => {
         const { id } = req.params;
         const updateData = req.body;
         updateData.updatedAt = new Date().toISOString();
+        
+        // Ensure price and mrp are stored as-is without rounding
+        if (updateData.price) {
+            updateData.price = parseFloat(updateData.price);
+        }
+        if (updateData.mrp) {
+            updateData.mrp = parseFloat(updateData.mrp);
+        }
         
         delete updateData._id;
         

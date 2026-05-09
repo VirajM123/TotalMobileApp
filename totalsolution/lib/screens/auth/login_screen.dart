@@ -9868,325 +9868,286 @@ class _DistributorDashboardEnhancedState extends State<DistributorDashboardEnhan
     );
   }
 
-  Widget _buildProductSelectionStepWithScheme() {
-    final Map<String, TextEditingController> quantityControllers = {};
-    final Map<String, TextEditingController> rateControllers = {};
-    final Map<String, TextEditingController> schemeControllers = {};
-    
-    for (var product in orderFilteredProducts) {
-      if (_cart.containsKey(product.id)) {
-        quantityControllers[product.id] = TextEditingController(text: _cart[product.id]!.quantity.toString());
-        rateControllers[product.id] = TextEditingController(text: _cart[product.id]!.rate.toStringAsFixed(0));
-        schemeControllers[product.id] = TextEditingController(text: _cart[product.id]!.schPer.toString());
-      } else {
-        quantityControllers[product.id] = TextEditingController(text: '0');
-        rateControllers[product.id] = TextEditingController(text: product.price.toStringAsFixed(0));
-        schemeControllers[product.id] = TextEditingController(text: '0');
-      }
-    }
+Widget _buildProductSelectionStepWithScheme() {
+  final Map<String, TextEditingController> quantityControllers = {};
+  final Map<String, TextEditingController> rateControllers = {};
+  final Map<String, TextEditingController> schemeControllers = {};
 
-    return StatefulBuilder(
-      builder: (context, setDialogState) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: primaryBlue.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.shopping_cart, color: primaryBlue),
-                  const SizedBox(width: 8),
-                  Text(
-                    '${cartItemCount} items in cart',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: primaryBlue,
-                    ),
-                  ),
-                  const Spacer(),
-                  Text(
-                    'Total: ₹${cartTotal.toStringAsFixed(0)}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: accentTeal,
-                      fontSize: 16,
-                    ),
-                  ),
-                ],
-              ),
+  for (var product in filteredProducts) {
+    if (_cart.containsKey(product.id)) {
+      quantityControllers[product.id] =
+          TextEditingController(text: _cart[product.id]!.quantity.toString());
+      rateControllers[product.id] =
+          TextEditingController(text: _cart[product.id]!.rate.toString());
+      schemeControllers[product.id] =
+          TextEditingController(text: _cart[product.id]!.schPer.toString());
+    } else {
+      quantityControllers[product.id] = TextEditingController(text: '');
+      rateControllers[product.id] =
+          TextEditingController(text: product.price.toString());
+      schemeControllers[product.id] = TextEditingController(text: '0');
+    }
+  }
+
+  return StatefulBuilder(
+    builder: (context, setDialogState) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          /// CART SUMMARY
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: primaryBlue.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(10),
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _productSearchController,
-              decoration: InputDecoration(
-                hintText: 'Search products...',
-                prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              onChanged: (value) => setState(() => _productSearchQuery = value),
-            ),
-            const SizedBox(height: 16),
-            if (_cart.isNotEmpty)
-              Container(
-                margin: const EdgeInsets.only(bottom: 16),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: accentTeal.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: accentTeal),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      '${uniqueProductCount} unique products',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    Text(
-                      'Total Qty: ${cartItemCount}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: accentTeal,
-                        fontSize: 14,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            Container(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.5,
-              ),
-              child: ListView.builder(
-                shrinkWrap: true,
-                physics: const AlwaysScrollableScrollPhysics(),
-                itemCount: orderFilteredProducts.length,
-                itemBuilder: (context, index) {
-                  final product = orderFilteredProducts[index];
-                  final inCart = _cart.containsKey(product.id);
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: inCart ? accentTeal.withOpacity(0.1) : Colors.grey[50],
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: inCart ? accentTeal : Colors.grey[300]!,
-                        width: inCart ? 2 : 1,
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    product.name,
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                  Text(
-                                    'MRP: ₹${product.mrp.toStringAsFixed(0)} | Stock: ${product.stock}',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey[600],
-                                    ),
-                                  ),
-                                  Row(
-                                    children: [
-                                      const Text(
-                                        'Rate: ',
-                                        style: TextStyle(fontSize: 12),
-                                      ),
-                                      SizedBox(
-                                        width: 80,
-                                        child: TextFormField(
-                                          controller: rateControllers[product.id],
-                                          decoration: const InputDecoration(
-                                            isDense: true,
-                                            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                            border: OutlineInputBorder(),
-                                          ),
-                                          keyboardType: TextInputType.number,
-                                          onChanged: (value) {
-                                            final rate = double.tryParse(value);
-                                            if (rate != null && rate > 0) {
-                                              if (inCart) {
-                                                updateCartRate(product.id, rate);
-                                              } else if (int.tryParse(quantityControllers[product.id]?.text ?? '0') != null && int.parse(quantityControllers[product.id]!.text) > 0) {
-                                                addToCart(product.id, product.name, product.sku, rate, product.stock);
-                                                updateCartRate(product.id, rate);
-                                              }
-                                              setDialogState(() {});
-                                            }
-                                          },
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      if (inCart && _cart[product.id]!.schEnabled)
-                                        Row(
-                                          children: [
-                                            const Text(
-                                              'Sch: ',
-                                              style: TextStyle(fontSize: 12),
-                                            ),
-                                            SizedBox(
-                                              width: 60,
-                                              child: TextFormField(
-                                                controller: schemeControllers[product.id],
-                                                decoration: const InputDecoration(
-                                                  isDense: true,
-                                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                                  border: OutlineInputBorder(),
-                                                  suffixText: '%',
-                                                ),
-                                                keyboardType: TextInputType.number,
-                                                onChanged: (value) {
-                                                  final schPer = double.tryParse(value);
-                                                  if (schPer != null && schPer >= 0 && schPer <= 100) {
-                                                    updateCartScheme(product.id, schPer);
-                                                    setDialogState(() {});
-                                                  }
-                                                },
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Row(
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.local_offer, size: 18),
-                                  onPressed: () => toggleCartScheme(product.id),
-                                  color: _cart.containsKey(product.id) && _cart[product.id]!.schEnabled
-                                      ? accentTeal
-                                      : Colors.grey,
-                                  tooltip: 'Toggle Scheme',
-                                ),
-                                const SizedBox(width: 4),
-                                SizedBox(
-                                  width: 80,
-                                  child: TextFormField(
-                                    controller: quantityControllers[product.id],
-                                    decoration: const InputDecoration(
-                                      labelText: 'Qty',
-                                      border: OutlineInputBorder(),
-                                      isDense: true,
-                                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                    ),
-                                    keyboardType: TextInputType.number,
-                                    onChanged: (value) {
-                                      final qty = int.tryParse(value ?? '0');
-                                      if (qty != null && qty >= 0) {
-                                        if (qty > product.stock && !_stockAlertShown.contains(product.id)) {
-                                          _stockAlertShown.add(product.id);
-                                          showSafeSnackBar(
-                                            context,
-                                            '⚠️ Note: Only ${product.stock} in stock for ${product.name}. Remaining quantity will be fulfilled when stock arrives.',
-                                            backgroundColor: warningOrange,
-                                          );
-                                        }
-                                        
-                                        if (qty == 0) {
-                                          removeFromCart(product.id);
-                                          setState(() {});
-                                          setDialogState(() {});
-                                        } else {
-                                          final currentRate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString());
-                                          if (!inCart) {
-                                            addToCart(product.id, product.name, product.sku, currentRate ?? product.price, product.stock);
-                                          }
-                                          updateCartQuantity(product.id, qty);
-                                          setState(() {});
-                                          setDialogState(() {});
-                                        }
-                                      }
-                                    },
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        if (inCart && _cart[product.id]!.quantity > 0)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Row(
-                              children: [
-                                Text(
-                                  'In cart: ${_cart[product.id]!.quantity} × ₹${_cart[product.id]!.rate.toStringAsFixed(0)}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: accentTeal,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const Spacer(),
-                                Text(
-                                  '= ₹${_cart[product.id]!.netAmt.toStringAsFixed(0)}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: accentTeal,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 20),
-            Row(
+            child: Row(
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () {
-                      setState(() {
-                        _orderStep = 1;
-                        _cart.clear();
-                        _stockAlertShown.clear();
-                      });
-                    },
-                    child: const Text('← Back'),
+                const Icon(Icons.shopping_cart, color: primaryBlue),
+                const SizedBox(width: 8),
+                Text(
+                  '$cartItemCount items in cart',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _cart.isNotEmpty
-                        ? () {
-                            setState(() => _orderStep = 3);
-                          }
-                        : null,
-                    style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-                    child: Text(_cart.isEmpty ? 'Add items' : 'Review →'),
+                const Spacer(),
+                Text(
+                  'Total: ₹${cartTotal.toStringAsFixed(2)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: accentTeal,
+                    fontSize: 16,
                   ),
                 ),
               ],
             ),
-          ],
-        );
-      },
-    );
-  }
-
+          ),
+          const SizedBox(height: 16),
+          
+          /// SEARCH
+          TextField(
+            controller: _productSearchController,
+            decoration: InputDecoration(
+              hintText: 'Search products...',
+              prefixIcon: const Icon(Icons.search),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            onChanged: (value) => setState(() => _productSearchQuery = value),
+          ),
+          const SizedBox(height: 16),
+          
+          /// PRODUCT LIST
+          Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.5,
+            ),
+            child: ListView.builder(
+              itemCount: filteredProducts.length,
+              itemBuilder: (context, index) {
+                final product = filteredProducts[index];
+                final inCart = _cart.containsKey(product.id);
+                
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: inCart ? accentTeal.withOpacity(0.1) : Colors.grey[50],
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: inCart ? accentTeal : Colors.grey[300]!,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          /// PRODUCT DETAILS (Now including Rate field)
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  product.name,
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                Text(
+                                  'MRP: ₹${product.mrp} | Stock: ${product.stock}',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    const Text('Rate: '),
+                                    SizedBox(
+                                      width: 100,
+                                      child: TextFormField(
+                                        controller: rateControllers[product.id],
+                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                        decoration: const InputDecoration(
+                                          border: OutlineInputBorder(),
+                                          isDense: true,
+                                          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                        ),
+                                        onChanged: (value) {
+                                          final rate = double.tryParse(value);
+                                          if (rate != null && rate > 0 && inCart) {
+                                            updateCartRate(product.id, rate);
+                                          }
+                                          setDialogState(() {});
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          /// QUANTITY INPUT (MOVED HERE - in front of rate field)
+                          SizedBox(
+                            width: 100,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Qty:',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                                const SizedBox(height: 4),
+                                TextFormField(
+                                  controller: quantityControllers[product.id],
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    hintText: 'Enter qty',
+                                    border: OutlineInputBorder(),
+                                    isDense: true,
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                                  ),
+                                  onChanged: (value) {
+                                    setDialogState(() {});
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      /// CART INFO
+                      if (inCart && _cart[product.id]!.quantity > 0)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Row(
+                            children: [
+                              Text(
+                                'In cart: ${_cart[product.id]!.quantity} × ₹${_cart[product.id]!.rate}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: accentTeal,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                '= ₹${_cart[product.id]!.netAmt}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: accentTeal,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 20),
+          
+          /// NAVIGATION
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () {
+                    setState(() {
+                      _orderStep = 1;
+                      _cart.clear();
+                      _stockAlertShown.clear();
+                      // Clear search controllers
+                      _productSearchQuery = '';
+                      _productSearchController.clear();
+                    });
+                  },
+                  child: const Text('← Back'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    // Process all products with quantity entered
+                    bool hasItems = false;
+                    
+                    for (var product in filteredProducts) {
+                      final qtyText = quantityControllers[product.id]?.text ?? '';
+                      final qty = int.tryParse(qtyText);
+                      
+                      if (qty != null && qty > 0) {
+                        hasItems = true;
+                        final rate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString()) ?? product.price;
+                        
+                        // Add or update item in cart
+                        if (_cart.containsKey(product.id)) {
+                          updateCartQuantity(product.id, qty);
+                          updateCartRate(product.id, rate);
+                        } else {
+                          addToCart(product.id, product.name, product.sku, rate, product.stock);
+                          updateCartQuantity(product.id, qty);
+                          updateCartRate(product.id, rate);
+                        }
+                      }
+                    }
+                    
+                    if (hasItems && _cart.isNotEmpty) {
+                      setState(() => _orderStep = 3);
+                      
+                      // Show success message
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Items added to cart successfully'),
+                          backgroundColor: successGreen,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    } else if (!hasItems) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Please enter quantity for at least one product'),
+                          backgroundColor: Colors.orange,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+                  child: const Text('Submit →'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+    },
+  );
+}
   Widget _buildReviewStep() {
     if (_selectedCustomerId == null) return const SizedBox();
     final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
@@ -13598,325 +13559,286 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     );
   }
 
-  Widget _buildProductSelectionStepWithScheme() {
-    final Map<String, TextEditingController> quantityControllers = {};
-    final Map<String, TextEditingController> rateControllers = {};
-    final Map<String, TextEditingController> schemeControllers = {};
-    
-    for (var product in filteredProducts) {
-      if (_cart.containsKey(product.id)) {
-        quantityControllers[product.id] = TextEditingController(text: _cart[product.id]!.quantity.toString());
-        rateControllers[product.id] = TextEditingController(text: _cart[product.id]!.rate.toStringAsFixed(0));
-        schemeControllers[product.id] = TextEditingController(text: _cart[product.id]!.schPer.toString());
-      } else {
-        quantityControllers[product.id] = TextEditingController(text: '0');
-        rateControllers[product.id] = TextEditingController(text: product.price.toStringAsFixed(0));
-        schemeControllers[product.id] = TextEditingController(text: '0');
-      }
-    }
+Widget _buildProductSelectionStepWithScheme() {
+  final Map<String, TextEditingController> quantityControllers = {};
+  final Map<String, TextEditingController> rateControllers = {};
+  final Map<String, TextEditingController> schemeControllers = {};
 
-    return StatefulBuilder(
-      builder: (context, setDialogState) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: primaryBlue.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.shopping_cart, color: primaryBlue),
-                  const SizedBox(width: 8),
-                  Text(
-                    '${cartItemCount} items in cart',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: primaryBlue,
-                    ),
-                  ),
-                  const Spacer(),
-                  Text(
-                    'Total: ₹${cartTotal.toStringAsFixed(0)}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: accentTeal,
-                      fontSize: 16,
-                    ),
-                  ),
-                ],
-              ),
+  for (var product in filteredProducts) {
+    if (_cart.containsKey(product.id)) {
+      quantityControllers[product.id] =
+          TextEditingController(text: _cart[product.id]!.quantity.toString());
+      rateControllers[product.id] =
+          TextEditingController(text: _cart[product.id]!.rate.toString());
+      schemeControllers[product.id] =
+          TextEditingController(text: _cart[product.id]!.schPer.toString());
+    } else {
+      quantityControllers[product.id] = TextEditingController(text: '');
+      rateControllers[product.id] =
+          TextEditingController(text: product.price.toString());
+      schemeControllers[product.id] = TextEditingController(text: '0');
+    }
+  }
+
+  return StatefulBuilder(
+    builder: (context, setDialogState) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          /// CART SUMMARY
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: primaryBlue.withOpacity(0.1),
+              borderRadius: BorderRadius.circular(10),
             ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _productSearchController,
-              decoration: InputDecoration(
-                hintText: 'Search products...',
-                prefixIcon: const Icon(Icons.search),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-              onChanged: (value) => setState(() => _productSearchQuery = value),
-            ),
-            const SizedBox(height: 16),
-            if (_cart.isNotEmpty)
-              Container(
-                margin: const EdgeInsets.only(bottom: 16),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: accentTeal.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: accentTeal),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      '${uniqueProductCount} unique products',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    Text(
-                      'Total Qty: ${cartItemCount}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: accentTeal,
-                        fontSize: 14,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            Container(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.5,
-              ),
-              child: ListView.builder(
-                shrinkWrap: true,
-                physics: const AlwaysScrollableScrollPhysics(),
-                itemCount: filteredProducts.length,
-                itemBuilder: (context, index) {
-                  final product = filteredProducts[index];
-                  final inCart = _cart.containsKey(product.id);
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: inCart ? accentTeal.withOpacity(0.1) : Colors.grey[50],
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: inCart ? accentTeal : Colors.grey[300]!,
-                        width: inCart ? 2 : 1,
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    product.name,
-                                    style: const TextStyle(fontWeight: FontWeight.bold),
-                                  ),
-                                  Text(
-                                    'MRP: ₹${product.mrp.toStringAsFixed(0)} | Stock: ${product.stock}',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      color: Colors.grey[600],
-                                    ),
-                                  ),
-                                  Row(
-                                    children: [
-                                      const Text(
-                                        'Rate: ',
-                                        style: TextStyle(fontSize: 12),
-                                      ),
-                                      SizedBox(
-                                        width: 80,
-                                        child: TextFormField(
-                                          controller: rateControllers[product.id],
-                                          decoration: const InputDecoration(
-                                            isDense: true,
-                                            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                            border: OutlineInputBorder(),
-                                          ),
-                                          keyboardType: TextInputType.number,
-                                          onChanged: (value) {
-                                            final rate = double.tryParse(value);
-                                            if (rate != null && rate > 0) {
-                                              if (inCart) {
-                                                updateCartRate(product.id, rate);
-                                              } else if (int.tryParse(quantityControllers[product.id]?.text ?? '0') != null && int.parse(quantityControllers[product.id]!.text) > 0) {
-                                                addToCart(product.id, product.name, product.sku, rate, product.stock);
-                                                updateCartRate(product.id, rate);
-                                              }
-                                              setDialogState(() {});
-                                            }
-                                          },
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      if (inCart && _cart[product.id]!.schEnabled)
-                                        Row(
-                                          children: [
-                                            const Text(
-                                              'Sch: ',
-                                              style: TextStyle(fontSize: 12),
-                                            ),
-                                            SizedBox(
-                                              width: 60,
-                                              child: TextFormField(
-                                                controller: schemeControllers[product.id],
-                                                decoration: const InputDecoration(
-                                                  isDense: true,
-                                                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                                  border: OutlineInputBorder(),
-                                                  suffixText: '%',
-                                                ),
-                                                keyboardType: TextInputType.number,
-                                                onChanged: (value) {
-                                                  final schPer = double.tryParse(value);
-                                                  if (schPer != null && schPer >= 0 && schPer <= 100) {
-                                                    updateCartScheme(product.id, schPer);
-                                                    setDialogState(() {});
-                                                  }
-                                                },
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Row(
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.local_offer, size: 18),
-                                  onPressed: () => toggleCartScheme(product.id),
-                                  color: _cart.containsKey(product.id) && _cart[product.id]!.schEnabled
-                                      ? accentTeal
-                                      : Colors.grey,
-                                  tooltip: 'Toggle Scheme',
-                                ),
-                                const SizedBox(width: 4),
-                                SizedBox(
-                                  width: 80,
-                                  child: TextFormField(
-                                    controller: quantityControllers[product.id],
-                                    decoration: const InputDecoration(
-                                      labelText: 'Qty',
-                                      border: OutlineInputBorder(),
-                                      isDense: true,
-                                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                    ),
-                                    keyboardType: TextInputType.number,
-                                    onChanged: (value) {
-                                      final qty = int.tryParse(value ?? '0');
-                                      if (qty != null && qty >= 0) {
-                                        if (qty > product.stock && !_stockAlertShown.contains(product.id)) {
-                                          _stockAlertShown.add(product.id);
-                                          showSafeSnackBar(
-                                            context,
-                                            '⚠️ Note: Only ${product.stock} in stock for ${product.name}. Remaining quantity will be fulfilled when stock arrives.',
-                                            backgroundColor: warningOrange,
-                                          );
-                                        }
-                                        
-                                        if (qty == 0) {
-                                          removeFromCart(product.id);
-                                          setState(() {});
-                                          setDialogState(() {});
-                                        } else {
-                                          final currentRate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString());
-                                          if (!inCart) {
-                                            addToCart(product.id, product.name, product.sku, currentRate ?? product.price, product.stock);
-                                          }
-                                          updateCartQuantity(product.id, qty);
-                                          setState(() {});
-                                          setDialogState(() {});
-                                        }
-                                      }
-                                    },
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        if (inCart && _cart[product.id]!.quantity > 0)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Row(
-                              children: [
-                                Text(
-                                  'In cart: ${_cart[product.id]!.quantity} × ₹${_cart[product.id]!.rate.toStringAsFixed(0)}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: accentTeal,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const Spacer(),
-                                Text(
-                                  '= ₹${_cart[product.id]!.netAmt.toStringAsFixed(0)}',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: accentTeal,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ),
-            const SizedBox(height: 20),
-            Row(
+            child: Row(
               children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: () {
-                      setState(() {
-                        _orderStep = 1;
-                        _cart.clear();
-                        _stockAlertShown.clear();
-                      });
-                    },
-                    child: const Text('← Back'),
+                const Icon(Icons.shopping_cart, color: primaryBlue),
+                const SizedBox(width: 8),
+                Text(
+                  '$cartItemCount items in cart',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _cart.isNotEmpty
-                        ? () {
-                            setState(() => _orderStep = 3);
-                          }
-                        : null,
-                    style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-                    child: Text(_cart.isEmpty ? 'Add items' : 'Review →'),
+                const Spacer(),
+                Text(
+                  'Total: ₹${cartTotal.toStringAsFixed(2)}',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: accentTeal,
+                    fontSize: 16,
                   ),
                 ),
               ],
             ),
-          ],
-        );
-      },
-    );
-  }
-
+          ),
+          const SizedBox(height: 16),
+          
+          /// SEARCH
+          TextField(
+            controller: _productSearchController,
+            decoration: InputDecoration(
+              hintText: 'Search products...',
+              prefixIcon: const Icon(Icons.search),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+            onChanged: (value) => setState(() => _productSearchQuery = value),
+          ),
+          const SizedBox(height: 16),
+          
+          /// PRODUCT LIST
+          Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.5,
+            ),
+            child: ListView.builder(
+              itemCount: filteredProducts.length,
+              itemBuilder: (context, index) {
+                final product = filteredProducts[index];
+                final inCart = _cart.containsKey(product.id);
+                
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: inCart ? accentTeal.withOpacity(0.1) : Colors.grey[50],
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: inCart ? accentTeal : Colors.grey[300]!,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          /// PRODUCT DETAILS (Now including Rate field)
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  product.name,
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                Text(
+                                  'MRP: ₹${product.mrp} | Stock: ${product.stock}',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    const Text('Rate: '),
+                                    SizedBox(
+                                      width: 100,
+                                      child: TextFormField(
+                                        controller: rateControllers[product.id],
+                                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                        decoration: const InputDecoration(
+                                          border: OutlineInputBorder(),
+                                          isDense: true,
+                                          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                        ),
+                                        onChanged: (value) {
+                                          final rate = double.tryParse(value);
+                                          if (rate != null && rate > 0 && inCart) {
+                                            updateCartRate(product.id, rate);
+                                          }
+                                          setDialogState(() {});
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          /// QUANTITY INPUT (MOVED HERE - in front of rate field)
+                          SizedBox(
+                            width: 100,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Qty:',
+                                  style: TextStyle(fontSize: 12),
+                                ),
+                                const SizedBox(height: 4),
+                                TextFormField(
+                                  controller: quantityControllers[product.id],
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    hintText: 'Enter qty',
+                                    border: OutlineInputBorder(),
+                                    isDense: true,
+                                    contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                                  ),
+                                  onChanged: (value) {
+                                    setDialogState(() {});
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      /// CART INFO
+                      if (inCart && _cart[product.id]!.quantity > 0)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Row(
+                            children: [
+                              Text(
+                                'In cart: ${_cart[product.id]!.quantity} × ₹${_cart[product.id]!.rate}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: accentTeal,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                '= ₹${_cart[product.id]!.netAmt}',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: accentTeal,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 20),
+          
+          /// NAVIGATION
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () {
+                    setState(() {
+                      _orderStep = 1;
+                      _cart.clear();
+                      _stockAlertShown.clear();
+                      // Clear search controllers
+                      _productSearchQuery = '';
+                      _productSearchController.clear();
+                    });
+                  },
+                  child: const Text('← Back'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () {
+                    // Process all products with quantity entered
+                    bool hasItems = false;
+                    
+                    for (var product in filteredProducts) {
+                      final qtyText = quantityControllers[product.id]?.text ?? '';
+                      final qty = int.tryParse(qtyText);
+                      
+                      if (qty != null && qty > 0) {
+                        hasItems = true;
+                        final rate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString()) ?? product.price;
+                        
+                        // Add or update item in cart
+                        if (_cart.containsKey(product.id)) {
+                          updateCartQuantity(product.id, qty);
+                          updateCartRate(product.id, rate);
+                        } else {
+                          addToCart(product.id, product.name, product.sku, rate, product.stock);
+                          updateCartQuantity(product.id, qty);
+                          updateCartRate(product.id, rate);
+                        }
+                      }
+                    }
+                    
+                    if (hasItems && _cart.isNotEmpty) {
+                      setState(() => _orderStep = 3);
+                      
+                      // Show success message
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Items added to cart successfully'),
+                          backgroundColor: successGreen,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    } else if (!hasItems) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Please enter quantity for at least one product'),
+                          backgroundColor: Colors.orange,
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+                  child: const Text('Submit →'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      );
+    },
+  );
+}
   Widget _buildReviewStep() {
     if (_selectedCustomerId == null) return const SizedBox();
     final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
