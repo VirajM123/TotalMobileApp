@@ -11178,24 +11178,20 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   void updateCartQuantity(String productId, int quantity) {
-    setState(() {
-      if (quantity <= 0) {
-        _cart.remove(productId);
-      } else if (_cart.containsKey(productId)) {
-        final product = _products.firstWhere((p) => p.id == productId);
-        if (quantity > product.stock && !_stockAlertShown.contains(productId)) {
-          _stockAlertShown.add(productId);
-          showSafeSnackBar(
-            context,
-            '⚠️ Note: Only ${product.stock} in stock for ${product.name}. Remaining quantity will be fulfilled when stock arrives.',
-            backgroundColor: warningOrange,
-          );
-        }
-        _cart[productId]!.quantity = quantity;
-        _cart[productId]!.calculate();
+  setState(() {
+    if (quantity <= 0) {
+      _cart.remove(productId);
+    } else if (_cart.containsKey(productId)) {
+      final product = _products.firstWhere((p) => p.id == productId);
+      if (quantity > product.stock && !_stockAlertShown.contains(productId)) {
+        _stockAlertShown.add(productId);
+        // Warning completely removed - no snackbar shown
       }
-    });
-  }
+      _cart[productId]!.quantity = quantity;
+      _cart[productId]!.calculate();
+    }
+  });
+}
 
   void updateCartRate(String productId, double rate) {
     setState(() {
@@ -11235,139 +11231,179 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     });
   }
 
-  void _showEditOrderDialog(OrderModel order) {
-    setState(() {
-      _orderToEdit = order;
-      _isEditingOrder = true;
-      _editCart.clear();
-      
-      for (var item in order.items) {
-        final product = _products.firstWhere(
-          (p) => p.id == item.productId,
-          orElse: () => ProductModel(
-            id: item.productId,
-            name: item.productName,
-            sku: item.sku,
-            price: item.rate,
-            mrp: item.rate,
-            category: '',
-            stock: 0,
-            createdAt: DateTime.now(),
-            updatedAt: DateTime.now(),
-          ),
-        );
-        
-        _editCart[item.productId] = CartItemData(
-          productId: item.productId,
-          productName: item.productName,
-          sku: item.sku,
-          quantity: item.quantity,
-          rate: item.rate,
-          mrp: item.mrp ?? item.rate,
-          stock: product.stock,
-          schEnabled: false,
-        );
-        _editCart[item.productId]!.calculate();
-      }
-      
-      _selectedCustomerId = order.customerId;
-      _selectedPaymentMode = order.paymentMode ?? PaymentMode.credit;
-      _orderNotes = order.notes ?? '';
-    });
+void _showEditOrderDialog(OrderModel order) {
+  setState(() {
+    _orderToEdit = order;
+    _isEditingOrder = true;
+    _editCart.clear();
     
-    _showEditOrderDialogInternal();
-  }
+    for (var item in order.items) {
+      final product = _products.firstWhere(
+        (p) => p.id == item.productId,
+        orElse: () => ProductModel(
+          id: item.productId,
+          name: item.productName,
+          sku: item.sku,
+          price: item.rate,
+          mrp: item.rate,
+          category: '',
+          stock: 0,
+          createdAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+        ),
+      );
+      
+      _editCart[item.productId] = CartItemData(
+        productId: item.productId,
+        productName: item.productName,
+        sku: item.sku,
+        quantity: item.quantity,
+        rate: item.rate,
+        mrp: item.mrp ?? item.rate,
+        stock: product.stock,
+        schEnabled: false,
+      );
+      _editCart[item.productId]!.calculate();
+    }
+    
+    _selectedCustomerId = order.customerId;
+    _selectedPaymentMode = order.paymentMode ?? PaymentMode.credit;
+    _orderNotes = order.notes ?? '';
+  });
+  
+  _showEditOrderDialogInternal();
+}
 
-  void _showEditOrderDialogInternal() {
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          return AlertDialog(
-            title: Text('Edit Order #${_orderToEdit?.orderNumber}'),
-            content: Container(
-              width: MediaQuery.of(context).size.width * 0.8,
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(context).size.height * 0.7,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.blue[50],
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Customer: ${_orderToEdit?.customerName}'),
-                        Text('Order Date: ${_orderToEdit?.createdAt.day}/${_orderToEdit?.createdAt.month}/${_orderToEdit?.createdAt.year}'),
-                      ],
-                    ),
+void _showEditOrderDialogInternal() {
+  final TextEditingController _productSearchEditController = TextEditingController();
+  String _productSearchEditQuery = '';
+  Map<String, TextEditingController> _editQuantityControllers = {};
+  
+  showDialog(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setDialogState) {
+        // Get filtered products for adding new items
+        List<ProductModel> getEditFilteredProducts() {
+          if (_productSearchEditQuery.isEmpty) return _products;
+          final query = _productSearchEditQuery.toLowerCase();
+          return _products.where((p) => 
+            p.name.toLowerCase().contains(query) || 
+            p.sku.toLowerCase().contains(query)
+          ).toList();
+        }
+        
+        // Initialize quantity controllers for edit cart items
+        for (var entry in _editCart.entries) {
+          if (!_editQuantityControllers.containsKey(entry.key)) {
+            _editQuantityControllers[entry.key] = TextEditingController(
+              text: entry.value.quantity.toString()
+            );
+          }
+        }
+        
+        return AlertDialog(
+          title: Text('Edit Order #${_orderToEdit?.orderNumber}'),
+          content: Container(
+            width: MediaQuery.of(context).size.width * 0.8,
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.7,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  const SizedBox(height: 16),
-                  
-                  const Text('Payment Mode:', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      ChoiceChip(
-                        label: const Text('Credit'),
-                        selected: _selectedPaymentMode == PaymentMode.credit,
-                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.credit),
-                      ),
-                      ChoiceChip(
-                        label: const Text('Cash'),
-                        selected: _selectedPaymentMode == PaymentMode.cash,
-                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.cash),
-                      ),
-                      ChoiceChip(
-                        label: const Text('UPI'),
-                        selected: _selectedPaymentMode == PaymentMode.upi,
-                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.upi),
-                      ),
-                      ChoiceChip(
-                        label: const Text('Cheque'),
-                        selected: _selectedPaymentMode == PaymentMode.cheque,
-                        onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.cheque),
-                      ),
+                      Text('Customer: ${_orderToEdit?.customerName}'),
+                      Text('Order Date: ${_orderToEdit?.createdAt.day}/${_orderToEdit?.createdAt.month}/${_orderToEdit?.createdAt.year}'),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  
-                  const Text('Order Items:', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  Expanded(
+                ),
+                const SizedBox(height: 16),
+                
+                const Text('Payment Mode:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    ChoiceChip(
+                      label: const Text('Credit'),
+                      selected: _selectedPaymentMode == PaymentMode.credit,
+                      onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.credit),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Cash'),
+                      selected: _selectedPaymentMode == PaymentMode.cash,
+                      onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.cash),
+                    ),
+                    ChoiceChip(
+                      label: const Text('UPI'),
+                      selected: _selectedPaymentMode == PaymentMode.upi,
+                      onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.upi),
+                    ),
+                    ChoiceChip(
+                      label: const Text('Cheque'),
+                      selected: _selectedPaymentMode == PaymentMode.cheque,
+                      onSelected: (_) => setDialogState(() => _selectedPaymentMode = PaymentMode.cheque),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                
+                // Search bar to add new products
+                const Text('Add New Products:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _productSearchEditController,
+                  decoration: InputDecoration(
+                    hintText: 'Search products to add...',
+                    prefixIcon: const Icon(Icons.search),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    suffixIcon: _productSearchEditQuery.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              setDialogState(() {
+                                _productSearchEditQuery = '';
+                                _productSearchEditController.clear();
+                              });
+                            },
+                          )
+                        : null,
+                  ),
+                  onChanged: (value) => setDialogState(() {
+                    _productSearchEditQuery = value;
+                  }),
+                ),
+                
+                // Available products list for adding
+                if (_productSearchEditQuery.isNotEmpty)
+                  Container(
+                    height: 200,
+                    margin: const EdgeInsets.only(top: 8),
                     child: ListView.builder(
                       shrinkWrap: true,
-                      itemCount: _editCart.length,
+                      itemCount: getEditFilteredProducts().length,
                       itemBuilder: (context, index) {
-                        final productId = _editCart.keys.elementAt(index);
-                        final cartItem = _editCart[productId]!;
-                        final product = _products.firstWhere(
-                          (p) => p.id == productId,
-                          orElse: () => ProductModel(
-                            id: productId,
-                            name: cartItem.productName,
-                            sku: cartItem.sku,
-                            price: cartItem.rate,
-                            mrp: cartItem.mrp,
-                            category: '',
-                            stock: cartItem.stock,
-                            createdAt: DateTime.now(),
-                            updatedAt: DateTime.now(),
-                          ),
-                        );
+                        final product = getEditFilteredProducts()[index];
+                        final isAlreadyInCart = _editCart.containsKey(product.id);
                         
                         return Container(
-                          margin: const EdgeInsets.only(bottom: 8),
+                          margin: const EdgeInsets.only(bottom: 4),
                           padding: const EdgeInsets.all(8),
                           decoration: BoxDecoration(
-                            color: Colors.grey[100],
+                            color: isAlreadyInCart ? Colors.grey[200] : Colors.white,
                             borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.grey[300]!),
                           ),
                           child: Row(
                             children: [
@@ -11375,100 +11411,261 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(cartItem.productName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                                    Text('MRP: ₹${cartItem.mrp.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                                    Text('Rate: ₹${cartItem.rate.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11)),
+                                    Text(product.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                    Text('SKU: ${product.sku} | Stock: ${product.stock}'),
+                                    Text('MRP: ₹${product.mrp} | Price: ₹${product.price}'),
                                   ],
                                 ),
                               ),
-                              Row(
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.remove, size: 20),
-                                    onPressed: () {
-                                      final newQty = cartItem.quantity - 1;
-                                      if (newQty <= 0) {
-                                        setDialogState(() {
-                                          _editCart.remove(productId);
-                                        });
-                                      } else {
-                                        setDialogState(() {
-                                          _editCart[productId]!.quantity = newQty;
-                                          _editCart[productId]!.calculate();
-                                        });
-                                      }
-                                    },
-                                  ),
-                                  Text('${cartItem.quantity}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                                  IconButton(
-                                    icon: const Icon(Icons.add, size: 20),
-                                    onPressed: () {
-                                      if (cartItem.quantity < product.stock) {
-                                        setDialogState(() {
-                                          _editCart[productId]!.quantity++;
-                                          _editCart[productId]!.calculate();
-                                        });
-                                      } else {
-                                        showSafeSnackBar(context, 'Not enough stock', backgroundColor: warningOrange);
-                                      }
-                                    },
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(width: 8),
-                              Text('₹${cartItem.netAmt.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                              if (!isAlreadyInCart)
+                                ElevatedButton(
+                                  onPressed: () {
+                                    setDialogState(() {
+                                      _editCart[product.id] = CartItemData(
+                                        productId: product.id,
+                                        productName: product.name,
+                                        sku: product.sku,
+                                        quantity: 1,
+                                        rate: product.price,
+                                        mrp: product.mrp,
+                                        stock: product.stock,
+                                        schEnabled: false,
+                                      );
+                                      _editCart[product.id]!.calculate();
+                                      _editQuantityControllers[product.id] = TextEditingController(text: '1');
+                                      _productSearchEditQuery = '';
+                                      _productSearchEditController.clear();
+                                    });
+                                  },
+                                  child: const Text('Add to Order'),
+                                ),
+                              if (isAlreadyInCart)
+                                const Text('Already in order', style: TextStyle(color: Colors.grey)),
                             ],
                           ),
                         );
                       },
                     ),
                   ),
-                  
-                  const Divider(),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text('Total:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                      Text('₹${_getEditCartTotal().toStringAsFixed(0)}', 
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: accentTeal)),
-                    ],
+                
+                const SizedBox(height: 16),
+                const Text('Order Items:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _editCart.length,
+                    itemBuilder: (context, index) {
+                      final productId = _editCart.keys.elementAt(index);
+                      final cartItem = _editCart[productId]!;
+                      final product = _products.firstWhere(
+                        (p) => p.id == productId,
+                        orElse: () => ProductModel(
+                          id: productId,
+                          name: cartItem.productName,
+                          sku: cartItem.sku,
+                          price: cartItem.rate,
+                          mrp: cartItem.mrp,
+                          category: '',
+                          stock: cartItem.stock,
+                          createdAt: DateTime.now(),
+                          updatedAt: DateTime.now(),
+                        ),
+                      );
+                      
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.grey[100],
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(cartItem.productName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                                      Text('MRP: ₹${cartItem.mrp.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                                      Text('Rate: ₹${cartItem.rate.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11)),
+                                    ],
+                                  ),
+                                ),
+                                // Remove button
+                                IconButton(
+                                  icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                                  onPressed: () {
+                                    setDialogState(() {
+                                      _editCart.remove(productId);
+                                      _editQuantityControllers.remove(productId);
+                                    });
+                                  },
+                                  tooltip: 'Remove item',
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Row(
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.remove, size: 20),
+                                      onPressed: () {
+                                        final newQty = cartItem.quantity - 1;
+                                        if (newQty <= 0) {
+                                          setDialogState(() {
+                                            _editCart.remove(productId);
+                                            _editQuantityControllers.remove(productId);
+                                          });
+                                        } else {
+                                          setDialogState(() {
+                                            _editCart[productId]!.quantity = newQty;
+                                            _editCart[productId]!.calculate();
+                                            _editQuantityControllers[productId]?.text = newQty.toString();
+                                          });
+                                        }
+                                      },
+                                    ),
+                                    SizedBox(
+                                      width: 50,
+                                      child: TextField(
+                                        controller: _editQuantityControllers[productId],
+                                        keyboardType: TextInputType.number,
+                                        textAlign: TextAlign.center,
+                                        decoration: const InputDecoration(
+                                          border: OutlineInputBorder(),
+                                          isDense: true,
+                                          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                        ),
+                                        onChanged: (value) {
+                                          final qty = int.tryParse(value);
+                                          if (qty != null && qty > 0) {
+                                            setDialogState(() {
+                                              _editCart[productId]!.quantity = qty;
+                                              _editCart[productId]!.calculate();
+                                            });
+                                          } else if (qty == 0) {
+                                            setDialogState(() {
+                                              _editCart.remove(productId);
+                                              _editQuantityControllers.remove(productId);
+                                            });
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.add, size: 20),
+                                      onPressed: () {
+                                        if (cartItem.quantity < product.stock) {
+                                          setDialogState(() {
+                                            _editCart[productId]!.quantity++;
+                                            _editCart[productId]!.calculate();
+                                            _editQuantityControllers[productId]?.text = _editCart[productId]!.quantity.toString();
+                                          });
+                                        } else {
+                                          showSafeSnackBar(context, 'Not enough stock', backgroundColor: warningOrange);
+                                        }
+                                      },
+                                    ),
+                                  ],
+                                ),
+                                Text('₹${cartItem.netAmt.toStringAsFixed(0)}', 
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                ),
+                              ],
+                            ),
+                            // Rate edit field
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Row(
+                                children: [
+                                  const Text('Rate: ₹', style: TextStyle(fontSize: 12)),
+                                  SizedBox(
+                                    width: 100,
+                                    child: TextField(
+                                      controller: TextEditingController(
+                                        text: cartItem.rate.toStringAsFixed(0)
+                                      ),
+                                      keyboardType: TextInputType.number,
+                                      decoration: const InputDecoration(
+                                        border: OutlineInputBorder(),
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      ),
+                                      onChanged: (value) {
+                                        final rate = double.tryParse(value);
+                                        if (rate != null && rate > 0) {
+                                          setDialogState(() {
+                                            _editCart[productId]!.rate = rate;
+                                            _editCart[productId]!.calculate();
+                                          });
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
-                  
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: TextEditingController(text: _orderNotes),
-                    decoration: const InputDecoration(
-                      labelText: 'Notes',
-                      border: OutlineInputBorder(),
-                    ),
-                    maxLines: 2,
-                    onChanged: (value) => _orderNotes = value,
+                ),
+                
+                const Divider(),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('Total:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    Text('₹${_getEditCartTotal().toStringAsFixed(0)}', 
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: accentTeal)),
+                  ],
+                ),
+                
+                const SizedBox(height: 8),
+                TextField(
+                  controller: TextEditingController(text: _orderNotes),
+                  decoration: const InputDecoration(
+                    labelText: 'Notes',
+                    border: OutlineInputBorder(),
                   ),
-                ],
-              ),
+                  maxLines: 2,
+                  onChanged: (value) => _orderNotes = value,
+                ),
+              ],
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  await _submitEditOrder();
-                  if (mounted) {
-                    Navigator.pop(context);
-                  }
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-                child: const Text('Save Changes'),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (_editCart.isEmpty) {
+                  showSafeSnackBar(context, 'Order must have at least one item', backgroundColor: warningOrange);
+                  return;
+                }
+                await _submitEditOrder();
+                if (mounted) {
+                  Navigator.pop(context);
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+              child: const Text('Save Changes'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
   double _getEditCartTotal() {
     double total = 0;
     for (var item in _editCart.values) {
@@ -13563,6 +13760,7 @@ Widget _buildProductSelectionStepWithScheme() {
   final Map<String, TextEditingController> quantityControllers = {};
   final Map<String, TextEditingController> rateControllers = {};
   final Map<String, TextEditingController> schemeControllers = {};
+  final Map<String, Timer> debounceTimers = {};
 
   for (var product in filteredProducts) {
     if (_cart.containsKey(product.id)) {
@@ -13720,6 +13918,112 @@ Widget _buildProductSelectionStepWithScheme() {
                                     contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
                                   ),
                                   onChanged: (value) {
+                                    // Cancel any existing timer for this product
+                                    if (debounceTimers[product.id] != null) {
+                                      debounceTimers[product.id]!.cancel();
+                                    }
+                                    
+                                    // Set a new timer that will execute after 500ms of no typing
+                                    debounceTimers[product.id] = Timer(const Duration(milliseconds: 500), () {
+                                      final qty = int.tryParse(value);
+                                      
+                                      if (qty != null && qty > 0) {
+                                        final rate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString()) ?? product.price;
+                                        
+                                        // Add or update item in cart automatically
+                                        if (_cart.containsKey(product.id)) {
+                                          updateCartQuantity(product.id, qty);
+                                          updateCartRate(product.id, rate);
+                                        } else {
+                                          addToCart(product.id, product.name, product.sku, rate, product.stock);
+                                          updateCartQuantity(product.id, qty);
+                                          updateCartRate(product.id, rate);
+                                        }
+                                        
+                                        setDialogState(() {});
+                                      } else if (qty == 0 && _cart.containsKey(product.id)) {
+                                        // Remove item if quantity is set to 0
+                                        removeFromCart(product.id);
+                                        quantityControllers[product.id]?.text = '';
+                                        setDialogState(() {});
+                                      } else if ((qty == null || qty <= 0) && value.isNotEmpty && !_cart.containsKey(product.id)) {
+                                        // Clear invalid input if not in cart
+                                        quantityControllers[product.id]?.text = '';
+                                        setDialogState(() {});
+                                      } else if ((qty == null || qty <= 0) && value.isEmpty && _cart.containsKey(product.id)) {
+                                        // Remove from cart if quantity field is cleared
+                                        removeFromCart(product.id);
+                                        quantityControllers[product.id]?.text = '';
+                                        setDialogState(() {});
+                                      }
+                                    });
+                                    
+                                    setDialogState(() {});
+                                  },
+                                  onEditingComplete: () {
+                                    // Cancel any pending timer
+                                    if (debounceTimers[product.id] != null) {
+                                      debounceTimers[product.id]!.cancel();
+                                    }
+                                    
+                                    final qtyText = quantityControllers[product.id]?.text ?? '';
+                                    final qty = int.tryParse(qtyText);
+                                    
+                                    if (qty != null && qty > 0) {
+                                      final rate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString()) ?? product.price;
+                                      
+                                      if (_cart.containsKey(product.id)) {
+                                        updateCartQuantity(product.id, qty);
+                                        updateCartRate(product.id, rate);
+                                      } else {
+                                        addToCart(product.id, product.name, product.sku, rate, product.stock);
+                                        updateCartQuantity(product.id, qty);
+                                        updateCartRate(product.id, rate);
+                                      }
+                                    } else if (qty == 0 && _cart.containsKey(product.id)) {
+                                      removeFromCart(product.id);
+                                      quantityControllers[product.id]?.text = '';
+                                    } else if ((qty == null || qty <= 0) && quantityControllers[product.id]?.text?.isNotEmpty == true) {
+                                      quantityControllers[product.id]?.text = '';
+                                      if (_cart.containsKey(product.id)) {
+                                        removeFromCart(product.id);
+                                      }
+                                    }
+                                    
+                                    // Remove focus from the field
+                                    FocusScope.of(context).unfocus();
+                                    setDialogState(() {});
+                                  },
+                                  onTapOutside: (event) {
+                                    // Cancel any pending timer
+                                    if (debounceTimers[product.id] != null) {
+                                      debounceTimers[product.id]!.cancel();
+                                    }
+                                    
+                                    final qtyText = quantityControllers[product.id]?.text ?? '';
+                                    final qty = int.tryParse(qtyText);
+                                    
+                                    if (qty != null && qty > 0) {
+                                      final rate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString()) ?? product.price;
+                                      
+                                      if (_cart.containsKey(product.id)) {
+                                        updateCartQuantity(product.id, qty);
+                                        updateCartRate(product.id, rate);
+                                      } else {
+                                        addToCart(product.id, product.name, product.sku, rate, product.stock);
+                                        updateCartQuantity(product.id, qty);
+                                        updateCartRate(product.id, rate);
+                                      }
+                                    } else if (qty == 0 && _cart.containsKey(product.id)) {
+                                      removeFromCart(product.id);
+                                      quantityControllers[product.id]?.text = '';
+                                    } else if ((qty == null || qty <= 0) && quantityControllers[product.id]?.text?.isNotEmpty == true) {
+                                      quantityControllers[product.id]?.text = '';
+                                      if (_cart.containsKey(product.id)) {
+                                        removeFromCart(product.id);
+                                      }
+                                    }
+                                    
                                     setDialogState(() {});
                                   },
                                 ),
@@ -13728,7 +14032,7 @@ Widget _buildProductSelectionStepWithScheme() {
                           ),
                         ],
                       ),
-                      /// CART INFO
+                      /// CART INFO (Removed stock warning message)
                       if (inCart && _cart[product.id]!.quantity > 0)
                         Padding(
                           padding: const EdgeInsets.only(top: 8),
@@ -13784,44 +14088,20 @@ Widget _buildProductSelectionStepWithScheme() {
               Expanded(
                 child: ElevatedButton(
                   onPressed: () {
-                    // Process all products with quantity entered
-                    bool hasItems = false;
-                    
-                    for (var product in filteredProducts) {
-                      final qtyText = quantityControllers[product.id]?.text ?? '';
-                      final qty = int.tryParse(qtyText);
-                      
-                      if (qty != null && qty > 0) {
-                        hasItems = true;
-                        final rate = double.tryParse(rateControllers[product.id]?.text ?? product.price.toString()) ?? product.price;
-                        
-                        // Add or update item in cart
-                        if (_cart.containsKey(product.id)) {
-                          updateCartQuantity(product.id, qty);
-                          updateCartRate(product.id, rate);
-                        } else {
-                          addToCart(product.id, product.name, product.sku, rate, product.stock);
-                          updateCartQuantity(product.id, qty);
-                          updateCartRate(product.id, rate);
-                        }
-                      }
-                    }
-                    
-                    if (hasItems && _cart.isNotEmpty) {
+                    if (_cart.isNotEmpty) {
                       setState(() => _orderStep = 3);
                       
-                      // Show success message
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('Items added to cart successfully'),
+                          content: Text('Proceeding to next step'),
                           backgroundColor: successGreen,
-                          duration: Duration(seconds: 2),
+                          duration: Duration(seconds: 1),
                         ),
                       );
-                    } else if (!hasItems) {
+                    } else {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('Please enter quantity for at least one product'),
+                          content: Text('Please add at least one item to cart'),
                           backgroundColor: Colors.orange,
                           duration: Duration(seconds: 2),
                         ),
@@ -13829,7 +14109,7 @@ Widget _buildProductSelectionStepWithScheme() {
                     }
                   },
                   style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-                  child: const Text('Submit →'),
+                  child: const Text('Next →'),
                 ),
               ),
             ],
