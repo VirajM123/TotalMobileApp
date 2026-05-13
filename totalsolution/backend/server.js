@@ -635,9 +635,7 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const trimmedPhone = phone ? phone.toString().trim() : '';
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
                 
-            
-
-const existingCustomer = await collections.customer.findOne({
+              const existingCustomer = await collections.customer.findOne({
     customer_id: customerCode ? customerCode.toString().trim() : null,
     distributor_id: trimmedDistributorId
 });
@@ -647,23 +645,23 @@ if (existingCustomer) {
     if (updateExisting === 'true') {
 
         const updateResult = await collections.customer.updateOne(
-            {
-                customer_id: customerCode ? customerCode.toString().trim() : null,
-                distributor_id: trimmedDistributorId
-            },
-            {
-                $set: {
-                    name: trimmedCustomerName,
-                    phone: trimmedPhone,
-                    area: trimmedArea,
-                    route: trimmedRoute,
-                    address: trimmedAddress,
-                    updated_at: new Date().toISOString(),
-                    updated_by: createdBy || 'import'
-                }
-            },
-            { upsert: true }
-        );
+           {
+    customer_id: customerCode ? customerCode.toString().trim() : null,
+    distributor_id: trimmedDistributorId
+  },
+  {
+    $set: {
+      name: trimmedCustomerName,
+      phone: trimmedPhone,
+      area: trimmedArea,
+      route: trimmedRoute,
+      address: trimmedAddress,
+      updated_at: new Date().toISOString(),
+      updated_by: createdBy || 'import'
+    }
+  },
+  { upsert: true }
+);
 
         updatedCount++;
         console.log(`Updated customer ${updatedCount}: ${trimmedCustomerName}`);
@@ -679,30 +677,41 @@ if (existingCustomer) {
 
     continue;
 }
-
-const customerId = (customerCode && customerCode.toString().trim())
-    ? customerCode.toString().trim()
-    : `GK${Date.now()}${Math.floor(Math.random() * 1000)}`;
-
-const customer = {
-    name: trimmedCustomerName,
-    customer_id: customerId,
-    phone: trimmedPhone || null,
-    area: trimmedArea,
-    route: trimmedRoute,
-    address: trimmedAddress,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    status: 'active',
-    created_by: createdBy || 'import',
-    distributor_id: trimmedDistributorId
-};
-
-await collections.customer.insertOne(customer);
-
-importedCount++;
-
-console.log(`Imported customer ${importedCount}: ${trimmedCustomerName} with ID: ${customerId}`);
+                
+                const customerId = (customerCode && customerCode.toString().trim()) 
+                    ? customerCode.toString().trim() 
+                    : `GK${Date.now()}${Math.floor(Math.random() * 1000)}`;
+                
+                const customer = {
+                    name: trimmedCustomerName,
+                    customer_id: customerId,
+                    phone: trimmedPhone || null,
+                    area: trimmedArea,
+                    route: trimmedRoute,
+                    address: trimmedAddress,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                    status: 'active',
+                    created_by: createdBy || 'import',
+                    distributor_id: trimmedDistributorId
+                };
+                
+                await collections.customer.insertOne(customer);
+                importedCount++;
+                console.log(`Imported customer ${importedCount}: ${trimmedCustomerName} with ID: ${customerId}`);
+                
+            } catch (rowError) {
+                console.error(`Error importing row ${i + 1}:`, rowError);
+                skippedCount++;
+                errors.push(`Row ${i + 1}: ${rowError.message}`);
+            }
+        }
+        
+        if (fs.existsSync(req.file.path)) {
+            fs.unlinkSync(req.file.path);
+        }
+        
+        console.log(`Import completed: ${importedCount} imported, ${updatedCount} updated, ${skippedCount} skipped`);
         
         res.json({
             success: true,
