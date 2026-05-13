@@ -635,10 +635,7 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const trimmedPhone = phone ? phone.toString().trim() : '';
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
                 
-              const existingCustomer = await collections.customer.findOne({
-    customer_id: customerCode ? customerCode.toString().trim() : null,
-    distributor_id: trimmedDistributorId
-});
+            
 
 const existingCustomer = await collections.customer.findOne({
     customer_id: customerCode ? customerCode.toString().trim() : null,
