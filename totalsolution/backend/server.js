@@ -52,8 +52,9 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
-app.use('/uploads', express.static('uploads'));
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+
 
 // MongoDB connection
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
@@ -69,7 +70,8 @@ const COLLECTIONS = {
   ORDER: 'mas_order',
   PAYMENT: 'mas_payment',
   NOTIFICATION: 'mas_notification',
-  COLLECTION_HISTORY: 'mas_collection_history'
+  COLLECTION_HISTORY: 'mas_collection_history',
+OUTSTANDING: 'Mas_Outstanding'
 };
 
 let db;
@@ -92,6 +94,7 @@ async function connectToMongoDB() {
         collections.payment = db.collection(COLLECTIONS.PAYMENT);
         collections.notification = db.collection(COLLECTIONS.NOTIFICATION);
         collections.collectionHistory = db.collection(COLLECTIONS.COLLECTION_HISTORY);
+        collections.outstanding = db.collection(COLLECTIONS.OUTSTANDING);
         
         console.log('Connected to MongoDB successfully');
         console.log(`Database: ${DB_NAME}`);
@@ -126,7 +129,13 @@ async function connectToMongoDB() {
         await collections.collectionHistory.createIndex({ distributor_id: 1 });
         await collections.collectionHistory.createIndex({ salesman_id: 1 });
         await collections.collectionHistory.createIndex({ created_at: -1 });
-        
+        await collections.outstanding.createIndex({ distributor_id: 1 });
+await collections.outstanding.createIndex({ salesman_id: 1 });
+await collections.outstanding.createIndex({ SysAcCode: 1 });
+await collections.outstanding.createIndex(
+  { distributor_id: 1, TrnSeries: 1, TrnNo: 1, SysAcCode: 1 },
+  { unique: true }
+);
         console.log('Indexes created successfully');
     } catch (error) {
         console.error('MongoDB connection error:', error);
@@ -3318,7 +3327,316 @@ app.get('/api/health', (req, res) => {
         }, {})
     });
 });
+// ==================== OUTSTANDING BILL UPLOAD API ====================
+app.post('/api/outstanding/upload', async (req, res) => {
+  const errors = [];
 
+  const safeDate = (value) => {
+    if (!value) return null;
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  try {
+    const distributorId = String(req.body.distributorId || '').trim();
+    const bills = Array.isArray(req.body.bills) ? req.body.bills : [];
+
+    if (!distributorId) {
+      return res.status(400).json({ success: false, message: 'distributorId required' });
+    }
+
+    if (bills.length === 0) {
+      return res.status(400).json({ success: false, message: 'No outstanding bills found' });
+    }
+
+    const operations = [];
+
+    for (let i = 0; i < bills.length; i++) {
+      const b = bills[i];
+
+      const trnSeries = String(b.TrnSeries || '').trim();
+      const trnNo = Number(b.TrnNo || 0);
+      const sysAcCode = String(b.SysAcCode || '').trim();
+      const bamt = Number(b.Bamt || 0);
+
+      if (!trnNo || !sysAcCode || sysAcCode === '0' || bamt <= 0) {
+        errors.push(`Bill ${i + 1}: Invalid TrnNo/SysAcCode/Bamt`);
+        continue;
+      }
+
+      const doc = {
+        distributor_id: distributorId,
+        distributorId: distributorId,
+
+        salesman_id: String(b.salesman_id || b.SSMCode || b.SalesmanCode || '').trim(),
+        salesman_name: String(b.salesman_name || b.SalesmanName || '').trim(),
+
+        Trn: String(b.Trn || 'SAL'),
+        TrnSeries: trnSeries,
+        TrnNo: trnNo,
+        TrnDate: safeDate(b.TrnDate),
+        DorC: String(b.DorC || 'D'),
+
+        SysAcCode: sysAcCode,
+        customer_id: sysAcCode,
+
+        Amt: Number(b.Amt || 0),
+        Aamt: Number(b.Aamt || 0),
+        Bamt: bamt,
+
+        ClrDate: safeDate(b.ClrDate),
+        ChqDate: safeDate(b.ChqDate),
+        DepDate: safeDate(b.DepDate),
+        DueDate: safeDate(b.DueDate),
+
+        seqno: Number(b.seqno || 0),
+        VatAmt: Number(b.VatAmt || 0),
+        VatPer: Number(b.VatPer || 0),
+        VatType: String(b.VatType || ''),
+        ChqNo: String(b.ChqNo || ''),
+        BankCode: String(b.BankCode || ''),
+        DocNo: String(b.DocNo || `${trnSeries}-${trnNo}`),
+        Narr: String(b.Narr || ''),
+
+        status: 'pending',
+        updated_at: new Date()
+      };
+
+      operations.push({
+        updateOne: {
+          filter: {
+            distributor_id: distributorId,
+            TrnSeries: trnSeries,
+            TrnNo: trnNo,
+            SysAcCode: sysAcCode
+          },
+          update: {
+            $set: doc,
+            $setOnInsert: { uploaded_at: new Date() }
+          },
+          upsert: true
+        }
+      });
+    }
+
+    if (operations.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid outstanding bills to upload',
+        inserted: 0,
+        updated: 0,
+        skipped: errors.length,
+        errors: errors.slice(0, 20)
+      });
+    }
+
+    const result = await collections.outstanding.bulkWrite(operations, { ordered: false });
+
+    return res.json({
+      success: true,
+      message: 'Outstanding bulk upload completed',
+      received: bills.length,
+      valid: operations.length,
+      inserted: result.upsertedCount || 0,
+      updated: result.modifiedCount || result.matchedCount || 0,
+      skipped: errors.length,
+      errors: errors.slice(0, 20)
+    });
+
+  } catch (error) {
+    console.error('Outstanding bulk upload fatal error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+// ==================== OUTSTANDING BILL LOAD FOR SALESMAN ====================
+app.get('/api/outstanding/salesman/:salesmanId', async (req, res) => {
+  try {
+    const { salesmanId } = req.params;
+    const distributorId = String(req.query.distributorId || '').trim();
+
+    if (!salesmanId || !distributorId) {
+      return res.status(400).json({
+        success: false,
+        message: 'salesmanId and distributorId required',
+        bills: []
+      });
+    }
+
+    const query = {
+      distributor_id: distributorId,
+      Bamt: { $gt: 0 },
+      SysAcCode: { $ne: '0' },
+      status: 'pending'
+    };
+
+    const bills = await collections.outstanding
+      .find({
+        ...query,
+        $or: [
+          { salesman_id: salesmanId },
+          { salesman_id: { $exists: false } },
+          { salesman_id: "" },
+          { salesman_id: null }
+        ]
+      })
+      .sort({ TrnDate: -1, TrnNo: -1 })
+      .toArray();
+
+    res.json({ success: true, bills });
+
+  } catch (error) {
+    console.error('Fetch outstanding error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+      bills: []
+    });
+  }
+});
+app.post('/api/outstanding/collect-payment', async (req, res) => {
+  try {
+    const distributorId = String(req.body.distributorId || '').trim();
+    const salesmanId = String(req.body.salesmanId || '').trim();
+
+    const billSeries = String(req.body.billSeries || '').trim();
+    const billNo = Number(req.body.billNo || 0);
+    const sysAcCode = String(req.body.sysAcCode || '').trim();
+
+    const oldBalance = Number(req.body.oldBalance || 0);
+    const amountCollected = Number(req.body.amountCollected || 0);
+    const balanceAfterPayment = oldBalance - amountCollected;
+    const cashAmount = Number(req.body.cashAmount || 0);
+    const chequeAmount = Number(req.body.chequeAmount || 0);
+
+    // Determine payment mode based on provided details
+    let paymentMode = req.body.paymentMode || 'Cash';
+    if (cashAmount > 0 && chequeAmount > 0) {
+      paymentMode = 'Cash+Cheque';
+    } else if (chequeAmount > 0) {
+      paymentMode = 'Cheque';
+    } else if (cashAmount > 0) {
+      paymentMode = 'Cash';
+    } else if (req.body.upiApp) {
+      paymentMode = 'UPI';
+    }
+
+    if (!distributorId || !salesmanId || !billSeries || !billNo || !sysAcCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Required bill/salesman/distributor details missing'
+      });
+    }
+
+    if (amountCollected <= 0 || amountCollected > oldBalance) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid collection amount'
+      });
+    }
+
+    const collectionId = generateCollectionId();
+
+    // Get salesman name if not provided
+    let salesmanName = req.body.salesmanName || '';
+    if (!salesmanName) {
+      const salesman = await collections.salesman.findOne({ salesman_id: salesmanId });
+      if (salesman) {
+        salesmanName = salesman.name;
+      } else {
+        const registerUser = await collections.register.findOne({ salesman_id: salesmanId });
+        if (registerUser) {
+          salesmanName = registerUser.fullName;
+        }
+      }
+    }
+
+    // Get distributor details
+    let distributorName = '';
+    const distributor = await collections.distributor.findOne({ distributor_id: distributorId });
+    if (distributor) {
+      distributorName = distributor.name;
+    }
+
+    // Build payment document matching the required structure
+    const paymentDoc = {
+      collection_id: collectionId,
+      collection_date: new Date().toISOString(),
+      distributor_id: distributorId,
+      salesman_details: {
+        id: salesmanId,
+        name: salesmanName || salesmanId
+      },
+      bill_details: {
+        bill_series: billSeries,
+        bill_no: billNo,
+        sys_ac_code: sysAcCode,
+        customer_name: req.body.customerName || '',
+        bill_amount: Number(req.body.billAmount || oldBalance),
+        old_balance: oldBalance,
+        amount_collected: amountCollected,
+        balance_after_payment: balanceAfterPayment < 0 ? 0 : balanceAfterPayment
+      },
+      payment_mode: paymentMode,
+      payment_details: {
+        cash_amount: cashAmount,
+        cheque_amount: chequeAmount,
+        cheque_number: req.body.chequeNumber || null,
+        cheque_date: req.body.chequeDate || null,
+        bank_name: req.body.bankName || null,
+        upi_app: req.body.upiApp || null,
+        transaction_number: req.body.transactionNumber || null
+      },
+      amount_collected: amountCollected,
+      remark: req.body.remark || '',
+      status: 'completed',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+
+    // Insert into mas_payment collection
+    const paymentResult = await collections.payment.insertOne(paymentDoc);
+    console.log(`✅ Payment saved to mas_payment with ID: ${paymentResult.insertedId}, Collection ID: ${collectionId}`);
+
+    // Update outstanding bill
+    await collections.outstanding.updateOne(
+      {
+        distributor_id: distributorId,
+        salesman_id: salesmanId,
+        TrnSeries: billSeries,
+        TrnNo: billNo,
+        SysAcCode: sysAcCode
+      },
+      {
+        $set: {
+          Bamt: balanceAfterPayment < 0 ? 0 : balanceAfterPayment,
+          payment_status: balanceAfterPayment <= 0 ? 'paid' : 'partial',
+          last_payment_date: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        },
+        $inc: {
+          collected_amount: amountCollected
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: 'Outstanding payment saved successfully',
+      payment_id: paymentResult.insertedId,
+      collection_id: collectionId,
+      new_balance: balanceAfterPayment < 0 ? 0 : balanceAfterPayment
+    });
+  } catch (error) {
+    console.error('Outstanding payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
 app.listen(PORT, async () => {
     await connectToMongoDB();
     console.log(`Server running on http://localhost:${PORT}`);
