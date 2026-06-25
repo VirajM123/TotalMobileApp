@@ -650,9 +650,9 @@ class CartItemData {
 // ==================== API Service for backend communication ====================
 class ApiService {
   static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
-  
+
   static String get apiUrl {
-    return _remoteBaseUrl;
+    return _localBaseUrl;
   }
 
   // ==================== GLOBAL SEARCH API ====================
@@ -741,7 +741,53 @@ class ApiService {
       throw Exception('Error adding product: $e');
     }
   }
+static Future<List<dynamic>> getOutstandingBillsForSalesman(
+  String salesmanId,
+  String distributorId,
+) async {
+  try {
+    final url =
+        '$apiUrl/outstanding/salesman/$salesmanId?distributorId=$distributorId';
 
+    print('Outstanding API URL: $url');
+
+    final response = await http.get(Uri.parse(url));
+
+    print('Outstanding status: ${response.statusCode}');
+    print('Outstanding body: ${response.body}');
+
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      return data['bills'] ?? [];
+    }
+
+    return [];
+  } catch (e) {
+    print('Error fetching outstanding bills: $e');
+    return [];
+  }
+}
+static Future<Map<String, dynamic>> collectOutstandingPayment(
+  Map<String, dynamic> paymentData,
+) async {
+  try {
+    final response = await http.post(
+      Uri.parse('$apiUrl/outstanding/collect-payment'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode(paymentData),
+    );
+
+    final data = json.decode(response.body);
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      return data;
+    }
+
+    throw Exception(data['message'] ?? data['error'] ?? 'Payment failed');
+  } catch (e) {
+    throw Exception('Error processing payment: $e');
+  }
+}
   static Future<List<dynamic>> getProducts(String distributorId) async {
     try {
       final response = await http.get(
@@ -2409,13 +2455,13 @@ class _ChangePasswordDialogState extends State<ChangePasswordDialog> {
   bool _obscureNew = true;
   bool _obscureConfirm = true;
 
-  @override
-  void dispose() {
-    _currentPasswordController.dispose();
-    _newPasswordController.dispose();
-    _confirmPasswordController.dispose();
-    super.dispose();
-  }
+@override
+void dispose() {
+  _currentPasswordController.dispose();
+  _newPasswordController.dispose();
+  _confirmPasswordController.dispose();
+  super.dispose();
+}
 
   Future<void> _changePassword() async {
     final userId = widget.isDistributor && _selectedUserId != null
@@ -4371,68 +4417,91 @@ class _DistributorDashboardEnhancedState extends State<DistributorDashboardEnhan
   }
 
   Future<void> _submitEditOrder() async {
-    if (_orderToEdit == null || _editCart.isEmpty) return;
+  if (_orderToEdit == null || _editCart.isEmpty) return;
+  
+  setState(() => _isLoading = true);
+  
+  try {
+    final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
     
-    setState(() => _isLoading = true);
+    // Calculate new totals from edit cart
+    final newTotalAmount = _getEditCartTotal();
+    final newPaidAmount = _orderToEdit!.paidAmount;
+    final newDueAmount = newTotalAmount - newPaidAmount;
     
-    try {
-      final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
-      
-      final updatedOrder = OrderModel(
-        id: _orderToEdit!.id,
-        orderNumber: _orderToEdit!.orderNumber,
-        customerId: _selectedCustomerId!,
-        customerName: customer.name,
-        customerPhone: customer.phone ?? customer.mobile ?? '',
-        areaName: customer.area,
-        routeName: customer.route ?? '',
-        salesmanId: _orderToEdit!.salesmanId,
-        salesmanName: _orderToEdit!.salesmanName,
-        items: _editCart.entries.map((entry) {
-          final item = entry.value;
-          return OrderItemModel(
-            id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
-            productId: item.productId,
-            productName: item.productName,
-            sku: item.sku,
-            quantity: item.quantity,
-            rate: item.rate,
-            amount: item.netAmt,
-            mrp: item.mrp,
-          );
-        }).toList(),
-        totalAmount: _getEditCartTotal(),
-        paidAmount: _orderToEdit!.paidAmount,
-        dueAmount: _getEditCartTotal() - _orderToEdit!.paidAmount,
-        status: _orderToEdit!.status,
-        orderType: _orderToEdit!.orderType,
-        paymentMode: _selectedPaymentMode,
-        scheduledDate: _orderToEdit!.scheduledDate,
-        notes: _orderNotes,
-        internalNotes: _orderToEdit!.internalNotes,
-        createdAt: _orderToEdit!.createdAt,
-        timeline: _orderToEdit!.timeline,
-      );
-      
-      await _orderService.editOrder(updatedOrder);
-      await _loadData();
-      
-      if (mounted) {
-        showSafeSnackBar(context, '✅ Order updated successfully!', backgroundColor: successGreen);
-        setState(() {
-          _orderToEdit = null;
-          _isEditingOrder = false;
-          _editCart.clear();
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        showSafeSnackBar(context, 'Error updating order: $e', backgroundColor: errorRed);
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+    // Determine new status based on payment
+    OrderStatus newStatus = _orderToEdit!.status;
+    if (newDueAmount <= 0) {
+      newStatus = OrderStatus.delivered;
     }
+    
+    final updatedOrder = OrderModel(
+      id: _orderToEdit!.id,
+      orderNumber: _orderToEdit!.orderNumber,
+      customerId: _selectedCustomerId!,
+      customerName: customer.name,
+      customerPhone: customer.phone ?? customer.mobile ?? '',
+      areaName: customer.area,
+      routeName: customer.route ?? '',
+      salesmanId: _orderToEdit!.salesmanId,
+      salesmanName: _orderToEdit!.salesmanName,
+      items: _editCart.entries.map((entry) {
+        final item = entry.value;
+        return OrderItemModel(
+          id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
+          productId: item.productId,
+          productName: item.productName,
+          sku: item.sku,
+          quantity: item.quantity,
+          rate: item.rate,
+          amount: item.netAmt,
+          mrp: item.mrp,
+        );
+      }).toList(),
+      totalAmount: newTotalAmount,
+      paidAmount: newPaidAmount,
+      dueAmount: newDueAmount,
+      status: newStatus,
+      orderType: _orderToEdit!.orderType,
+      paymentMode: _selectedPaymentMode,
+      scheduledDate: _orderToEdit!.scheduledDate,
+      notes: _orderNotes,
+      internalNotes: _orderToEdit!.internalNotes,
+      createdAt: _orderToEdit!.createdAt,
+      timeline: _orderToEdit!.timeline,
+    );
+    
+    // Call the API to update the order
+    await _orderService.editOrder(updatedOrder);
+    
+    // Update local orders list
+    final index = _orders.indexWhere((o) => o.id == _orderToEdit!.id);
+    if (index != -1) {
+      setState(() {
+        _orders[index] = updatedOrder;
+      });
+    }
+    
+    if (mounted) {
+      showSafeSnackBar(context, '✅ Order updated successfully!', backgroundColor: successGreen);
+      setState(() {
+        _orderToEdit = null;
+        _isEditingOrder = false;
+        _editCart.clear();
+        _selectedCustomerId = null;
+        _selectedPaymentMode = PaymentMode.credit;
+        _orderNotes = '';
+      });
+    }
+  } catch (e) {
+    print('Error editing order: $e');
+    if (mounted) {
+      showSafeSnackBar(context, 'Error updating order: ${e.toString().replaceAll('Exception: ', '')}', backgroundColor: errorRed);
+    }
+  } finally {
+    if (mounted) setState(() => _isLoading = false);
   }
+}
 
   Future<void> _deleteOrder(OrderModel order) async {
     final confirmed = await showDialog<bool>(
@@ -10305,12 +10374,12 @@ Widget _buildProductSelectionStepWithScheme() {
     );
   }
 
-  Widget _buildPaymentCollectionSection() {
-    final ordersWithDue = _orders
-        .where((o) => o.dueAmount > 0 && o.status != OrderStatus.cancelled)
-        .toList();
+ Widget _buildPaymentCollectionSection() {
+  final ordersWithDue = _orders
+      .where((o) => o.dueAmount > 0 && o.status != OrderStatus.cancelled)
+      .toList();
 
-    return Column(
+  return Column(
       children: [
         Container(
           padding: const EdgeInsets.all(16),
@@ -10527,28 +10596,43 @@ Widget _buildProductSelectionStepWithScheme() {
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  children: [
-                    ChoiceChip(
-                      label: const Text('Cash'),
-                      selected: selectedMode == PaymentMode.cash,
-                      onSelected: (_) => setDialogState(() => selectedMode = PaymentMode.cash),
-                    ),
-                    ChoiceChip(
-                      label: const Text('UPI'),
-                      selected: selectedMode == PaymentMode.upi,
-                      onSelected: (_) => setDialogState(() => selectedMode = PaymentMode.upi),
-                    ),
-                    ChoiceChip(
-                      label: const Text('Cheque'),
-                      selected: selectedMode == PaymentMode.cheque,
-                      onSelected: (_) => setDialogState(() => selectedMode = PaymentMode.cheque),
-                    ),
-                  ],
-                ),
+               Wrap(
+  spacing: 8,
+  runSpacing: 8,
+  children: [
+    ChoiceChip(
+      label: const Text('Cash'),
+      selected: selectedMode == PaymentMode.cash,
+      onSelected: (_) => setDialogState(() {
+        selectedMode = PaymentMode.cash;
+      }),
+    ),
+    ChoiceChip(
+      label: const Text('UPI'),
+      selected: selectedMode == PaymentMode.upi,
+      onSelected: (_) => setDialogState(() {
+        selectedMode = PaymentMode.upi;
+      }),
+    ),
+    ChoiceChip(
+      label: const Text('Cheque'),
+      selected: selectedMode == PaymentMode.cheque,
+      onSelected: (_) => setDialogState(() {
+        selectedMode = PaymentMode.cheque;
+      }),
+    ),
+    ChoiceChip(
+      label: const Text('Cash+Cheque'),
+      selected: selectedMode == PaymentMode.chequeWithCash,
+      onSelected: (_) => setDialogState(() {
+        selectedMode = PaymentMode.chequeWithCash;
+      }),
+    ),
+  ],
+),
                 const SizedBox(height: 16),
-                if (selectedMode == PaymentMode.cheque) ...[
+               if (selectedMode == PaymentMode.cheque ||
+    selectedMode == PaymentMode.chequeWithCash) ...[
                   const Text(
                     'Cheque Details:',
                     style: TextStyle(fontWeight: FontWeight.bold),
@@ -10741,8 +10825,11 @@ Widget _buildProductSelectionStepWithScheme() {
 // ==================== SALESMAN DASHBOARD ====================
 class SalesmanDashboardEnhanced extends StatefulWidget {
   final UserModel? loggedInUser;
-  
-  const SalesmanDashboardEnhanced({super.key, this.loggedInUser});
+
+  const SalesmanDashboardEnhanced({
+    super.key,
+    this.loggedInUser,
+  });
 
   @override
   State<SalesmanDashboardEnhanced> createState() =>
@@ -10756,6 +10843,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   static const Color successGreen = Color(0xFF4CAF50);
   static const Color warningOrange = Color(0xFFFF9800);
 
+
+
   int _selectedIndex = 0;
   bool _isSidebarOpen = false;
   bool _isLoading = true;
@@ -10767,6 +10856,11 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   List<OrderModel> _orders = [];
   Map<String, dynamic> _permissions = {};
   List<CollectionHistoryModel> _collectionHistory = [];
+  List<dynamic> _outstandingBills = [];
+  final TextEditingController _outstandingSearchController =
+    TextEditingController();
+
+String _outstandingSearchQuery = '';
 
   final Map<String, CartItemData> _cart = {};
 
@@ -10832,6 +10926,443 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     _loadBankAndUpiLists();
     _loadCollectionHistory();
   }
+   // ==================== ADD HELPER METHOD HERE ====================
+  // Helper method to filter outstanding bills
+  List<dynamic> _getFilteredOutstandingBills(List<dynamic> bills) {
+    final q = _outstandingSearchQuery.toLowerCase().trim();
+    
+    return bills.where((b) {
+      final series = (b['TrnSeries'] ?? '').toString().toLowerCase();
+      final billNo = (b['TrnNo'] ?? '').toString().toLowerCase();
+      final amount = (b['Amt'] ?? '').toString().toLowerCase();
+      final balance = (b['Bamt'] ?? '').toString().toLowerCase();
+
+      return q.isEmpty ||
+          series.contains(q) ||
+          billNo.contains(q) ||
+          amount.contains(q) ||
+          balance.contains(q);
+    }).toList();
+  }
+
+void _showOutstandingPaymentDialog(Map<String, dynamic> bill) {
+  final balance = ((bill['Bamt'] ?? 0) as num).toDouble();
+  final billAmount = ((bill['Amt'] ?? bill['Bamt'] ?? 0) as num).toDouble();
+
+  final amountController =
+      TextEditingController(text: balance.toStringAsFixed(0));
+  final cashController = TextEditingController();
+  final chequeAmountController = TextEditingController();
+  final chequeNoController = TextEditingController();
+  final chequeDateController = TextEditingController();
+  final transactionController = TextEditingController();
+  final remarkController = TextEditingController();
+
+  String selectedMode = 'Cash';
+  String? selectedUpiApp;
+  String? selectedBank;
+  XFile? paymentPhoto;
+  double balanceAfterPayment = balance;
+
+  Future<void> pickDate(
+    BuildContext context,
+    TextEditingController controller,
+    StateSetter setDialogState,
+  ) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+    );
+
+    if (picked != null) {
+      setDialogState(() {
+        controller.text = picked.toIso8601String().split('T').first;
+      });
+    }
+  }
+
+  showDialog(
+    context: context,
+    builder: (context) {
+      return StatefulBuilder(
+        builder: (context, setDialogState) {
+          void updateBalance() {
+            double amount = 0;
+
+            if (selectedMode == 'Cash+Cheque') {
+              amount = (double.tryParse(cashController.text.trim()) ?? 0) +
+                  (double.tryParse(chequeAmountController.text.trim()) ?? 0);
+            } else {
+              amount = double.tryParse(amountController.text.trim()) ?? 0;
+            }
+
+            setDialogState(() {
+              balanceAfterPayment = balance - amount;
+            });
+          }
+
+          Widget modeButton(String mode) {
+            final selected = selectedMode == mode;
+
+            return ChoiceChip(
+              selected: selected,
+              label: Text(mode),
+              avatar: selected ? const Icon(Icons.check, size: 18) : null,
+              onSelected: (_) {
+                setDialogState(() {
+                  selectedMode = mode;
+                  selectedUpiApp = null;
+                  selectedBank = null;
+                  balanceAfterPayment = balance;
+                  amountController.text = balance.toStringAsFixed(0);
+                  cashController.clear();
+                  chequeAmountController.clear();
+                  chequeNoController.clear();
+                  chequeDateController.clear();
+                  transactionController.clear();
+                });
+              },
+            );
+          }
+
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(22),
+            ),
+            title: Text(
+              'Collect Payment -\n${bill['orderNumber'] ?? '${bill['TrnSeries']}/${bill['TrnNo']}'}',
+              style: const TextStyle(fontSize: 24),
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Total: ₹${billAmount.toStringAsFixed(0)} | Paid: ₹0',
+                    style: const TextStyle(fontSize: 16),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Balance Due: ₹${balance.toStringAsFixed(0)}',
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: warningOrange,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Customer Outstanding: ₹${balance.toStringAsFixed(0)}',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: errorRed,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+
+                  if (selectedMode != 'Cash+Cheque')
+                    TextField(
+                      controller: amountController,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => updateBalance(),
+                      decoration: const InputDecoration(
+                        labelText: 'Amount to Collect',
+                        prefixText: '₹ ',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+
+                  if (selectedMode == 'Cash+Cheque') ...[
+                    TextField(
+                      controller: cashController,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => updateBalance(),
+                      decoration: const InputDecoration(
+                        labelText: 'Cash Amount *',
+                        prefixText: '₹ ',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: chequeAmountController,
+                      keyboardType: TextInputType.number,
+                      onChanged: (_) => updateBalance(),
+                      decoration: const InputDecoration(
+                        labelText: 'Cheque Amount *',
+                        prefixText: '₹ ',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ],
+
+                  const SizedBox(height: 8),
+                  Text(
+                    'Balance after payment: ₹${balanceAfterPayment.toStringAsFixed(0)}',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: warningOrange,
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+
+                  const Text(
+                    'Payment Mode:',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      modeButton('Cash'),
+                      modeButton('UPI'),
+                      modeButton('Cheque'),
+                      modeButton('Cash+Cheque'),
+                    ],
+                  ),
+
+                  const SizedBox(height: 18),
+
+                  if (selectedMode == 'UPI') ...[
+                    const Text(
+                      'UPI Details:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<String>(
+                      value: selectedUpiApp,
+                      decoration: const InputDecoration(
+                        labelText: 'UPI App *',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: const [
+                        'GPay',
+                        'PhonePe',
+                        'Paytm',
+                        'Amazon Pay',
+                        'WhatsApp Pay',
+                        'Other',
+                      ].map((e) {
+                        return DropdownMenuItem(value: e, child: Text(e));
+                      }).toList(),
+                      onChanged: (v) {
+                        setDialogState(() => selectedUpiApp = v);
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: transactionController,
+                      decoration: const InputDecoration(
+                        labelText: 'Transaction Number *',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            paymentPhoto == null
+                                ? 'No photo selected'
+                                : 'Photo selected',
+                            style: const TextStyle(color: Colors.grey),
+                          ),
+                        ),
+                        ElevatedButton.icon(
+                          icon: const Icon(Icons.camera_alt),
+                          label: const Text('Add Photo'),
+                          onPressed: () async {
+                            final picker = ImagePicker();
+                            final img = await picker.pickImage(
+                              source: ImageSource.gallery,
+                            );
+                            if (img != null) {
+                              setDialogState(() => paymentPhoto = img);
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+
+                  if (selectedMode == 'Cheque' ||
+                      selectedMode == 'Cash+Cheque') ...[
+                    const Text(
+                      'Cheque Details:',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: chequeNoController,
+                      decoration: const InputDecoration(
+                        labelText: 'Cheque Number *',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: chequeDateController,
+                      readOnly: true,
+                      onTap: () =>
+                          pickDate(context, chequeDateController, setDialogState),
+                      decoration: const InputDecoration(
+                        labelText: 'Cheque Date *',
+                        border: OutlineInputBorder(),
+                        suffixIcon: Icon(Icons.calendar_month),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<String>(
+                      value: selectedBank,
+                      decoration: const InputDecoration(
+                        labelText: 'Bank Name *',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: _banksList.map((b) {
+                        return DropdownMenuItem<String>(
+                          value: b,
+                          child: Text(b),
+                        );
+                      }).toList(),
+                      onChanged: (v) {
+                        setDialogState(() => selectedBank = v);
+                      },
+                    ),
+                  ],
+
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: remarkController,
+                    maxLines: 2,
+                    decoration: const InputDecoration(
+                      labelText: 'Remark (Optional)',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  double amount = 0;
+                  double cashAmount = 0;
+                  double chequeAmount = 0;
+
+                  if (selectedMode == 'Cash+Cheque') {
+                    cashAmount =
+                        double.tryParse(cashController.text.trim()) ?? 0;
+                    chequeAmount =
+                        double.tryParse(chequeAmountController.text.trim()) ?? 0;
+                    amount = cashAmount + chequeAmount;
+                  } else {
+                    amount =
+                        double.tryParse(amountController.text.trim()) ?? 0;
+                    cashAmount = selectedMode == 'Cash' ? amount : 0;
+                    chequeAmount = selectedMode == 'Cheque' ? amount : 0;
+                  }
+
+                  if (amount <= 0 || amount > balance) {
+                    showSafeSnackBar(
+                      context,
+                      'Enter valid amount',
+                      backgroundColor: errorRed,
+                    );
+                    return;
+                  }
+
+                  if (selectedMode == 'UPI' &&
+                      (selectedUpiApp == null ||
+                          transactionController.text.trim().isEmpty)) {
+                    showSafeSnackBar(
+                      context,
+                      'Enter UPI details',
+                      backgroundColor: errorRed,
+                    );
+                    return;
+                  }
+
+                  if ((selectedMode == 'Cheque' ||
+                          selectedMode == 'Cash+Cheque') &&
+                      (chequeNoController.text.trim().isEmpty ||
+                          chequeDateController.text.trim().isEmpty ||
+                          selectedBank == null)) {
+                    showSafeSnackBar(
+                      context,
+                      'Enter cheque details',
+                      backgroundColor: errorRed,
+                    );
+                    return;
+                  }
+
+                  try {
+                    Navigator.pop(context);
+                    setState(() => _isLoading = true);
+ // 🔽 THIS IS THE BLOCK YOU NEED TO REPLACE 🔽
+        await ApiService.collectOutstandingPayment({
+          'distributorId': _currentSalesman.distributorId,
+          'salesmanId': _currentSalesman.salesmanId,
+          'salesmanName': _currentSalesman.name,
+          'billSeries': bill['TrnSeries'],
+          'billNo': bill['TrnNo'],
+          'sysAcCode': bill['SysAcCode'],
+          'customerName':
+              bill['customer_name'] ?? bill['CustomerName'] ?? '',
+          'billAmount': billAmount,
+          'oldBalance': balance,
+          'amountCollected': amount,
+          'balanceAfterPayment': balance - amount,
+          'paymentMode': selectedMode,
+          'cashAmount': cashAmount,
+          'chequeAmount': chequeAmount,
+          'chequeNumber': chequeNoController.text.trim(),
+          'chequeDate': chequeDateController.text.trim(),
+          'bankName': selectedBank,
+          'upiApp': selectedUpiApp,
+          'transactionNumber': transactionController.text.trim(),
+          'paymentPhotoPath': paymentPhoto?.path,
+          'remark': remarkController.text.trim(),
+        });
+        // 🔼 END OF BLOCK TO REPLACE 🔼
+
+                    await _loadData();
+
+                    showSafeSnackBar(
+                      context,
+                      'Payment collected successfully',
+                      backgroundColor: successGreen,
+                    );
+                  } catch (e) {
+                    showSafeSnackBar(
+                      context,
+                      'Payment failed: $e',
+                      backgroundColor: errorRed,
+                    );
+                  } finally {
+                    if (mounted) {
+                      setState(() => _isLoading = false);
+                    }
+                  }
+                },
+                child: const Text('Collect'),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+}
 
   Future<void> _loadBankAndUpiLists() async {
     final banks = await ApiService.getBanks();
@@ -10852,109 +11383,139 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       print('Error loading collection history: $e');
     }
   }
+Future<void> _loadData() async {
+  setState(() => _isLoading = true);
 
-  Future<void> _loadData() async {
-    setState(() => _isLoading = true);
-    
-    try {
-      if (_currentSalesman.salesmanId != null) {
-        final data = await ApiService.getSalesmanData(_currentSalesman.salesmanId!);
-        
-        print('Salesman data loaded: ${data['customers']?.length ?? 0} customers, ${data['products']?.length ?? 0} products');
-        
-        setState(() {
-          _customers = (data['customers'] as List?)?.map((c) {
-            final id = c['_id']?.toString() ?? '';
-            return CustomerModel.fromMap(c, id);
-          }).toList() ?? [];
-          
-          _products = (data['products'] as List?)?.map((p) {
-            final id = p['_id']?.toString() ?? '';
-            return ProductModel.fromMap(p, id);
-          }).toList() ?? [];
-          
-          print('Loaded ${_products.length} products for salesman');
-          
-          _orders = (data['orders'] as List?)?.map((o) {
-            final id = o['_id']?.toString() ?? '';
-            return OrderModel(
-              id: id,
-              orderNumber: o['orderNumber'] ?? '',
-              customerId: o['customerId'] ?? '',
-              customerName: o['customerName'] ?? '',
-              customerPhone: o['customerPhone'] ?? '',
-              areaName: o['areaName'] ?? '',
-              routeName: o['routeName'] ?? '',
-              salesmanId: o['salesman_id'] ?? o['salesmanId'] ?? '',
-              salesmanName: o['salesmanName'] ?? '',
-              items: (o['items'] as List?)?.map((item) => OrderItemModel(
-                id: item['id'] ?? '',
-                productId: item['productId'] ?? '',
-                productName: item['productName'] ?? '',
-                sku: item['sku'] ?? '',
-                quantity: item['quantity'] ?? 0,
-                rate: (item['rate'] ?? 0).toDouble(),
-                amount: (item['amount'] ?? 0).toDouble(),
-                mrp: (item['mrp'] ?? 0).toDouble(),
-              )).toList() ?? [],
-              totalAmount: (o['grand_total'] ?? o['totalAmount'] ?? 0).toDouble(),
-              paidAmount: (o['paidAmount'] ?? 0).toDouble(),
-              dueAmount: (o['dueAmount'] ?? 0).toDouble(),
-              status: _parseOrderStatus(o['status'] ?? 'pending'),
-              orderType: _parseOrderType(o['orderType'] ?? 'regular'),
-              paymentMode: o['paymentMode'] != null ? _parsePaymentMode(o['paymentMode']) : null,
-              scheduledDate: o['scheduledDate'] != null ? DateTime.tryParse(o['scheduledDate']) : null,
-              notes: o['notes'],
-              internalNotes: o['internalNotes'],
-              createdAt: o['createdAt'] != null ? DateTime.parse(o['createdAt']) : DateTime.now(),
-              timeline: [],
-            );
-          }).toList() ?? [];
-          
-          _collectionHistory = (data['collectionHistory'] as List?)?.map((c) {
-            final id = c['_id']?.toString() ?? '';
-            return CollectionHistoryModel.fromMap(c, id);
-          }).toList() ?? [];
-          
-          _permissions = data['permissions'] ?? {
-            'canAddProduct': false,
-            'canEditProduct': false,
-            'canDeleteProduct': false,
-            'canAddCustomer': false,
-            'canEditCustomer': false,
-            'canDeleteCustomer': false,
-            'canViewOrders': true,
-            'canCreateOrder': true,
-            'canCollectPayment': true,
-            'canEditOrder': false,
-            'canDeleteOrder': false,
-          };
-        });
-      }
-    } catch (e) {
-      print('Error loading salesman data: $e');
+  try {
+    if (_currentSalesman.salesmanId != null) {
+      final data =
+          await ApiService.getSalesmanData(_currentSalesman.salesmanId!);
+
+      final outstandingBills =
+          await ApiService.getOutstandingBillsForSalesman(
+        _currentSalesman.salesmanId!,
+        _currentSalesman.distributorId ?? data['distributorId'] ?? '',
+      );
+
+      print(
+        'Salesman data loaded: ${data['customers']?.length ?? 0} customers, ${data['products']?.length ?? 0} products',
+      );
+
+      print('Outstanding bills loaded: ${outstandingBills.length}');
+
       setState(() {
-        _customers = [];
-        _products = [];
-        _orders = [];
-        _permissions = {
-          'canAddProduct': false,
-          'canEditProduct': false,
-          'canDeleteProduct': false,
-          'canAddCustomer': false,
-          'canEditCustomer': false,
-          'canDeleteCustomer': false,
-          'canViewOrders': true,
-          'canCreateOrder': true,
-          'canCollectPayment': true,
-          'canEditOrder': false,
-          'canDeleteOrder': false,
-        };
+        _customers = (data['customers'] as List?)?.map((c) {
+              final id = c['_id']?.toString() ?? '';
+              return CustomerModel.fromMap(c, id);
+            }).toList() ??
+            [];
+
+        _products = (data['products'] as List?)?.map((p) {
+              final id = p['_id']?.toString() ?? '';
+              return ProductModel.fromMap(p, id);
+            }).toList() ??
+            [];
+
+        print('Loaded ${_products.length} products for salesman');
+
+        _orders = (data['orders'] as List?)?.map((o) {
+              final id = o['_id']?.toString() ?? '';
+              return OrderModel(
+                id: id,
+                orderNumber: o['orderNumber'] ?? '',
+                customerId: o['customerId'] ?? '',
+                customerName: o['customerName'] ?? '',
+                customerPhone: o['customerPhone'] ?? '',
+                areaName: o['areaName'] ?? '',
+                routeName: o['routeName'] ?? '',
+                salesmanId: o['salesman_id'] ?? o['salesmanId'] ?? '',
+                salesmanName: o['salesmanName'] ?? '',
+                items: (o['items'] as List?)
+                        ?.map(
+                          (item) => OrderItemModel(
+                            id: item['id'] ?? '',
+                            productId: item['productId'] ?? '',
+                            productName: item['productName'] ?? '',
+                            sku: item['sku'] ?? '',
+                            quantity: item['quantity'] ?? 0,
+                            rate: (item['rate'] ?? 0).toDouble(),
+                            amount: (item['amount'] ?? 0).toDouble(),
+                            mrp: (item['mrp'] ?? 0).toDouble(),
+                          ),
+                        )
+                        .toList() ??
+                    [],
+                totalAmount:
+                    (o['grand_total'] ?? o['totalAmount'] ?? 0).toDouble(),
+                paidAmount: (o['paidAmount'] ?? 0).toDouble(),
+                dueAmount: (o['dueAmount'] ?? 0).toDouble(),
+                status: _parseOrderStatus(o['status'] ?? 'pending'),
+                orderType: _parseOrderType(o['orderType'] ?? 'regular'),
+                paymentMode: o['paymentMode'] != null
+                    ? _parsePaymentMode(o['paymentMode'])
+                    : null,
+                scheduledDate: o['scheduledDate'] != null
+                    ? DateTime.tryParse(o['scheduledDate'])
+                    : null,
+                notes: o['notes'],
+                internalNotes: o['internalNotes'],
+                createdAt: o['createdAt'] != null
+                    ? DateTime.parse(o['createdAt'])
+                    : DateTime.now(),
+                timeline: [],
+              );
+            }).toList() ??
+            [];
+
+        _collectionHistory = (data['collectionHistory'] as List?)?.map((c) {
+              final id = c['_id']?.toString() ?? '';
+              return CollectionHistoryModel.fromMap(c, id);
+            }).toList() ??
+            [];
+
+        _outstandingBills = outstandingBills;
+
+        _permissions = data['permissions'] ??
+            {
+              'canAddProduct': false,
+              'canEditProduct': false,
+              'canDeleteProduct': false,
+              'canAddCustomer': false,
+              'canEditCustomer': false,
+              'canDeleteCustomer': false,
+              'canViewOrders': true,
+              'canCreateOrder': true,
+              'canCollectPayment': true,
+              'canEditOrder': false,
+              'canDeleteOrder': false,
+            };
       });
-    } finally {
-      setState(() => _isLoading = false);
     }
+  } catch (e) {
+    print('Error loading salesman data: $e');
+    setState(() {
+      _customers = [];
+      _products = [];
+      _orders = [];
+      _outstandingBills = [];
+      _permissions = {
+        'canAddProduct': false,
+        'canEditProduct': false,
+        'canDeleteProduct': false,
+        'canAddCustomer': false,
+        'canEditCustomer': false,
+        'canDeleteCustomer': false,
+        'canViewOrders': true,
+        'canCreateOrder': true,
+        'canCollectPayment': true,
+        'canEditOrder': false,
+        'canDeleteOrder': false,
+      };
+    });
+  } finally {
+    setState(() => _isLoading = false);
   }
+}
 
   OrderStatus _parseOrderStatus(String status) {
     switch (status.toLowerCase()) {
@@ -11230,7 +11791,6 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       _orderNotes = '';
     });
   }
-
 void _showEditOrderDialog(OrderModel order) {
   setState(() {
     _orderToEdit = order;
@@ -11238,20 +11798,25 @@ void _showEditOrderDialog(OrderModel order) {
     _editCart.clear();
     
     for (var item in order.items) {
-      final product = _products.firstWhere(
-        (p) => p.id == item.productId,
-        orElse: () => ProductModel(
+      // Safely find product - if not found, create from order item data
+      ProductModel? product;
+      try {
+        product = _products.firstWhere((p) => p.id == item.productId);
+      } catch (e) {
+        // Product not found in local list - create a temporary product from order item
+        print('Product ${item.productId} not found in local list, creating from order data');
+        product = ProductModel(
           id: item.productId,
           name: item.productName,
           sku: item.sku,
           price: item.rate,
-          mrp: item.rate,
+          mrp: item.mrp ?? item.rate,
           category: '',
-          stock: 0,
+          stock: 999, // Assume sufficient stock when not found
           createdAt: DateTime.now(),
           updatedAt: DateTime.now(),
-        ),
-      );
+        );
+      }
       
       _editCart[item.productId] = CartItemData(
         productId: item.productId,
@@ -11260,7 +11825,7 @@ void _showEditOrderDialog(OrderModel order) {
         quantity: item.quantity,
         rate: item.rate,
         mrp: item.mrp ?? item.rate,
-        stock: product.stock,
+        stock: product!.stock,
         schEnabled: false,
       );
       _editCart[item.productId]!.calculate();
@@ -11278,6 +11843,11 @@ void _showEditOrderDialogInternal() {
   final TextEditingController _productSearchEditController = TextEditingController();
   String _productSearchEditQuery = '';
   Map<String, TextEditingController> _editQuantityControllers = {};
+  
+  // Make sure we have the correct customer selected
+  if (_selectedCustomerId == null && _orderToEdit != null) {
+    _selectedCustomerId = _orderToEdit!.customerId;
+  }
   
   showDialog(
     context: context,
@@ -11675,69 +12245,112 @@ void _showEditOrderDialogInternal() {
   }
 
   Future<void> _submitEditOrder() async {
-    if (_orderToEdit == null || _editCart.isEmpty) return;
-    
-    setState(() => _isLoading = true);
-    
+  if (_orderToEdit == null || _editCart.isEmpty) return;
+  
+  setState(() => _isLoading = true);
+  
+  try {
+    // FIXED: Handle case where customer might not be found in local list
+    CustomerModel? customer;
     try {
-      final customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
-      
-      final updatedOrder = OrderModel(
-        id: _orderToEdit!.id,
-        orderNumber: _orderToEdit!.orderNumber,
-        customerId: _selectedCustomerId!,
-        customerName: customer.name,
-        customerPhone: customer.phone ?? customer.mobile ?? '',
-        areaName: customer.area,
-        routeName: customer.route ?? '',
-        salesmanId: _orderToEdit!.salesmanId,
-        salesmanName: _orderToEdit!.salesmanName,
-        items: _editCart.entries.map((entry) {
-          final item = entry.value;
-          return OrderItemModel(
-            id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
-            productId: item.productId,
-            productName: item.productName,
-            sku: item.sku,
-            quantity: item.quantity,
-            rate: item.rate,
-            amount: item.netAmt,
-            mrp: item.mrp,
-          );
-        }).toList(),
-        totalAmount: _getEditCartTotal(),
-        paidAmount: _orderToEdit!.paidAmount,
-        dueAmount: _getEditCartTotal() - _orderToEdit!.paidAmount,
-        status: _orderToEdit!.status,
-        orderType: _orderToEdit!.orderType,
-        paymentMode: _selectedPaymentMode,
-        scheduledDate: _orderToEdit!.scheduledDate,
-        notes: _orderNotes,
-        internalNotes: _orderToEdit!.internalNotes,
-        createdAt: _orderToEdit!.createdAt,
-        timeline: _orderToEdit!.timeline,
-      );
-      
-      await _orderService.editOrder(updatedOrder);
-      await _loadData();
-      
-      if (mounted) {
-        showSafeSnackBar(context, '✅ Order updated successfully!', backgroundColor: successGreen);
-        setState(() {
-          _orderToEdit = null;
-          _isEditingOrder = false;
-          _editCart.clear();
-        });
-      }
+      // Try to find customer in local list first
+      customer = _customers.firstWhere((c) => c.id == _selectedCustomerId);
     } catch (e) {
-      if (mounted) {
-        showSafeSnackBar(context, 'Error updating order: $e', backgroundColor: errorRed);
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+      // If customer not found, create a temporary customer from order data
+      print('Customer ${_orderToEdit!.customerId} not found in local list, using order data');
+      customer = CustomerModel(
+        id: _orderToEdit!.customerId,
+        name: _orderToEdit!.customerName,
+        phone: _orderToEdit!.customerPhone,
+        area: _orderToEdit!.areaName,
+        route: _orderToEdit!.routeName,
+        address: null,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        customerId: null,
+        createdBy: null,
+        distributorId: null,
+      );
     }
+    
+    // Calculate new totals from edit cart
+    final newTotalAmount = _getEditCartTotal();
+    final newPaidAmount = _orderToEdit!.paidAmount;
+    final newDueAmount = newTotalAmount - newPaidAmount;
+    
+    // Determine new status based on payment
+    OrderStatus newStatus = _orderToEdit!.status;
+    if (newDueAmount <= 0) {
+      newStatus = OrderStatus.delivered;
+    }
+    
+    final updatedOrder = OrderModel(
+      id: _orderToEdit!.id,
+      orderNumber: _orderToEdit!.orderNumber,
+      customerId: _selectedCustomerId!,
+      customerName: customer.name,
+      customerPhone: customer.phone ?? customer.mobile ?? _orderToEdit!.customerPhone,
+      areaName: customer.area,
+      routeName: customer.route ?? _orderToEdit!.routeName,
+      salesmanId: _orderToEdit!.salesmanId,
+      salesmanName: _orderToEdit!.salesmanName,
+      items: _editCart.entries.map((entry) {
+        final item = entry.value;
+        return OrderItemModel(
+          id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
+          productId: item.productId,
+          productName: item.productName,
+          sku: item.sku,
+          quantity: item.quantity,
+          rate: item.rate,
+          amount: item.netAmt,
+          mrp: item.mrp,
+        );
+      }).toList(),
+      totalAmount: newTotalAmount,
+      paidAmount: newPaidAmount,
+      dueAmount: newDueAmount,
+      status: newStatus,
+      orderType: _orderToEdit!.orderType,
+      paymentMode: _selectedPaymentMode,
+      scheduledDate: _orderToEdit!.scheduledDate,
+      notes: _orderNotes,
+      internalNotes: _orderToEdit!.internalNotes,
+      createdAt: _orderToEdit!.createdAt,
+      timeline: _orderToEdit!.timeline,
+    );
+    
+    // Call the API to update the order
+    await _orderService.editOrder(updatedOrder);
+    
+    // Update local orders list
+    final index = _orders.indexWhere((o) => o.id == _orderToEdit!.id);
+    if (index != -1) {
+      setState(() {
+        _orders[index] = updatedOrder;
+      });
+    }
+    
+    if (mounted) {
+      showSafeSnackBar(context, '✅ Order updated successfully!', backgroundColor: successGreen);
+      setState(() {
+        _orderToEdit = null;
+        _isEditingOrder = false;
+        _editCart.clear();
+        _selectedCustomerId = null;
+        _selectedPaymentMode = PaymentMode.credit;
+        _orderNotes = '';
+      });
+    }
+  } catch (e) {
+    print('Error editing order: $e');
+    if (mounted) {
+      showSafeSnackBar(context, 'Error updating order: ${e.toString().replaceAll('Exception: ', '')}', backgroundColor: errorRed);
+    }
+  } finally {
+    if (mounted) setState(() => _isLoading = false);
   }
-
+}
   Future<void> _deleteOrder(OrderModel order) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -12439,26 +13052,33 @@ void _showEditOrderDialogInternal() {
     );
   }
 
-  Widget _buildContent() {
-    switch (_selectedIndex) {
-      case 0:
-        return _buildDashboard();
-      case 1:
-        return _buildOrdersSection();
-      case 2:
-        return _buildCreateOrderSection();
-      case 3:
-        return _buildPaymentsSection();
-      case 4:
-        return _buildProductsSection();
-      case 5:
-        return _buildCustomersSection();
-      case 6:
-        return _buildCollectionHistorySection();
-      default:
-        return _buildDashboard();
-    }
+ Widget _buildContent() {
+  switch (_selectedIndex) {
+    case 0:
+      return _buildDashboard();
+
+    case 1:
+      return _buildOrdersSection();
+
+    case 2:
+      return _buildCreateOrderSection();
+
+    case 3:
+      return _buildCollectPaymentFromOutstanding();
+
+    case 4:
+      return _buildProductsSection();
+
+    case 5:
+      return _buildCustomersSection();
+
+    case 6:
+      return _buildCollectionHistorySection();
+
+    default:
+      return _buildDashboard();
   }
+}
 
   Widget _buildDashboard() {
     final totalRevenue = _orders
@@ -14275,121 +14895,423 @@ Widget _buildProductSelectionStepWithScheme() {
       ],
     );
   }
+Widget _buildCollectPaymentFromOutstanding() {
+  return FutureBuilder<List<dynamic>>(
+    future: ApiService.getOutstandingBillsForSalesman(
+      _currentSalesman.salesmanId ?? _currentSalesman.id,
+      _currentSalesman.distributorId ?? '',
+    ),
+    builder: (context, snapshot) {
+      if (snapshot.connectionState == ConnectionState.waiting) {
+        return const Center(child: CircularProgressIndicator());
+      }
 
-  Widget _buildPaymentsSection() {
-    final ordersWithDue = _orders
-        .where((o) => o.dueAmount > 0 && o.status != OrderStatus.cancelled)
-        .toList();
+      final bills = snapshot.data ?? [];
 
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          color: Colors.white,
-          child: const Text(
-            'Collect Payment',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: primaryBlue,
+      if (bills.isEmpty) {
+        return const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.check_circle, size: 60, color: successGreen),
+              SizedBox(height: 10),
+              Text(
+                'All payments collected!',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+              ),
+            ],
+          ),
+        );
+      }
+
+      // Filter bills based on search query
+      final filteredBills = _getFilteredOutstandingBills(bills);
+      
+      // SHOW ONLY FIRST 5 RECORDS when no search query
+      // Show all records when search is active
+      final displayBills = _outstandingSearchQuery.trim().isEmpty
+          ? filteredBills.take(5).toList()
+          : filteredBills;
+      
+      final totalDue = filteredBills.fold<double>(
+        0, 
+        (sum, b) => sum + ((b['Bamt'] ?? 0) as num).toDouble()
+      );
+      
+      final hiddenCount = filteredBills.length - displayBills.length;
+
+      return Column(
+        children: [
+          // Header
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: Colors.white,
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Payment Collection',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: primaryBlue,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: successGreen.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    '₹${totalDue.toStringAsFixed(0)} Due',
+                    style: const TextStyle(
+                      color: successGreen,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-        ),
-        Expanded(
-          child: ordersWithDue.isEmpty
-              ? const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.check_circle, size: 60, color: successGreen),
-                      SizedBox(height: 10),
-                      Text(
-                        'All payments collected!',
-                        style: TextStyle(color: Colors.grey, fontSize: 16),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: ordersWithDue.length,
-                  itemBuilder: (context, index) {
-                    final order = ordersWithDue[index];
-                    final customerOutstanding = _orders
-                        .where((o) => o.customerId == order.customerId && o.status != OrderStatus.cancelled)
-                        .fold(0.0, (sum, o) => sum + o.dueAmount);
-                    final paymentAmountController = TextEditingController();
-                    paymentAmountController.text = order.dueAmount.toStringAsFixed(0);
-                    
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                order.orderNumber,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: warningOrange.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Text(
-                                  '₹${order.dueAmount.toStringAsFixed(0)} due',
+          
+          // Search bar
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: Colors.white,
+            child: TextField(
+              controller: _outstandingSearchController,
+              decoration: InputDecoration(
+                hintText: 'Search by bill no, customer...',
+                prefixIcon: const Icon(Icons.search, color: primaryBlue),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                filled: true,
+                fillColor: Colors.grey[50],
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+              onChanged: (value) {
+                setState(() {
+                  _outstandingSearchQuery = value;
+                });
+              },
+              keyboardType: TextInputType.text,
+              textInputAction: TextInputAction.search,
+              onSubmitted: (value) {
+                setState(() {
+                  _outstandingSearchQuery = value;
+                });
+              },
+            ),
+          ),
+          
+          // Show "Searching..." hint when typing
+          if (_outstandingSearchQuery.trim().isNotEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              color: Colors.white,
+              child: Text(
+                'Found ${filteredBills.length} result(s)',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: filteredBills.isEmpty ? errorRed : successGreen,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          
+          // Show "Showing first 5 records" hint
+          if (_outstandingSearchQuery.trim().isEmpty && hiddenCount > 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              color: Colors.white,
+              child: Text(
+                'Showing first 5 of ${filteredBills.length} bills. Use search to find more.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.blue[600],
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          
+          // Bill List
+          Expanded(
+            child: displayBills.isEmpty
+                ? const Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.search_off, size: 60, color: Colors.grey),
+                        SizedBox(height: 10),
+                        Text(
+                          'No matching bills found',
+                          style: TextStyle(color: Colors.grey, fontSize: 16),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: displayBills.length,
+                    itemBuilder: (context, index) {
+                      final bill = displayBills[index];
+                      
+                      final amount = ((bill['Amt'] ?? 0) as num).toDouble();
+                      final balance = ((bill['Bamt'] ?? 0) as num).toDouble();
+                      final customerName = bill['customer_name'] ??
+                          bill['CustomerName'] ??
+                          bill['AcName'] ??
+                          bill['SysAcCode'] ??
+                          '';
+
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  '${bill['TrnSeries']}/${bill['TrnNo']}',
                                   style: const TextStyle(
-                                    color: warningOrange,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-                          Text('Customer: ${order.customerName}'),
-                          Text(
-                            'Total: ₹${order.totalAmount.toStringAsFixed(0)} | Paid: ₹${order.paidAmount.toStringAsFixed(0)}',
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Customer Outstanding: ₹${customerOutstanding.toStringAsFixed(0)}',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: errorRed,
-                              fontWeight: FontWeight.bold,
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: warningOrange.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: Text(
+                                    '₹${balance.toStringAsFixed(0)} due',
+                                    style: const TextStyle(
+                                      color: warningOrange,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
+                            Text('Customer: $customerName'),
+                            Text(
+                              'Bill Amount: ₹${amount.toStringAsFixed(0)}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey[600],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              'Customer Outstanding: ₹${balance.toStringAsFixed(0)}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: errorRed,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            ElevatedButton.icon(
+                              onPressed: () => _showOutstandingPaymentDialog(bill),
+                              icon: const Icon(Icons.payment, size: 16),
+                              label: const Text('Collect Payment'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: successGreen,
+                                minimumSize: const Size(double.infinity, 40),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      );
+    },
+  );
+}
+Widget _buildPaymentsSection() {
+  final filteredBills = _outstandingBills.where((b) {
+    final q = _outstandingSearchQuery.toLowerCase().trim();
+
+    final series = (b['TrnSeries'] ?? '').toString().toLowerCase();
+    final billNo = (b['TrnNo'] ?? '').toString().toLowerCase();
+    final amount = (b['Amt'] ?? '').toString().toLowerCase();
+    final balance = (b['Bamt'] ?? '').toString().toLowerCase();
+
+    return q.isEmpty ||
+        series.contains(q) ||
+        billNo.contains(q) ||
+        amount.contains(q) ||
+        balance.contains(q);
+  }).toList();
+
+  return Column(
+    children: [
+      Container(
+        padding: const EdgeInsets.all(16),
+        color: Colors.white,
+        child: Column(
+          children: [
+            const Text(
+              'Collect Payment',
+              style: TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                color: primaryBlue,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _outstandingSearchController,
+              decoration: InputDecoration(
+                hintText: 'Search by series, bill no, amount, balance',
+                prefixIcon: const Icon(Icons.search),
+                filled: true,
+                fillColor: const Color(0xFFF3F6FA),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+              onChanged: (v) => setState(() => _outstandingSearchQuery = v),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Outstanding Bills: ${filteredBills.length}',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: primaryBlue,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+
+      Expanded(
+        child: filteredBills.isEmpty
+            ? const Center(child: Text('No outstanding bills found'))
+            : ListView.builder(
+                padding: const EdgeInsets.all(14),
+                itemCount: filteredBills.length,
+                itemBuilder: (context, index) {
+                  final bill = filteredBills[index];
+
+                  final amount =
+                      ((bill['Amt'] ?? 0) as num).toDouble();
+                  final balance =
+                      ((bill['Bamt'] ?? 0) as num).toDouble();
+
+                  final customerName =
+                      bill['customer_name'] ??
+                      bill['CustomerName'] ??
+                      bill['AcName'] ??
+                      bill['SysAcCode'] ??
+                      '';
+
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 14),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.06),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                '${bill['TrnSeries']}/${bill['TrnNo']}',
+                                style: const TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 7,
+                              ),
+                              decoration: BoxDecoration(
+                                color: warningOrange.withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                '₹${balance.toStringAsFixed(0)} due',
+                                style: const TextStyle(
+                                  color: warningOrange,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text('Customer: $customerName'),
+                        Text('Bill Amount: ₹${amount.toStringAsFixed(2)}'),
+                        Text(
+                          'Balance: ₹${balance.toStringAsFixed(2)}',
+                          style: const TextStyle(
+                            color: errorRed,
+                            fontWeight: FontWeight.bold,
                           ),
-                          const SizedBox(height: 12),
-                          ElevatedButton.icon(
-                            onPressed: () => _showEnhancedPaymentDialogForSalesman(order, paymentAmountController, customerOutstanding),
-                            icon: const Icon(Icons.payment, size: 16),
+                        ),
+                        const SizedBox(height: 14),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: () =>
+                                _showOutstandingPaymentDialog(bill),
+                            icon: const Icon(Icons.payment),
                             label: const Text('Collect Payment'),
                             style: ElevatedButton.styleFrom(
                               backgroundColor: successGreen,
+                              padding:
+                                  const EdgeInsets.symmetric(vertical: 13),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(24),
+                              ),
                             ),
                           ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-        ),
-      ],
-    );
-  }
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+      ),
+    ],
+  );
+}
 
   // FIXED: Enhanced payment dialog for salesman with proper cheque and UPI details
   void _showEnhancedPaymentDialogForSalesman(OrderModel order, TextEditingController paymentAmountController, double customerOutstanding) {
@@ -15041,10 +15963,11 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _errorMessage;
   String? _successMessage;
 
-  static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
   
+  static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
+
   static String get apiUrl {
-    return _remoteBaseUrl;
+    return _localBaseUrl;
   }
 
   static const Color primaryBlue = Color(0xFF1A3B70);
