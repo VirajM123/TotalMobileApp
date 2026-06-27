@@ -3508,10 +3508,11 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
     const oldBalance = Number(req.body.oldBalance || 0);
     const amountCollected = Number(req.body.amountCollected || 0);
     const balanceAfterPayment = oldBalance - amountCollected;
+    const newBalance = balanceAfterPayment < 0 ? 0 : balanceAfterPayment;
+
     const cashAmount = Number(req.body.cashAmount || 0);
     const chequeAmount = Number(req.body.chequeAmount || 0);
 
-    // Determine payment mode based on provided details
     let paymentMode = req.body.paymentMode || 'Cash';
     if (cashAmount > 0 && chequeAmount > 0) {
       paymentMode = 'Cash+Cheque';
@@ -3539,7 +3540,6 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
 
     const collectionId = generateCollectionId();
 
-    // Get salesman name if not provided
     let salesmanName = req.body.salesmanName || '';
     if (!salesmanName) {
       const salesman = await collections.salesman.findOne({ salesman_id: salesmanId });
@@ -3547,24 +3547,19 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
         salesmanName = salesman.name;
       } else {
         const registerUser = await collections.register.findOne({ salesman_id: salesmanId });
-        if (registerUser) {
-          salesmanName = registerUser.fullName;
-        }
+        if (registerUser) salesmanName = registerUser.fullName;
       }
     }
 
-    // Get distributor details
     let distributorName = '';
     const distributor = await collections.distributor.findOne({ distributor_id: distributorId });
-    if (distributor) {
-      distributorName = distributor.name;
-    }
+    if (distributor) distributorName = distributor.name;
 
-    // Build payment document matching the required structure
     const paymentDoc = {
       collection_id: collectionId,
       collection_date: new Date().toISOString(),
       distributor_id: distributorId,
+      distributor_name: distributorName,
       salesman_details: {
         id: salesmanId,
         name: salesmanName || salesmanId
@@ -3577,7 +3572,7 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
         bill_amount: Number(req.body.billAmount || oldBalance),
         old_balance: oldBalance,
         amount_collected: amountCollected,
-        balance_after_payment: balanceAfterPayment < 0 ? 0 : balanceAfterPayment
+        balance_after_payment: newBalance
       },
       payment_mode: paymentMode,
       payment_details: {
@@ -3596,23 +3591,26 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
       updated_at: new Date().toISOString()
     };
 
-    // Insert into mas_payment collection
     const paymentResult = await collections.payment.insertOne(paymentDoc);
-    console.log(`✅ Payment saved to mas_payment with ID: ${paymentResult.insertedId}, Collection ID: ${collectionId}`);
 
-    // Update outstanding bill
-    await collections.outstanding.updateOne(
+    const outstandingUpdateResult = await collections.outstanding.updateOne(
       {
         distributor_id: distributorId,
-        salesman_id: salesmanId,
         TrnSeries: billSeries,
         TrnNo: billNo,
-        SysAcCode: sysAcCode
+        SysAcCode: sysAcCode,
+        $or: [
+          { salesman_id: salesmanId },
+          { salesman_id: { $exists: false } },
+          { salesman_id: '' },
+          { salesman_id: null }
+        ]
       },
       {
         $set: {
-          Bamt: balanceAfterPayment < 0 ? 0 : balanceAfterPayment,
-          payment_status: balanceAfterPayment <= 0 ? 'paid' : 'partial',
+          Bamt: newBalance,
+          payment_status: newBalance <= 0 ? 'paid' : 'partial',
+          status: newBalance <= 0 ? 'paid' : 'pending',
           last_payment_date: new Date().toISOString(),
           updated_at: new Date().toISOString()
         },
@@ -3622,12 +3620,20 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
       }
     );
 
+    if (outstandingUpdateResult.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Payment saved, but outstanding bill not found for update'
+      });
+    }
+
     res.json({
       success: true,
       message: 'Outstanding payment saved successfully',
       payment_id: paymentResult.insertedId,
       collection_id: collectionId,
-      new_balance: balanceAfterPayment < 0 ? 0 : balanceAfterPayment
+      new_balance: newBalance,
+      payment_status: newBalance <= 0 ? 'paid' : 'partial'
     });
   } catch (error) {
     console.error('Outstanding payment error:', error);
