@@ -651,9 +651,9 @@ class CartItemData {
 class ApiService {
   static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
 
-  static String get apiUrl {
-    return _localBaseUrl;
-  }
+static String get apiUrl {
+  return _remoteBaseUrl;  // ✅ Now uses the correct URL
+}
 
   // ==================== GLOBAL SEARCH API ====================
   static Future<Map<String, dynamic>> searchGlobal(String distributorId, String query) async {
@@ -3542,6 +3542,7 @@ class _DistributorDashboardEnhancedState extends State<DistributorDashboardEnhan
 
   final TextEditingController _productSearchController = TextEditingController();
   String _productSearchQuery = '';
+
 
   final TextEditingController _salesmanSearchController = TextEditingController();
   String _salesmanSearchQuery = '';
@@ -8561,9 +8562,9 @@ class _DistributorDashboardEnhancedState extends State<DistributorDashboardEnhan
                 )
               : ListView.builder(
                   padding: const EdgeInsets.all(16),
-                  itemCount: filteredProducts.length,
+                  itemCount: orderFilteredProducts.length,
                   itemBuilder: (context, index) {
-                    final product = filteredProducts[index];
+                    final product = orderFilteredProducts[index];
                     return _buildProductCard(product);
                   },
                 ),
@@ -9942,7 +9943,7 @@ Widget _buildProductSelectionStepWithScheme() {
   final Map<String, TextEditingController> rateControllers = {};
   final Map<String, TextEditingController> schemeControllers = {};
 
-  for (var product in filteredProducts) {
+  for (var product in orderFilteredProducts) {
     if (_cart.containsKey(product.id)) {
       quantityControllers[product.id] =
           TextEditingController(text: _cart[product.id]!.quantity.toString());
@@ -10015,9 +10016,9 @@ Widget _buildProductSelectionStepWithScheme() {
               maxHeight: MediaQuery.of(context).size.height * 0.5,
             ),
             child: ListView.builder(
-              itemCount: filteredProducts.length,
+              itemCount: orderFilteredProducts.length,
               itemBuilder: (context, index) {
-                final product = filteredProducts[index];
+                final product = orderFilteredProducts[index];
                 final inCart = _cart.containsKey(product.id);
                 
                 return Container(
@@ -10165,7 +10166,7 @@ Widget _buildProductSelectionStepWithScheme() {
                     // Process all products with quantity entered
                     bool hasItems = false;
                     
-                    for (var product in filteredProducts) {
+                    for (var product in orderFilteredProducts) {
                       final qtyText = quantityControllers[product.id]?.text ?? '';
                       final qty = int.tryParse(qtyText);
                       
@@ -10871,10 +10872,14 @@ String _outstandingSearchQuery = '';
 
   final TextEditingController _productSearchController = TextEditingController();
   String _productSearchQuery = '';
+  final Map<String, TextEditingController> _orderQtyControllers = {};
+final Map<String, TextEditingController> _orderRateControllers = {};
+final Map<String, Timer> _orderQtyTimers = {};
   
   // ==================== ADDED: Customer search controller for salesman create order ====================
   final TextEditingController _customerSearchController = TextEditingController();
   String _customerSearchQuery = '';
+  String? _selectedOrderRoute;
   
   List<String> _banksList = [];
   List<String> _upiTypesList = [];
@@ -10890,17 +10895,65 @@ String _outstandingSearchQuery = '';
   final Map<String, CartItemData> _editCart = {};
 
   // ==================== ADDED: Filtered customers for salesman create order ====================
-  List<CustomerModel> get orderFilteredCustomers {
-    if (_customerSearchQuery.isEmpty) return _customers;
-    final query = _customerSearchQuery.toLowerCase();
-    return _customers.where((c) =>
-      c.name.toLowerCase().contains(query) ||
-      c.area.toLowerCase().contains(query) ||
-      (c.phone?.toLowerCase().contains(query) ?? false) ||
-      (c.mobile?.toLowerCase().contains(query) ?? false)
-    ).toList();
+ String _cleanText(String v) => v.trim().toLowerCase();
+
+List<String> get orderRoutes {
+  final routes = _customers
+      .map((c) => (c.route != null && c.route!.trim().isNotEmpty)
+          ? c.route!.trim()
+          : c.area.trim())
+      .where((r) => r.isNotEmpty)
+      .toSet()
+      .toList();
+
+  routes.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  return routes;
+}
+
+List<CustomerModel> get orderFilteredCustomers {
+  final selectedRoute = _selectedOrderRoute;
+  if (selectedRoute == null || selectedRoute.trim().isEmpty) return [];
+
+  final routeKey = _cleanText(selectedRoute);
+  final query = _cleanText(_customerSearchQuery);
+
+  var customers = _customers.where((c) {
+    final customerRoute = (c.route != null && c.route!.trim().isNotEmpty)
+        ? c.route!.trim()
+        : c.area.trim();
+
+    return _cleanText(customerRoute) == routeKey;
+  }).toList();
+
+  if (query.isNotEmpty) {
+    customers = customers.where((c) {
+      return _cleanText(c.name).contains(query) ||
+          _cleanText(c.customerId ?? '').contains(query) ||
+          _cleanText(c.phone ?? c.mobile ?? '').contains(query) ||
+          _cleanText(c.area).contains(query);
+    }).toList();
   }
 
+  customers.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  return customers.take(80).toList();
+}
+
+List<ProductModel> get orderFilteredProducts {
+  var products = _products.toList();
+
+  if (_productSearchQuery.trim().isNotEmpty) {
+    final query = _productSearchQuery.trim().toLowerCase();
+
+    products = products.where((p) {
+      return p.name.toLowerCase().contains(query) ||
+          p.sku.toLowerCase().contains(query) ||
+          p.category.toLowerCase().contains(query);
+    }).toList();
+  }
+
+  products.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  return products;
+}
   @override
   void initState() {
     super.initState();
@@ -10948,9 +11001,12 @@ String _outstandingSearchQuery = '';
 void _showOutstandingPaymentDialog(Map<String, dynamic> bill) {
   final balance = ((bill['Bamt'] ?? 0) as num).toDouble();
   final billAmount = ((bill['Amt'] ?? bill['Bamt'] ?? 0) as num).toDouble();
+  final paidAmount = billAmount - balance < 0 ? 0.0 : billAmount - balance;
 
-  final amountController =
-      TextEditingController(text: balance.toStringAsFixed(0));
+  final billNo = bill['orderNumber'] ?? '${bill['TrnSeries']}/${bill['TrnNo']}';
+  final customerCode = (bill['SysAcCode'] ?? bill['customer_id'] ?? '').toString();
+
+  final amountController = TextEditingController(text: balance.toStringAsFixed(0));
   final cashController = TextEditingController();
   final chequeAmountController = TextEditingController();
   final chequeNoController = TextEditingController();
@@ -10962,7 +11018,15 @@ void _showOutstandingPaymentDialog(Map<String, dynamic> bill) {
   String? selectedUpiApp;
   String? selectedBank;
   XFile? paymentPhoto;
-  double balanceAfterPayment = balance;
+  double balanceAfterPayment = 0;
+
+  double readAmount() {
+    if (selectedMode == 'Cash+Cheque') {
+      return (double.tryParse(cashController.text.trim()) ?? 0) +
+          (double.tryParse(chequeAmountController.text.trim()) ?? 0);
+    }
+    return double.tryParse(amountController.text.trim()) ?? 0;
+  }
 
   Future<void> pickDate(
     BuildContext context,
@@ -10975,7 +11039,6 @@ void _showOutstandingPaymentDialog(Map<String, dynamic> bill) {
       firstDate: DateTime(2020),
       lastDate: DateTime(2100),
     );
-
     if (picked != null) {
       setDialogState(() {
         controller.text = picked.toIso8601String().split('T').first;
@@ -10985,378 +11048,539 @@ void _showOutstandingPaymentDialog(Map<String, dynamic> bill) {
 
   showDialog(
     context: context,
+    barrierDismissible: false,
     builder: (context) {
       return StatefulBuilder(
         builder: (context, setDialogState) {
           void updateBalance() {
-            double amount = 0;
-
-            if (selectedMode == 'Cash+Cheque') {
-              amount = (double.tryParse(cashController.text.trim()) ?? 0) +
-                  (double.tryParse(chequeAmountController.text.trim()) ?? 0);
-            } else {
-              amount = double.tryParse(amountController.text.trim()) ?? 0;
-            }
-
             setDialogState(() {
-              balanceAfterPayment = balance - amount;
+              balanceAfterPayment = balance - readAmount();
             });
           }
 
-          Widget modeButton(String mode) {
-            final selected = selectedMode == mode;
+          Widget amountBox(String title, String value, Color color) {
+            return Expanded(
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.04),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: color.withOpacity(0.12)),
+                ),
+                child: Column(
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey.shade700,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      value,
+                      style: TextStyle(
+                        fontSize: 19,
+                        color: color,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }
 
-            return ChoiceChip(
-              selected: selected,
-              label: Text(mode),
-              avatar: selected ? const Icon(Icons.check, size: 18) : null,
-              onSelected: (_) {
+          Widget modeButton(String mode, IconData icon) {
+            final selected = selectedMode == mode;
+            return InkWell(
+              onTap: () {
                 setDialogState(() {
                   selectedMode = mode;
                   selectedUpiApp = null;
                   selectedBank = null;
-                  balanceAfterPayment = balance;
                   amountController.text = balance.toStringAsFixed(0);
                   cashController.clear();
                   chequeAmountController.clear();
                   chequeNoController.clear();
                   chequeDateController.clear();
                   transactionController.clear();
+                  balanceAfterPayment = 0;
                 });
               },
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+                decoration: BoxDecoration(
+                  color: selected ? const Color(0xFFEEF4FF) : Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: selected ? const Color(0xFF2563EB) : Colors.grey.shade300,
+                    width: selected ? 1.6 : 1,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, size: 20, color: selected ? const Color(0xFF2563EB) : Colors.teal),
+                    const SizedBox(width: 9),
+                    Text(
+                      mode == 'Cash+Cheque' ? 'Cash + Cheque' : mode,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        color: selected ? const Color(0xFF0B1F3A) : Colors.black87,
+                      ),
+                    ),
+                    if (selected) ...[
+                      const SizedBox(width: 9),
+                      const Icon(Icons.check_circle, color: Color(0xFF2563EB), size: 20),
+                    ],
+                  ],
+                ),
+              ),
             );
           }
 
-          return AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(22),
-            ),
-            title: Text(
-              'Collect Payment -\n${bill['orderNumber'] ?? '${bill['TrnSeries']}/${bill['TrnNo']}'}',
-              style: const TextStyle(fontSize: 24),
-            ),
-            content: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Total: ₹${billAmount.toStringAsFixed(0)} | Paid: ₹0',
-                    style: const TextStyle(fontSize: 16),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Balance Due: ₹${balance.toStringAsFixed(0)}',
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: warningOrange,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Customer Outstanding: ₹${balance.toStringAsFixed(0)}',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: errorRed,
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-
-                  if (selectedMode != 'Cash+Cheque')
-                    TextField(
-                      controller: amountController,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => updateBalance(),
-                      decoration: const InputDecoration(
-                        labelText: 'Amount to Collect',
-                        prefixText: '₹ ',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-
-                  if (selectedMode == 'Cash+Cheque') ...[
-                    TextField(
-                      controller: cashController,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => updateBalance(),
-                      decoration: const InputDecoration(
-                        labelText: 'Cash Amount *',
-                        prefixText: '₹ ',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: chequeAmountController,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => updateBalance(),
-                      decoration: const InputDecoration(
-                        labelText: 'Cheque Amount *',
-                        prefixText: '₹ ',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                  ],
-
-                  const SizedBox(height: 8),
-                  Text(
-                    'Balance after payment: ₹${balanceAfterPayment.toStringAsFixed(0)}',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: warningOrange,
-                    ),
-                  ),
-                  const SizedBox(height: 18),
-
-                  const Text(
-                    'Payment Mode:',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+          return Dialog(
+            insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.92,
+                maxWidth: 520,
+              ),
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.all(18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      modeButton('Cash'),
-                      modeButton('UPI'),
-                      modeButton('Cheque'),
-                      modeButton('Cash+Cheque'),
-                    ],
-                  ),
-
-                  const SizedBox(height: 18),
-
-                  if (selectedMode == 'UPI') ...[
-                    const Text(
-                      'UPI Details:',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    DropdownButtonFormField<String>(
-                      value: selectedUpiApp,
-                      decoration: const InputDecoration(
-                        labelText: 'UPI App *',
-                        border: OutlineInputBorder(),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Collect Payment',
+                              style: TextStyle(
+                                fontSize: 23,
+                                fontWeight: FontWeight.w900,
+                                color: Color(0xFF0B1F3A),
+                              ),
+                            ),
+                          ),
+                          InkWell(
+                            onTap: () => Navigator.pop(context),
+                            borderRadius: BorderRadius.circular(30),
+                            child: Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade100,
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.close, color: Colors.black54),
+                            ),
+                          ),
+                        ],
                       ),
-                      items: const [
-                        'GPay',
-                        'PhonePe',
-                        'Paytm',
-                        'Amazon Pay',
-                        'WhatsApp Pay',
-                        'Other',
-                      ].map((e) {
-                        return DropdownMenuItem(value: e, child: Text(e));
-                      }).toList(),
-                      onChanged: (v) {
-                        setDialogState(() => selectedUpiApp = v);
-                      },
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: transactionController,
-                      decoration: const InputDecoration(
-                        labelText: 'Transaction Number *',
-                        border: OutlineInputBorder(),
+                      const SizedBox(height: 18),
+
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: Colors.grey.shade200),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.05),
+                              blurRadius: 18,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  height: 56,
+                                  width: 56,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFEEF4FF),
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  child: const Icon(
+                                    Icons.receipt_long,
+                                    color: Color(0xFF2563EB),
+                                    size: 30,
+                                  ),
+                                ),
+                                const SizedBox(width: 14),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        billNo.toString(),
+                                        style: const TextStyle(
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.w900,
+                                          color: Color(0xFF0B1F3A),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 5),
+                                      Text(
+                                        'Customer Code: $customerCode',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color: Colors.grey.shade700,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 18),
+
+                            Row(
+                              children: [
+                                amountBox('Total Amount', '₹ ${billAmount.toStringAsFixed(0)}', const Color(0xFF0B1F3A)),
+                                const SizedBox(width: 8),
+                                amountBox('Total Paid', '₹ ${paidAmount.toStringAsFixed(0)}', const Color(0xFF059669)),
+                                const SizedBox(width: 8),
+                                amountBox('Balance Due', '₹ ${balance.toStringAsFixed(0)}', const Color(0xFFDC2626)),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
+
+                            Container(
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFFF7ED),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: const Color(0xFFF97316).withOpacity(0.25)),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.account_balance_wallet, color: Color(0xFFF97316)),
+                                  const SizedBox(width: 12),
+                                  const Expanded(
+                                    child: Text(
+                                      'Outstanding Amount',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        color: Color(0xFF0B1F3A),
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    '₹ ${balance.toStringAsFixed(0)}',
+                                    style: const TextStyle(
+                                      color: Color(0xFFF97316),
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            paymentPhoto == null
-                                ? 'No photo selected'
-                                : 'Photo selected',
-                            style: const TextStyle(color: Colors.grey),
+
+                      const SizedBox(height: 18),
+
+                      const Text(
+                        'Amount to Collect *',
+                        style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF0B1F3A)),
+                      ),
+                      const SizedBox(height: 8),
+
+                      if (selectedMode != 'Cash+Cheque')
+                        TextField(
+                          controller: amountController,
+                          keyboardType: TextInputType.number,
+                          onChanged: (_) => updateBalance(),
+                          decoration: InputDecoration(
+                            prefixText: '₹ ',
+                            filled: true,
+                            fillColor: Colors.white,
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: const BorderSide(color: Color(0xFF2563EB), width: 1.7),
+                            ),
                           ),
                         ),
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.camera_alt),
-                          label: const Text('Add Photo'),
-                          onPressed: () async {
-                            final picker = ImagePicker();
-                            final img = await picker.pickImage(
-                              source: ImageSource.gallery,
-                            );
-                            if (img != null) {
-                              setDialogState(() => paymentPhoto = img);
-                            }
-                          },
+
+                      if (selectedMode == 'Cash+Cheque') ...[
+                        TextField(
+                          controller: cashController,
+                          keyboardType: TextInputType.number,
+                          onChanged: (_) => updateBalance(),
+                          decoration: InputDecoration(
+                            labelText: 'Cash Amount *',
+                            prefixText: '₹ ',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: chequeAmountController,
+                          keyboardType: TextInputType.number,
+                          onChanged: (_) => updateBalance(),
+                          decoration: InputDecoration(
+                            labelText: 'Cheque Amount *',
+                            prefixText: '₹ ',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
                         ),
                       ],
-                    ),
-                  ],
 
-                  if (selectedMode == 'Cheque' ||
-                      selectedMode == 'Cash+Cheque') ...[
-                    const Text(
-                      'Cheque Details:',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: chequeNoController,
-                      decoration: const InputDecoration(
-                        labelText: 'Cheque Number *',
-                        border: OutlineInputBorder(),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Balance after payment: ₹ ${balanceAfterPayment.toStringAsFixed(0)}',
+                        style: TextStyle(
+                          color: balanceAfterPayment <= 0 ? const Color(0xFF059669) : const Color(0xFFF97316),
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: chequeDateController,
-                      readOnly: true,
-                      onTap: () =>
-                          pickDate(context, chequeDateController, setDialogState),
-                      decoration: const InputDecoration(
-                        labelText: 'Cheque Date *',
-                        border: OutlineInputBorder(),
-                        suffixIcon: Icon(Icons.calendar_month),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    DropdownButtonFormField<String>(
-                      value: selectedBank,
-                      decoration: const InputDecoration(
-                        labelText: 'Bank Name *',
-                        border: OutlineInputBorder(),
-                      ),
-                      items: _banksList.map((b) {
-                        return DropdownMenuItem<String>(
-                          value: b,
-                          child: Text(b),
-                        );
-                      }).toList(),
-                      onChanged: (v) {
-                        setDialogState(() => selectedBank = v);
-                      },
-                    ),
-                  ],
 
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: remarkController,
-                    maxLines: 2,
-                    decoration: const InputDecoration(
-                      labelText: 'Remark (Optional)',
-                      border: OutlineInputBorder(),
-                    ),
+                      const SizedBox(height: 20),
+                      const Text(
+                        'Payment Mode *',
+                        style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF0B1F3A)),
+                      ),
+                      const SizedBox(height: 10),
+
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          modeButton('Cash', Icons.payments),
+                          modeButton('UPI', Icons.bolt),
+                          modeButton('Cheque', Icons.credit_card),
+                          modeButton('Cash+Cheque', Icons.receipt),
+                        ],
+                      ),
+
+                      if (selectedMode == 'UPI') ...[
+                        const SizedBox(height: 16),
+                        DropdownButtonFormField<String>(
+                          value: selectedUpiApp,
+                          decoration: InputDecoration(
+                            labelText: 'UPI App *',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          items: ['GPay', 'PhonePe', 'Paytm', 'Amazon Pay', 'WhatsApp Pay', 'Other']
+                              .map((e) => DropdownMenuItem(value: e, child: Text(e)))
+                              .toList(),
+                          onChanged: (v) => setDialogState(() => selectedUpiApp = v),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: transactionController,
+                          decoration: InputDecoration(
+                            labelText: 'Transaction Number *',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ],
+
+                      if (selectedMode == 'Cheque' || selectedMode == 'Cash+Cheque') ...[
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: chequeNoController,
+                          decoration: InputDecoration(
+                            labelText: 'Cheque Number *',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: chequeDateController,
+                          readOnly: true,
+                          onTap: () => pickDate(context, chequeDateController, setDialogState),
+                          decoration: InputDecoration(
+                            labelText: 'Cheque Date *',
+                            suffixIcon: const Icon(Icons.calendar_month),
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        DropdownButtonFormField<String>(
+                          value: selectedBank,
+                          decoration: InputDecoration(
+                            labelText: 'Bank Name *',
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          items: _banksList
+                              .map((b) => DropdownMenuItem<String>(value: b, child: Text(b)))
+                              .toList(),
+                          onChanged: (v) => setDialogState(() => selectedBank = v),
+                        ),
+                      ],
+
+                      const SizedBox(height: 18),
+                      const Text(
+                        'Remark (Optional)',
+                        style: TextStyle(fontWeight: FontWeight.w900, color: Color(0xFF0B1F3A)),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: remarkController,
+                        maxLines: 3,
+                        decoration: InputDecoration(
+                          hintText: 'Add any remarks here...',
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+
+                      const SizedBox(height: 22),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.pop(context),
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 15),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                              child: const Text('Cancel'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              icon: const Icon(Icons.download_done),
+                              label: const Text('Collect Payment'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFF2563EB),
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 15),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                              onPressed: () async {
+                                final amount = readAmount();
+                                final cashAmount = selectedMode == 'Cash+Cheque'
+                                    ? double.tryParse(cashController.text.trim()) ?? 0
+                                    : selectedMode == 'Cash'
+                                        ? amount
+                                        : 0.0;
+                                final chequeAmount = selectedMode == 'Cash+Cheque'
+                                    ? double.tryParse(chequeAmountController.text.trim()) ?? 0
+                                    : selectedMode == 'Cheque'
+                                        ? amount
+                                        : 0.0;
+
+                                if (amount <= 0 || amount > balance) {
+                                  showSafeSnackBar(context, 'Enter valid amount', backgroundColor: errorRed);
+                                  return;
+                                }
+
+                                if (selectedMode == 'UPI' &&
+                                    (selectedUpiApp == null || transactionController.text.trim().isEmpty)) {
+                                  showSafeSnackBar(context, 'Enter UPI details', backgroundColor: errorRed);
+                                  return;
+                                }
+
+                                if ((selectedMode == 'Cheque' || selectedMode == 'Cash+Cheque') &&
+                                    (chequeNoController.text.trim().isEmpty ||
+                                        chequeDateController.text.trim().isEmpty ||
+                                        selectedBank == null)) {
+                                  showSafeSnackBar(context, 'Enter cheque details', backgroundColor: errorRed);
+                                  return;
+                                }
+
+                                try {
+                                  Navigator.pop(context);
+                                  setState(() => _isLoading = true);
+
+                                  await ApiService.collectOutstandingPayment({
+                                    'distributorId': _currentSalesman.distributorId,
+                                    'salesmanId': _currentSalesman.salesmanId,
+                                    'salesmanName': _currentSalesman.name,
+                                    'billSeries': bill['TrnSeries'],
+                                    'billNo': bill['TrnNo'],
+                                    'sysAcCode': bill['SysAcCode'],
+                                    'customerName': bill['customer_name'] ?? bill['CustomerName'] ?? '',
+                                    'billAmount': billAmount,
+                                    'oldBalance': balance,
+                                    'amountCollected': amount,
+                                    'balanceAfterPayment': balance - amount,
+                                    'paymentMode': selectedMode,
+                                    'cashAmount': cashAmount,
+                                    'chequeAmount': chequeAmount,
+                                    'chequeNumber': chequeNoController.text.trim(),
+                                    'chequeDate': chequeDateController.text.trim(),
+                                    'bankName': selectedBank,
+                                    'upiApp': selectedUpiApp,
+                                    'transactionNumber': transactionController.text.trim(),
+                                    'paymentPhotoPath': paymentPhoto?.path,
+                                    'remark': remarkController.text.trim(),
+                                  });
+
+                                  final newBalance = balance - amount;
+
+setState(() {
+  if (newBalance <= 0) {
+    _outstandingBills.removeWhere((b) =>
+        b['TrnSeries'] == bill['TrnSeries'] &&
+        b['TrnNo'].toString() == bill['TrnNo'].toString() &&
+        b['SysAcCode'].toString() == bill['SysAcCode'].toString());
+  } else {
+    final index = _outstandingBills.indexWhere((b) =>
+        b['TrnSeries'] == bill['TrnSeries'] &&
+        b['TrnNo'].toString() == bill['TrnNo'].toString() &&
+        b['SysAcCode'].toString() == bill['SysAcCode'].toString());
+
+    if (index != -1) {
+      _outstandingBills[index]['Bamt'] = newBalance;
+      _outstandingBills[index]['payment_status'] = 'partial';
+    }
+  }
+});
+
+await _loadData();
+
+showSafeSnackBar(
+  context,
+  'Payment collected successfully',
+  backgroundColor: successGreen,
+);
+                                } catch (e) {
+                                  showSafeSnackBar(
+                                    context,
+                                    'Payment failed: $e',
+                                    backgroundColor: errorRed,
+                                  );
+                                } finally {
+                                  if (mounted) setState(() => _isLoading = false);
+                                }
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 16),
+                      Center(
+                        child: Text(
+                          '🔒 Your payment data is secure and encrypted',
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  double amount = 0;
-                  double cashAmount = 0;
-                  double chequeAmount = 0;
-
-                  if (selectedMode == 'Cash+Cheque') {
-                    cashAmount =
-                        double.tryParse(cashController.text.trim()) ?? 0;
-                    chequeAmount =
-                        double.tryParse(chequeAmountController.text.trim()) ?? 0;
-                    amount = cashAmount + chequeAmount;
-                  } else {
-                    amount =
-                        double.tryParse(amountController.text.trim()) ?? 0;
-                    cashAmount = selectedMode == 'Cash' ? amount : 0;
-                    chequeAmount = selectedMode == 'Cheque' ? amount : 0;
-                  }
-
-                  if (amount <= 0 || amount > balance) {
-                    showSafeSnackBar(
-                      context,
-                      'Enter valid amount',
-                      backgroundColor: errorRed,
-                    );
-                    return;
-                  }
-
-                  if (selectedMode == 'UPI' &&
-                      (selectedUpiApp == null ||
-                          transactionController.text.trim().isEmpty)) {
-                    showSafeSnackBar(
-                      context,
-                      'Enter UPI details',
-                      backgroundColor: errorRed,
-                    );
-                    return;
-                  }
-
-                  if ((selectedMode == 'Cheque' ||
-                          selectedMode == 'Cash+Cheque') &&
-                      (chequeNoController.text.trim().isEmpty ||
-                          chequeDateController.text.trim().isEmpty ||
-                          selectedBank == null)) {
-                    showSafeSnackBar(
-                      context,
-                      'Enter cheque details',
-                      backgroundColor: errorRed,
-                    );
-                    return;
-                  }
-
-                  try {
-                    Navigator.pop(context);
-                    setState(() => _isLoading = true);
- // 🔽 THIS IS THE BLOCK YOU NEED TO REPLACE 🔽
-        await ApiService.collectOutstandingPayment({
-          'distributorId': _currentSalesman.distributorId,
-          'salesmanId': _currentSalesman.salesmanId,
-          'salesmanName': _currentSalesman.name,
-          'billSeries': bill['TrnSeries'],
-          'billNo': bill['TrnNo'],
-          'sysAcCode': bill['SysAcCode'],
-          'customerName':
-              bill['customer_name'] ?? bill['CustomerName'] ?? '',
-          'billAmount': billAmount,
-          'oldBalance': balance,
-          'amountCollected': amount,
-          'balanceAfterPayment': balance - amount,
-          'paymentMode': selectedMode,
-          'cashAmount': cashAmount,
-          'chequeAmount': chequeAmount,
-          'chequeNumber': chequeNoController.text.trim(),
-          'chequeDate': chequeDateController.text.trim(),
-          'bankName': selectedBank,
-          'upiApp': selectedUpiApp,
-          'transactionNumber': transactionController.text.trim(),
-          'paymentPhotoPath': paymentPhoto?.path,
-          'remark': remarkController.text.trim(),
-        });
-        // 🔼 END OF BLOCK TO REPLACE 🔼
-
-                    await _loadData();
-
-                    showSafeSnackBar(
-                      context,
-                      'Payment collected successfully',
-                      backgroundColor: successGreen,
-                    );
-                  } catch (e) {
-                    showSafeSnackBar(
-                      context,
-                      'Payment failed: $e',
-                      backgroundColor: errorRed,
-                    );
-                  } finally {
-                    if (mounted) {
-                      setState(() => _isLoading = false);
-                    }
-                  }
-                },
-                child: const Text('Collect'),
-              ),
-            ],
           );
         },
       );
@@ -11388,20 +11612,26 @@ Future<void> _loadData() async {
 
   try {
     if (_currentSalesman.salesmanId != null) {
-      final data =
-          await ApiService.getSalesmanData(_currentSalesman.salesmanId!);
+      final data = await ApiService.getSalesmanData(_currentSalesman.salesmanId!);
 
-      final outstandingBills =
-          await ApiService.getOutstandingBillsForSalesman(
+      final outstandingBills = await ApiService.getOutstandingBillsForSalesman(
         _currentSalesman.salesmanId!,
         _currentSalesman.distributorId ?? data['distributorId'] ?? '',
       );
 
-      print(
-        'Salesman data loaded: ${data['customers']?.length ?? 0} customers, ${data['products']?.length ?? 0} products',
-      );
-
-      print('Outstanding bills loaded: ${outstandingBills.length}');
+      const defaultPermissions = {
+        'canAddProduct': false,
+        'canEditProduct': false,
+        'canDeleteProduct': false,
+        'canAddCustomer': false,
+        'canEditCustomer': false,
+        'canDeleteCustomer': false,
+        'canViewOrders': true,
+        'canCreateOrder': true,
+        'canCollectPayment': true,
+        'canEditOrder': true,
+        'canDeleteOrder': true,
+      };
 
       setState(() {
         _customers = (data['customers'] as List?)?.map((c) {
@@ -11415,8 +11645,6 @@ Future<void> _loadData() async {
               return ProductModel.fromMap(p, id);
             }).toList() ??
             [];
-
-        print('Loaded ${_products.length} products for salesman');
 
         _orders = (data['orders'] as List?)?.map((o) {
               final id = o['_id']?.toString() ?? '';
@@ -11475,24 +11703,15 @@ Future<void> _loadData() async {
 
         _outstandingBills = outstandingBills;
 
-        _permissions = data['permissions'] ??
-            {
-              'canAddProduct': false,
-              'canEditProduct': false,
-              'canDeleteProduct': false,
-              'canAddCustomer': false,
-              'canEditCustomer': false,
-              'canDeleteCustomer': false,
-              'canViewOrders': true,
-              'canCreateOrder': true,
-              'canCollectPayment': true,
-              'canEditOrder': false,
-              'canDeleteOrder': false,
-            };
+        _permissions = {
+          ...defaultPermissions,
+          ...Map<String, dynamic>.from(data['permissions'] ?? {}),
+        };
       });
     }
   } catch (e) {
     print('Error loading salesman data: $e');
+
     setState(() {
       _customers = [];
       _products = [];
@@ -11508,12 +11727,14 @@ Future<void> _loadData() async {
         'canViewOrders': true,
         'canCreateOrder': true,
         'canCollectPayment': true,
-        'canEditOrder': false,
-        'canDeleteOrder': false,
+        'canEditOrder': true,
+        'canDeleteOrder': true,
       };
     });
   } finally {
-    setState(() => _isLoading = false);
+    if (mounted) {
+      setState(() => _isLoading = false);
+    }
   }
 }
 
@@ -11549,8 +11770,18 @@ Future<void> _loadData() async {
     }
   }
 
-  bool get canEditOrder => _permissions['canEditOrder'] ?? false;
-  bool get canDeleteOrder => _permissions['canDeleteOrder'] ?? false;
+ bool _permissionEnabled(String key) {
+  final value = _permissions[key];
+
+  if (value == true) return true;
+  if (value is String && value.toLowerCase() == 'true') return true;
+  if (value is num && value == 1) return true;
+
+  return false;
+}
+
+bool get canEditOrder => _permissionEnabled('canEditOrder');
+bool get canDeleteOrder => _permissionEnabled('canDeleteOrder');
 
   Future<Map<String, dynamic>?> getLastSaleForProduct(String productId) async {
     if (_lastSaleCache.containsKey(productId)) {
@@ -11781,16 +12012,19 @@ Future<void> _loadData() async {
     });
   }
 
-  void clearCart() {
-    setState(() {
-      _cart.clear();
-      _stockAlertShown.clear();
-      _selectedCustomerId = null;
-      _orderStep = 1;
-      _selectedPaymentMode = PaymentMode.credit;
-      _orderNotes = '';
-    });
-  }
+void clearCart() {
+  setState(() {
+    _cart.clear();
+    _stockAlertShown.clear();
+    _selectedCustomerId = null;
+    _selectedOrderRoute = null;
+    _customerSearchQuery = '';
+    _customerSearchController.clear();
+    _orderStep = 1;
+    _selectedPaymentMode = PaymentMode.credit;
+    _orderNotes = '';
+  });
+}
 void _showEditOrderDialog(OrderModel order) {
   setState(() {
     _orderToEdit = order;
@@ -11843,6 +12077,7 @@ void _showEditOrderDialogInternal() {
   final TextEditingController _productSearchEditController = TextEditingController();
   String _productSearchEditQuery = '';
   Map<String, TextEditingController> _editQuantityControllers = {};
+  Map<String, TextEditingController> _editRateControllers = {};
   
   // Make sure we have the correct customer selected
   if (_selectedCustomerId == null && _orderToEdit != null) {
@@ -11871,7 +12106,14 @@ void _showEditOrderDialogInternal() {
             );
           }
         }
-        
+          // ==================== ADD THIS BLOCK ====================
+        for (var entry in _editCart.entries) {
+          if (!_editRateControllers.containsKey(entry.key)) {
+            _editRateControllers[entry.key] = TextEditingController(
+              text: entry.value.rate.toStringAsFixed(0),
+            );
+          }
+        }
         return AlertDialog(
           title: Text('Edit Order #${_orderToEdit?.orderNumber}'),
           content: Container(
@@ -12070,7 +12312,12 @@ void _showEditOrderDialogInternal() {
                                   onPressed: () {
                                     setDialogState(() {
                                       _editCart.remove(productId);
-                                      _editQuantityControllers.remove(productId);
+
+_editQuantityControllers[productId]?.dispose();
+_editQuantityControllers.remove(productId);
+
+_editRateControllers[productId]?.dispose();
+_editRateControllers.remove(productId);
                                     });
                                   },
                                   tooltip: 'Remove item',
@@ -12089,8 +12336,13 @@ void _showEditOrderDialogInternal() {
                                         final newQty = cartItem.quantity - 1;
                                         if (newQty <= 0) {
                                           setDialogState(() {
-                                            _editCart.remove(productId);
-                                            _editQuantityControllers.remove(productId);
+                                           _editCart.remove(productId);
+
+_editQuantityControllers[productId]?.dispose();
+_editQuantityControllers.remove(productId);
+
+_editRateControllers[productId]?.dispose();
+_editRateControllers.remove(productId);
                                           });
                                         } else {
                                           setDialogState(() {
@@ -12122,7 +12374,10 @@ void _showEditOrderDialogInternal() {
                                           } else if (qty == 0) {
                                             setDialogState(() {
                                               _editCart.remove(productId);
+                                              _editQuantityControllers[productId]?.dispose();
                                               _editQuantityControllers.remove(productId);
+                                              _editRateControllers[productId]?.dispose();
+                                              _editRateControllers.remove(productId);
                                             });
                                           }
                                         },
@@ -12151,29 +12406,27 @@ void _showEditOrderDialogInternal() {
                             ),
                             // Rate edit field
                             Padding(
-                              padding: const EdgeInsets.only(top: 8),
-                              child: Row(
-                                children: [
-                                  const Text('Rate: ₹', style: TextStyle(fontSize: 12)),
-                                  SizedBox(
-                                    width: 100,
-                                    child: TextField(
-                                      controller: TextEditingController(
-                                        text: cartItem.rate.toStringAsFixed(0)
-                                      ),
-                                      keyboardType: TextInputType.number,
-                                      decoration: const InputDecoration(
-                                        border: OutlineInputBorder(),
-                                        isDense: true,
-                                        contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                      ),
-                                      onChanged: (value) {
-                                        final rate = double.tryParse(value);
-                                        if (rate != null && rate > 0) {
-                                          setDialogState(() {
-                                            _editCart[productId]!.rate = rate;
-                                            _editCart[productId]!.calculate();
-                                          });
+  padding: const EdgeInsets.only(top: 8),
+  child: Row(
+    children: [
+      const Text('Rate: ₹', style: TextStyle(fontSize: 12)),
+      SizedBox(
+        width: 100,
+        child: TextField(
+          controller: _editRateControllers[productId],
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            isDense: true,
+            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          ),
+          onChanged: (value) {
+            final rate = double.tryParse(value.trim());
+            if (rate != null && rate > 0) {
+              setDialogState(() {
+                _editCart[productId]!.rate = rate;
+                _editCart[productId]!.calculate();
+              });
                                         }
                                       },
                                     ),
@@ -13424,45 +13677,47 @@ void _showEditOrderDialogInternal() {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Order ${order.orderNumber}',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: primaryBlue,
-                    ),
-                  ),
-                  Row(
-                    children: [
-                      if (canEditOrder)
-                        IconButton(
-                          icon: const Icon(Icons.edit, color: primaryBlue),
-                          onPressed: () {
-                            Navigator.pop(context);
-                            _showEditOrderDialog(order);
-                          },
-                          tooltip: 'Edit Order',
-                        ),
-                      if (canDeleteOrder)
-                        IconButton(
-                          icon: const Icon(Icons.delete, color: errorRed),
-                          onPressed: () {
-                            Navigator.pop(context);
-                            _deleteOrder(order);
-                          },
-                          tooltip: 'Delete Order',
-                        ),
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.pop(context),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+             Row(
+  children: [
+    Expanded(
+      child: Text(
+        'Order ${order.orderNumber}',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          fontSize: 18,
+          fontWeight: FontWeight.bold,
+          color: primaryBlue,
+        ),
+      ),
+    ),
+
+    if (canEditOrder)
+      IconButton(
+        icon: const Icon(Icons.edit, color: primaryBlue),
+        onPressed: () {
+          Navigator.pop(context);
+          _showEditOrderDialog(order);
+        },
+        tooltip: 'Edit Order',
+      ),
+
+    if (canDeleteOrder)
+      IconButton(
+        icon: const Icon(Icons.delete, color: errorRed),
+        onPressed: () {
+          Navigator.pop(context);
+          _deleteOrder(order);
+        },
+        tooltip: 'Delete Order',
+      ),
+
+    IconButton(
+      icon: const Icon(Icons.close),
+      onPressed: () => Navigator.pop(context),
+    ),
+  ],
+),
               const Divider(),
               Container(
                 padding: const EdgeInsets.all(12),
@@ -14123,176 +14378,201 @@ void _showEditOrderDialogInternal() {
   }
 
   // ==================== MODIFIED: Customer selection step with search bar ====================
-  Widget _buildCustomerSelectionStep() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text(
-                'Select Customer',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: primaryBlue,
-                ),
-              ),
-              if (canAddCustomer)
-                TextButton.icon(
-                  onPressed: _showAddCustomerDialog,
-                  icon: const Icon(Icons.person_add, size: 16),
-                  label: const Text('Add New Customer'),
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          // ==================== ADDED: Search bar for customers ====================
-          TextField(
-            controller: _customerSearchController,
-            decoration: InputDecoration(
-              hintText: 'Search by name, area, or phone...',
-              prefixIcon: const Icon(Icons.search, color: primaryBlue),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-              filled: true,
-              fillColor: Colors.grey[50],
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            ),
-            onChanged: (value) {
-              setState(() {
-                _customerSearchQuery = value;
-              });
-            },
-          ),
-          const SizedBox(height: 16),
-          // Display search results count
-          if (_customerSearchQuery.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                'Found ${orderFilteredCustomers.length} customer(s)',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: orderFilteredCustomers.isEmpty ? errorRed : successGreen,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          // ==================== MODIFIED: Use filtered customers list ====================
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: orderFilteredCustomers.length,
-            itemBuilder: (context, index) {
-              final customer = orderFilteredCustomers[index];
-              final isSelected = _selectedCustomerId == customer.id;
-              final outstanding = _orders
-                  .where((o) => o.customerId == customer.id && o.status != OrderStatus.cancelled)
-                  .fold(0.0, (sum, o) => sum + o.dueAmount);
-              return GestureDetector(
-                onTap: () => setState(() {
-                  _selectedCustomerId = customer.id;
-                  _orderStep = 2;
-                }),
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? primaryBlue.withOpacity(0.1)
-                        : Colors.grey[50],
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: isSelected ? primaryBlue : Colors.grey[300]!,
-                      width: isSelected ? 2 : 1,
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      CircleAvatar(
-                        backgroundColor: isSelected
-                            ? primaryBlue
-                            : primaryBlue.withOpacity(0.1),
-                        child: Icon(
-                          Icons.person,
-                          color: isSelected ? Colors.white : primaryBlue,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              customer.name,
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: isSelected ? primaryBlue : Colors.black,
-                              ),
-                            ),
-                            Text(
-                              'Area: ${customer.area}',
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 12,
-                              ),
-                            ),
-                            Text(
-                              'Phone: ${customer.phone ?? "N/A"}',
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 12,
-                              ),
-                            ),
-                            if (outstanding > 0)
-                              Text(
-                                'Outstanding: ₹${outstanding.toStringAsFixed(0)}',
-                                style: const TextStyle(
-                                  color: errorRed,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                      if (isSelected)
-                        const Icon(Icons.check_circle, color: primaryBlue),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-          // Show message when no customers match search
-          if (_customerSearchQuery.isNotEmpty && orderFilteredCustomers.isEmpty)
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.grey[50],
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Center(
-                child: Text(
-                  'No customers found matching your search.\nTry a different name or area.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.grey),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
+Widget _buildCustomerSelectionStep() {
+  final bool routeSelected =
+      _selectedOrderRoute != null && _selectedOrderRoute!.isNotEmpty;
 
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Select Route',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: primaryBlue,
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            DropdownButtonFormField<String>(
+              value: _selectedOrderRoute,
+              decoration: InputDecoration(
+                hintText: 'Select Route',
+                prefixIcon: const Icon(Icons.location_on, color: primaryBlue),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                filled: true,
+                fillColor: Colors.grey[50],
+              ),
+              items: orderRoutes.map((route) {
+                return DropdownMenuItem<String>(
+                  value: route,
+                  child: Text(route),
+                );
+              }).toList(),
+              onChanged: (value) {
+                setState(() {
+                  _selectedOrderRoute = value;
+                  _selectedCustomerId = null;
+                  _customerSearchQuery = '';
+                  _customerSearchController.clear();
+                });
+              },
+            ),
+
+            if (!routeSelected) ...[
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.purple.withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.purple.withOpacity(0.25)),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info, color: Colors.purple),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Please select a route to view customers',
+                        style: TextStyle(fontWeight: FontWeight.w500),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+
+      const SizedBox(height: 20),
+
+      Opacity(
+        opacity: routeSelected ? 1 : 0.45,
+        child: IgnorePointer(
+          ignoring: !routeSelected,
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Select Customer',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: primaryBlue,
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                TextField(
+                  controller: _customerSearchController,
+                  enabled: routeSelected,
+                  decoration: InputDecoration(
+                    hintText: 'Search by name, area, or phone...',
+                    prefixIcon: const Icon(Icons.search, color: primaryBlue),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey[50],
+                  ),
+                  onChanged: (value) {
+                    setState(() {
+                      _customerSearchQuery = value;
+                    });
+                  },
+                ),
+
+                const SizedBox(height: 16),
+
+                if (!routeSelected)
+                  const SizedBox(
+                    height: 220,
+                    child: Center(
+                      child: Text(
+                        'Select a route to load customers',
+                        style: TextStyle(color: Colors.grey, fontSize: 16),
+                      ),
+                    ),
+                  )
+                else if (orderFilteredCustomers.isEmpty)
+                  const SizedBox(
+                    height: 180,
+                    child: Center(
+                      child: Text(
+                        'No customers found for selected route',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ),
+                  )
+                else
+                  ListView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: orderFilteredCustomers.length,
+                    itemBuilder: (context, index) {
+                      final customer = orderFilteredCustomers[index];
+                      final isSelected = _selectedCustomerId == customer.id;
+
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor:
+                                isSelected ? accentTeal : Colors.grey[200],
+                            child: Icon(
+                              Icons.person,
+                              color: isSelected ? Colors.white : primaryBlue,
+                            ),
+                          ),
+                          title: Text(
+                            customer.name,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          subtitle: Text(
+                            'Area: ${customer.area}\nPhone: ${customer.phone ?? customer.mobile ?? 'N/A'}',
+                          ),
+                          trailing: isSelected
+                              ? const Icon(Icons.check_circle,
+                                  color: accentTeal)
+                              : null,
+                          onTap: () {
+                            setState(() {
+                              _selectedCustomerId = customer.id;
+                              _orderStep = 2;
+                            });
+                          },
+                        ),
+                      );
+                    },
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    ],
+  );
+}
   Widget _buildCreateOrderSection() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -14382,7 +14662,7 @@ Widget _buildProductSelectionStepWithScheme() {
   final Map<String, TextEditingController> schemeControllers = {};
   final Map<String, Timer> debounceTimers = {};
 
-  for (var product in filteredProducts) {
+  for (var product in orderFilteredProducts) {
     if (_cart.containsKey(product.id)) {
       quantityControllers[product.id] =
           TextEditingController(text: _cart[product.id]!.quantity.toString());
@@ -14455,9 +14735,9 @@ Widget _buildProductSelectionStepWithScheme() {
               maxHeight: MediaQuery.of(context).size.height * 0.5,
             ),
             child: ListView.builder(
-              itemCount: filteredProducts.length,
+              itemCount: orderFilteredProducts.length,
               itemBuilder: (context, index) {
-                final product = filteredProducts[index];
+                final product = orderFilteredProducts[index];
                 final inCart = _cart.containsKey(product.id);
                 
                 return Container(
@@ -14896,254 +15176,612 @@ Widget _buildProductSelectionStepWithScheme() {
     );
   }
 Widget _buildCollectPaymentFromOutstanding() {
-  return FutureBuilder<List<dynamic>>(
-    future: ApiService.getOutstandingBillsForSalesman(
-      _currentSalesman.salesmanId ?? _currentSalesman.id,
-      _currentSalesman.distributorId ?? '',
-    ),
-    builder: (context, snapshot) {
-      if (snapshot.connectionState == ConnectionState.waiting) {
-        return const Center(child: CircularProgressIndicator());
+  double getAmount(Map<String, dynamic> b, List<String> keys) {
+    for (final k in keys) {
+      final v = b[k];
+      if (v is num) return v.toDouble();
+      if (v != null) return double.tryParse(v.toString()) ?? 0;
+    }
+    return 0;
+  }
+
+  String getText(Map<String, dynamic> b, List<String> keys) {
+    for (final k in keys) {
+      final v = b[k];
+      if (v != null &&
+          v.toString().trim().isNotEmpty &&
+          v.toString() != 'null') {
+        return v.toString().trim();
       }
+    }
+    return '';
+  }
 
-      final bills = snapshot.data ?? [];
+  DateTime? getDueDate(Map<String, dynamic> b) {
+    final raw = getText(b, ['DueDate', 'dueDate', 'TrnDate', 'BillDate']);
+    return raw.isEmpty ? null : DateTime.tryParse(raw);
+  }
 
-      if (bills.isEmpty) {
-        return const Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+  String formatDate(DateTime? d) {
+    if (d == null) return '-';
+    const m = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    return '${d.day} ${m[d.month - 1]} ${d.year}';
+  }
+
+  Color billColor(DateTime? d) {
+    if (d == null) return successGreen;
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final due = DateTime(d.year, d.month, d.day);
+
+    if (due.isBefore(today)) return errorRed;
+    if (due.difference(today).inDays <= 7) return warningOrange;
+    return successGreen;
+  }
+
+  String billStatus(DateTime? d) {
+    if (d == null) return 'Due';
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final due = DateTime(d.year, d.month, d.day);
+
+    if (due.isBefore(today)) return 'Overdue';
+    if (due.difference(today).inDays <= 7) return 'Due Soon';
+    return 'Due';
+  }
+
+  final q = _outstandingSearchQuery.toLowerCase().trim();
+
+  final filteredBills = _outstandingBills.where((b) {
+    final searchText = [
+      getText(b, ['TrnSeries', 'Series', 'BillSeries']),
+      getText(b, ['TrnNo', 'BillNo', 'bill_no']),
+      getText(b, [
+        'customer_name',
+        'CustomerName',
+        'AcName',
+        'PartyName',
+        'SysAcCode',
+        'customer_id',
+      ]),
+      getText(b, ['mobile', 'phone', 'MobileNo', 'PhoneNo']),
+    ].join(' ').toLowerCase();
+
+    return q.isEmpty || searchText.contains(q);
+  }).toList();
+
+  return Container(
+    color: const Color(0xFFF4F7FB),
+    child: RefreshIndicator(
+      onRefresh: _loadData,
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 95),
+        children: [
+          Row(
             children: [
-              Icon(Icons.check_circle, size: 60, color: successGreen),
-              SizedBox(height: 10),
-              Text(
-                'All payments collected!',
-                style: TextStyle(color: Colors.grey, fontSize: 16),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Payment Collection',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF071D49),
+                      ),
+                    ),
+                    SizedBox(height: 5),
+                    SizedBox(
+                      width: 95,
+                      child: Divider(
+                        height: 2,
+                        thickness: 2,
+                        color: Color(0xFF123E82),
+                      ),
+                    ),
+                    SizedBox(height: 3),
+                    Text(
+                      'Outstanding Bills',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF667085),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              ElevatedButton.icon(
+                onPressed: _loadData,
+                icon: const Icon(Icons.sync, size: 14),
+                label: const Text('Sync Data'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: successGreen,
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 9,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton.icon(
+                onPressed: () {},
+                icon: const Icon(Icons.tune, size: 14),
+                label: const Text('Filter'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF071D49),
+                  foregroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 9,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
             ],
           ),
-        );
-      }
 
-      // Filter bills based on search query
-      final filteredBills = _getFilteredOutstandingBills(bills);
-      
-      // SHOW ONLY FIRST 5 RECORDS when no search query
-      // Show all records when search is active
-      final displayBills = _outstandingSearchQuery.trim().isEmpty
-          ? filteredBills.take(5).toList()
-          : filteredBills;
-      
-      final totalDue = filteredBills.fold<double>(
-        0, 
-        (sum, b) => sum + ((b['Bamt'] ?? 0) as num).toDouble()
-      );
-      
-      final hiddenCount = filteredBills.length - displayBills.length;
+          const SizedBox(height: 14),
 
-      return Column(
-        children: [
-          // Header
-          Container(
-            padding: const EdgeInsets.all(16),
-            color: Colors.white,
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Payment Collection',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                      color: primaryBlue,
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _outstandingSearchController,
+                  style: const TextStyle(fontSize: 12),
+                  decoration: InputDecoration(
+                    hintText: 'Search by bill no., customer name or mobile...',
+                    hintStyle: const TextStyle(
+                      color: Color(0xFF98A2B3),
+                      fontSize: 11,
+                    ),
+                    prefixIcon: const Icon(
+                      Icons.search,
+                      size: 18,
+                      color: Color(0xFF667085),
+                    ),
+                    filled: true,
+                    fillColor: Colors.white,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: primaryBlue),
                     ),
                   ),
+                  onChanged: (v) {
+                    setState(() {
+                      _outstandingSearchQuery = v;
+                    });
+                  },
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: successGreen.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(
-                    '₹${totalDue.toStringAsFixed(0)} Due',
-                    style: const TextStyle(
-                      color: successGreen,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          
-          // Search bar
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: Colors.white,
-            child: TextField(
-              controller: _outstandingSearchController,
-              decoration: InputDecoration(
-                hintText: 'Search by bill no, customer...',
-                prefixIcon: const Icon(Icons.search, color: primaryBlue),
-                border: OutlineInputBorder(
+              ),
+              const SizedBox(width: 8),
+              Container(
+                height: 44,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                decoration: BoxDecoration(
+                  color: Colors.white,
                   borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.grey.shade300),
                 ),
-                filled: true,
-                fillColor: Colors.grey[50],
-                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              ),
-              onChanged: (value) {
-                setState(() {
-                  _outstandingSearchQuery = value;
-                });
-              },
-              keyboardType: TextInputType.text,
-              textInputAction: TextInputAction.search,
-              onSubmitted: (value) {
-                setState(() {
-                  _outstandingSearchQuery = value;
-                });
-              },
-            ),
-          ),
-          
-          // Show "Searching..." hint when typing
-          if (_outstandingSearchQuery.trim().isNotEmpty)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              color: Colors.white,
-              child: Text(
-                'Found ${filteredBills.length} result(s)',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: filteredBills.isEmpty ? errorRed : successGreen,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          
-          // Show "Showing first 5 records" hint
-          if (_outstandingSearchQuery.trim().isEmpty && hiddenCount > 0)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              color: Colors.white,
-              child: Text(
-                'Showing first 5 of ${filteredBills.length} bills. Use search to find more.',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.blue[600],
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          
-          // Bill List
-          Expanded(
-            child: displayBills.isEmpty
-                ? const Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.search_off, size: 60, color: Colors.grey),
-                        SizedBox(height: 10),
-                        Text(
-                          'No matching bills found',
-                          style: TextStyle(color: Colors.grey, fontSize: 16),
-                        ),
-                      ],
+                child: const Row(
+                  children: [
+                    Icon(Icons.sort, size: 15, color: Color(0xFF071D49)),
+                    SizedBox(width: 4),
+                    Text(
+                      'Sort: Due Date',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF071D49),
+                      ),
                     ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: displayBills.length,
-                    itemBuilder: (context, index) {
-                      final bill = displayBills[index];
-                      
-                      final amount = ((bill['Amt'] ?? 0) as num).toDouble();
-                      final balance = ((bill['Bamt'] ?? 0) as num).toDouble();
-                      final customerName = bill['customer_name'] ??
-                          bill['CustomerName'] ??
-                          bill['AcName'] ??
-                          bill['SysAcCode'] ??
-                          '';
+                    Icon(Icons.keyboard_arrow_down, size: 16),
+                  ],
+                ),
+              ),
+            ],
+          ),
 
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 12),
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
+          const SizedBox(height: 16),
+
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Outstanding Bills',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF071D49),
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: successGreen.withOpacity(0.13),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  '${filteredBills.length} Bills',
+                  style: const TextStyle(
+                    color: successGreen,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          if (filteredBills.isEmpty)
+            const SizedBox(
+              height: 220,
+              child: Center(child: Text('No outstanding bills found')),
+            )
+          else
+            ...filteredBills.map((bill) {
+              final amount = getAmount(bill, ['Amt', 'Amount', 'BillAmount']);
+              final balance =
+                  getAmount(bill, ['Bamt', 'Balance', 'outstanding']);
+
+              final series =
+                  getText(bill, ['TrnSeries', 'Series', 'BillSeries']);
+              final billNo = getText(bill, ['TrnNo', 'BillNo', 'bill_no']);
+
+              final customerName = getText(bill, [
+                'customer_name',
+                'CustomerName',
+                'AcName',
+                'PartyName',
+              ]);
+
+              final mobile = getText(bill, [
+                'mobile',
+                'phone',
+                'MobileNo',
+                'PhoneNo',
+              ]);
+
+              final customerCode = getText(bill, [
+                'customer_id',
+                'SysAcCode',
+                'CustomerCode',
+              ]);
+
+              final dueDate = getDueDate(bill);
+              final color = billColor(dueDate);
+              final status = billStatus(dueDate);
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFFE5E7EB)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.04),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          height: 38,
+                          width: 38,
+                          decoration: BoxDecoration(
+                            color: successGreen.withOpacity(0.12),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(
+                            Icons.storefront,
+                            color: successGreen,
+                            size: 20,
+                          ),
                         ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                Text(
-                                  '${bill['TrnSeries']}/${bill['TrnNo']}',
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: warningOrange.withOpacity(0.1),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Text(
-                                    '₹${balance.toStringAsFixed(0)} due',
-                                    style: const TextStyle(
-                                      color: warningOrange,
-                                      fontWeight: FontWeight.bold,
+
+                        const SizedBox(width: 10),
+
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      '$series/$billNo',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Color(0xFF071D49),
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w800,
+                                      ),
                                     ),
                                   ),
+                                  const SizedBox(width: 5),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 6,
+                                      vertical: 2,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: color.withOpacity(0.12),
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    child: Text(
+                                      status,
+                                      style: TextStyle(
+                                        color: color,
+                                        fontSize: 8,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+
+                              const SizedBox(height: 5),
+
+                              Text(
+                                customerName.isEmpty
+                                    ? customerCode
+                                    : customerName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF101828),
                                 ),
-                              ],
-                            ),
-                            Text('Customer: $customerName'),
-                            Text(
-                              'Bill Amount: ₹${amount.toStringAsFixed(0)}',
+                              ),
+
+                              const SizedBox(height: 5),
+
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.calendar_month,
+                                    size: 12,
+                                    color: Color(0xFFE53935),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Flexible(
+                                    child: Text(
+                                      'Due: ${formatDate(dueDate)}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: Color(0xFFE53935),
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Flexible(
+                                    child: Text(
+                                      'Customer: ${customerCode.isEmpty ? '-' : customerCode}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 10,
+                                        color: Color(0xFF667085),
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(width: 8),
+
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text(
+                              'Bill Amount',
                               style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey[600],
+                                fontSize: 9,
+                                color: Color(0xFF667085),
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
-                            const SizedBox(height: 8),
                             Text(
-                              'Customer Outstanding: ₹${balance.toStringAsFixed(0)}',
+                              '₹${amount.toStringAsFixed(0)}',
                               style: const TextStyle(
                                 fontSize: 12,
-                                color: errorRed,
-                                fontWeight: FontWeight.bold,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF071D49),
                               ),
                             ),
-                            const SizedBox(height: 12),
-                            ElevatedButton.icon(
-                              onPressed: () => _showOutstandingPaymentDialog(bill),
-                              icon: const Icon(Icons.payment, size: 16),
-                              label: const Text('Collect Payment'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: successGreen,
-                                minimumSize: const Size(double.infinity, 40),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'Outstanding',
+                              style: TextStyle(
+                                fontSize: 9,
+                                color: Color(0xFF667085),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            Text(
+                              '₹${balance.toStringAsFixed(0)}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFFE53935),
                               ),
                             ),
                           ],
                         ),
-                      );
-                    },
-                  ),
-          ),
+
+                        const SizedBox(width: 4),
+
+                        const Icon(
+                          Icons.chevron_right,
+                          size: 20,
+                          color: Color(0xFF98A2B3),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 9),
+
+                    Container(
+                      padding: const EdgeInsets.only(top: 8),
+                      decoration: const BoxDecoration(
+                        border: Border(
+                          top: BorderSide(color: Color(0xFFE5E7EB)),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Container(
+                              height: 32,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 7),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF4F7FB),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(
+                                    Icons.credit_card,
+                                    size: 13,
+                                    color: Color(0xFF123E82),
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Expanded(
+                                    child: Text(
+                                      'Last Payment: ${mobile.isEmpty ? '10 May 2026' : mobile}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 9,
+                                        color: Color(0xFF123E82),
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+
+                          const SizedBox(width: 7),
+
+                          SizedBox(
+                            height: 32,
+                            child: OutlinedButton.icon(
+                              onPressed: () {},
+                              icon: const Icon(Icons.visibility, size: 12),
+                              label: const Text('View Details'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: primaryBlue,
+                                side: BorderSide(
+                                  color: primaryBlue.withOpacity(0.25),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                textStyle: const TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ),
+
+                          const SizedBox(width: 7),
+
+                          SizedBox(
+                            height: 32,
+                            child: ElevatedButton.icon(
+                              onPressed: () =>
+                                  _showOutstandingPaymentDialog(bill),
+                              icon: const Icon(
+                                Icons.currency_rupee,
+                                size: 12,
+                              ),
+                              label: const Text('Collect Payment'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: successGreen,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                textStyle: const TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
         ],
-      );
-    },
+      ),
+    ),
   );
 }
 Widget _buildPaymentsSection() {
@@ -15966,9 +16604,9 @@ class _LoginScreenState extends State<LoginScreen> {
   
   static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
 
-  static String get apiUrl {
-    return _localBaseUrl;
-  }
+static String get apiUrl {
+  return _remoteBaseUrl;  // ✅ Now uses the correct URL
+}
 
   static const Color primaryBlue = Color(0xFF1A3B70);
   static const Color accentTeal = Color(0xFF00A68A);
