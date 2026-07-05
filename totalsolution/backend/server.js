@@ -57,7 +57,12 @@ app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
 
 // MongoDB connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
+const MONGODB_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+  console.error("MongoDB URI missing in .env");
+  process.exit(1);
+}
 const DB_NAME = 'TotalApp';
 
 // Collection names
@@ -2707,20 +2712,85 @@ app.get('/api/payments', async (req, res) => {
     }
 });
 
-app.get('/api/payments/distributor/:distributorId', async (req, res) => {
-    try {
-        const { distributorId } = req.params;
-        const payments = await collections.payment
-            .find({ 'collected_by.id': distributorId })
-            .sort({ created_at: -1 })
-            .toArray();
-        res.json(payments);
-    } catch (error) {
-        console.error('Error fetching payments:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+// ==================== PAYMENT / RECEIPT DOWNLOAD API ====================
 
+app.get('/api/payments/distributor/:distributorId', async (req, res) => {
+  try {
+    const distributorId = decodeURIComponent(req.params.distributorId || '').trim();
+
+    console.log("========== PAYMENT DOWNLOAD DEBUG ==========");
+    console.log("DB NAME:", db.databaseName);
+    console.log("Collection:", COLLECTIONS.PAYMENT);
+    console.log("Distributor ID received:", distributorId);
+
+    const totalInCollection = await collections.payment.countDocuments();
+    const exactCount = await collections.payment.countDocuments({
+      distributor_id: distributorId
+    });
+
+    console.log("Total mas_payment records:", totalInCollection);
+    console.log("Exact distributor_id count:", exactCount);
+
+    const sample = await collections.payment.findOne({});
+    console.log("Sample distributor_id:", sample?.distributor_id);
+
+    const payments = await collections.payment
+      .find({ distributor_id: distributorId })
+      .sort({ collection_date: -1 })
+      .toArray();
+
+    console.log("Returning payments:", payments.length);
+    console.log("===========================================");
+
+    return res.json(payments);
+  } catch (error) {
+    console.error("Payment download error:", error);
+    return res.status(500).json([]);
+  }
+});
+app.put('/api/payments/status/:collectionId', async (req, res) => {
+  try {
+    const collectionId = req.params.collectionId;
+
+    const result = await collections.payment.updateOne(
+      { collection_id: collectionId },
+      {
+        $set: {
+          download_status: 'downloaded',
+          downloadedAt: new Date().toISOString()
+        }
+      }
+    );
+
+    res.json({
+      success: result.matchedCount > 0,
+      matchedCount: result.matchedCount
+    });
+  } catch (error) {
+    console.error('Error updating payment status:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+app.get('/api/payments/debug/all', async (req, res) => {
+  try {
+    const count = await collections.payment.countDocuments();
+
+    const sample = await collections.payment
+      .find({})
+      .sort({ created_at: -1 })
+      .limit(10)
+      .toArray();
+
+    res.json({
+      dbName: db.databaseName,
+      collection: 'mas_payment',
+      totalPayments: count,
+      sample
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 app.get('/api/payments/salesman/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
@@ -2897,10 +2967,14 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
         }
         
         // FIXED: Payment record with correct IDs and all payment details
-        const paymentRecord = {
-            collection_id: collectionId,
-            collection_date: new Date().toISOString(),
-            customer_id: actualCustomerId,
+       const paymentRecord = {
+    collection_id: collectionId,
+    collection_date: new Date().toISOString(),
+
+    // IMPORTANT FIX FOR RECEIPT DOWNLOAD
+    distributor_id: order.distributor_id || req.body.distributorId || null,
+
+    customer_id: actualCustomerId,
             customer_name: actualCustomerName,
             amount_collected: paymentAmount,
             payment_mode: paymentMode,
@@ -2930,15 +3004,16 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
             reference_number: reference || chequeNumber || transactionNumber || null,
             photo_path: photoPath,
             remark: remark || null,
-            order_details: {
-                order_id: order.orderNumber,
-                order_amount: order.grand_total,
-                previous_paid: order.paidAmount || 0,
-                previous_due: order.dueAmount || order.grand_total,
-                status: newDueAmount <= 0 ? 'completed' : 'partial',
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            }
+           order_details: {
+    order_id: order.orderNumber,
+    distributor_id: order.distributor_id || req.body.distributorId || null,
+    order_amount: order.grand_total,
+    previous_paid: order.paidAmount || 0,
+    previous_due: order.dueAmount || order.grand_total,
+    status: newDueAmount <= 0 ? 'completed' : 'partial',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+}
         };
         
         console.log('Payment record to save:', JSON.stringify(paymentRecord, null, 2));
@@ -3644,89 +3719,13 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
   }
 });
 app.listen(PORT, async () => {
-    await connectToMongoDB();
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`API endpoints available at http://localhost:${PORT}/api`);
-    console.log(`Logo available at http://localhost:${PORT}/isset/image/TotalSolution.png`);
-    console.log(`\nAPI Endpoints:`);
-    console.log(`\nAuth:`);
-    console.log(`  POST /api/login - User login`);
-    console.log(`  POST /api/logout - User logout`);
-    console.log(`  POST /api/register - User registration`);
-    console.log(`\nSearch:`);
-    console.log(`  GET /api/search/:distributorId?query=term - Global search for products, customers, orders`);
-    console.log(`\nImport Master Data:`);
-    console.log(`  POST /api/import/customers - Import customers from Excel (with updateExisting flag)`);
-    console.log(`  POST /api/import/products - Import products from Excel (with updateExisting flag)`);
-    console.log(`\nDistributors:`);
-    console.log(`  GET /api/distributors - Get all distributors`);
-    console.log(`  GET /api/distributors/:distributorId - Get distributor by ID`);
-    console.log(`\nCustomers:`);
-    console.log(`  GET /api/customers/:distributorId - Get all customers`);
-    console.log(`  POST /api/customers - Add new customer`);
-    console.log(`  GET /api/customers/id/:id - Get single customer`);
-    console.log(`  PUT /api/customers/:id - Update customer (ALL fields editable for imported customers)`);
-    console.log(`  DELETE /api/customers/:id - Delete customer (only if no orders exist)`);
-    console.log(`\nProducts:`);
-    console.log(`  GET /api/products/:distributorId - Get all products (includes MRP field)`);
-    console.log(`  POST /api/products - Add new product (includes MRP)`);
-    console.log(`  GET /api/products/id/:id - Get single product`);
-    console.log(`  PUT /api/products/:id - Update product`);
-    console.log(`  DELETE /api/products/:id - Delete product (deactivate if used in orders)`);
-    console.log(`  PUT /api/products/:id/stock - Update product stock (correct calculation)`);
-    console.log(`  GET /api/products/:productId/last-sale - Get last sale for product`);
-    console.log(`\nSalesmen:`);
-    console.log(`  GET /api/salesmen/:distributorId - Get all salesmen`);
-    console.log(`  POST /api/salesmen - Add new salesman`);
-    console.log(`  GET /api/salesmen/id/:id - Get single salesman`);
-    console.log(`  GET /api/salesmen/by-id/:salesmanId - Get salesman by salesman_id`);
-    console.log(`  PUT /api/salesmen/:id - Update salesman`);
-    console.log(`  DELETE /api/salesmen/:id - Delete salesman (deactivate if has orders)`);
-    console.log(`\nPermissions:`);
-    console.log(`  GET /api/salesmen/permissions/:salesmanId - Get permissions`);
-    console.log(`  PUT /api/salesmen/permissions/:salesmanId - Update permissions`);
-    console.log(`\nSalesman Data:`);
-    console.log(`  GET /api/salesman-data/:salesmanId - Get all data for salesman (includes totalCollection from collection history)`);
-    console.log(`\nOrders:`);
-    console.log(`  POST /api/orders - Create order (auto-updates stock and saves MRP)`);
-    console.log(`  PUT /api/orders/:orderId - Edit order (adjusts stock and sends notification)`);
-    console.log(`  DELETE /api/orders/:orderId - Delete order (restores stock and sends notification)`);
-    console.log(`  GET /api/orders/salesman/:salesmanId - Get orders by salesman`);
-    console.log(`  GET /api/orders/distributor/:distributorId - Get orders by distributor`);
-    console.log(`  GET /api/orders/download/:distributorId - Download orders as Excel with MRP and QTY columns`);
-    console.log(`  PUT /api/orders/status/:orderId - Update order status to 'downloaded' (for tracking downloaded orders)`);
-    console.log(`  GET /api/orders/customer/:customerId - Get orders by customer`);
-    console.log(`  GET /api/orders/customer/:customerId/last - Get last order by customer`);
-    console.log(`  GET /api/orders/:orderId - Get single order`);
-    console.log(`  PUT /api/orders/:orderId/status - Update order status`);
-    console.log(`\nPayments & Collection History:`);
-    console.log(`  POST /api/orders/:orderId/payment - Record payment with file upload (sends notification to distributor)`);
-    console.log(`  GET /api/payments - Get all payments`);
-    console.log(`  GET /api/payments/distributor/:distributorId - Get payments for distributor`);
-    console.log(`  GET /api/payments/salesman/:salesmanId - Get payments for salesman`);
-    console.log(`  GET /api/collection-history/distributor/:distributorId - Get collection history for distributor (from mas_payment collection)`);
-    console.log(`  GET /api/collection-history/salesman/:salesmanId - Get collection history for salesman (from mas_payment collection)`);
-    console.log(`  GET /api/collection-history/reconcile/:distributorId - Reconcile collections with expected amount`);
-    console.log(`  GET /api/customers/:customerId/outstanding - Get customer outstanding balance`);
-    console.log(`  GET /api/banks - Get list of Indian banks`);
-    console.log(`  GET /api/upi-types - Get list of UPI types`);
-    console.log(`\nDashboard:`);
-    console.log(`  GET /api/dashboard/stats/:distributorId - Get dashboard statistics with salesman performance (Revenue = sum of order amounts, Collection = sum of collection history)`);
-    console.log(`\nNotifications:`);
-    console.log(`  GET /api/notifications/:distributorId - Get notifications for distributor`);
-    console.log(`  GET /api/notifications/unread-count/:distributorId - Get unread count`);
-    console.log(`  PUT /api/notifications/:notificationId/read - Mark notification as read (returns redirect_to URL)`);
-    console.log(`  PUT /api/notifications/mark-all-read/:distributorId - Mark all as read`);
-    console.log(`\nAreas & Routes:`);
-    console.log(`  GET /api/areas - Get major Indian cities and areas`);
-    console.log(`  GET /api/sub-areas - Get real sub-areas/routes for selected area`);
-    console.log(`\nPassword Change:`);
-    console.log(`  POST /api/change-password - Change user password`);
-    console.log(`  GET /api/users-under-distributor/:distributorId - Get users under distributor`);
-    console.log(`\n✅ NEW FEATURE ADDED:`);
-    console.log(`  1) ✅ Added PUT /api/orders/status/:orderId endpoint to update order status to 'downloaded'`);
-    console.log(`  2) ✅ Orders now have a 'status' field that can be set to 'downloaded' when orders are downloaded to desktop`);
-    console.log(`  3) ✅ Added 'downloadedAt' timestamp to track when order was downloaded`);
-    console.log(`  4) ✅ Added index on 'status' field for faster queries`);
-    console.log(`\n✅ FIXED: Salesman ID is now properly stored in orders - using the actual salesman_id from mas_salesman collection`);
+    try {
+        await connectToMongoDB();
+        console.log(`Server running on http://localhost:${PORT}`);
+        console.log(`API endpoints available at http://localhost:${PORT}/api`);
+        // ... rest of your startup logs
+    } catch (error) {
+        console.error('Failed to start server:', error);
+        process.exit(1);
+    }
 });
