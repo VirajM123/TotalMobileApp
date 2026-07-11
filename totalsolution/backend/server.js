@@ -3573,148 +3573,565 @@ app.get('/api/outstanding/salesman/:salesmanId', async (req, res) => {
 });
 app.post('/api/outstanding/collect-payment', async (req, res) => {
   try {
-    const distributorId = String(req.body.distributorId || '').trim();
-    const salesmanId = String(req.body.salesmanId || '').trim();
+    console.log(
+      'COLLECTION PAYMENT REQUEST:',
+      JSON.stringify(req.body, null, 2)
+    );
 
-    const billSeries = String(req.body.billSeries || '').trim();
-    const billNo = Number(req.body.billNo || 0);
-    const sysAcCode = String(req.body.sysAcCode || '').trim();
+    const distributorId = String(
+      req.body.distributorId || ''
+    ).trim();
 
-    const oldBalance = Number(req.body.oldBalance || 0);
-    const amountCollected = Number(req.body.amountCollected || 0);
-    const balanceAfterPayment = oldBalance - amountCollected;
-    const newBalance = balanceAfterPayment < 0 ? 0 : balanceAfterPayment;
+    const salesmanId = String(
+      req.body.salesmanId || ''
+    ).trim();
 
-    const cashAmount = Number(req.body.cashAmount || 0);
-    const chequeAmount = Number(req.body.chequeAmount || 0);
+    const salesmanNameFromRequest = String(
+      req.body.salesmanName || ''
+    ).trim();
 
-    let paymentMode = req.body.paymentMode || 'Cash';
+    // Bill series is allowed to be blank.
+    const billSeries = String(
+      req.body.billSeries ?? ''
+    ).trim();
+
+    // Keep bill number as String because it may be alphanumeric.
+    const billNo = String(
+      req.body.billNo ?? ''
+    ).trim();
+
+    const sysAcCode = String(
+      req.body.sysAcCode || ''
+    ).trim();
+
+    const oldBalance = Number(
+      req.body.oldBalance ??
+      req.body.balance ??
+      0
+    );
+
+    const amountCollected = Number(
+      req.body.amountCollected ??
+      req.body.amount ??
+      0
+    );
+
+    const cashAmount = Number(
+      req.body.cashAmount ?? 0
+    );
+
+    const chequeAmount = Number(
+      req.body.chequeAmount ?? 0
+    );
+
+    // ============================================================
+    // VALIDATION
+    // ============================================================
+
+    if (!distributorId) {
+      return res.status(400).json({
+        success: false,
+        field: 'distributorId',
+        message: 'Distributor ID is missing'
+      });
+    }
+
+    if (!salesmanId) {
+      return res.status(400).json({
+        success: false,
+        field: 'salesmanId',
+        message: 'Salesman ID is missing'
+      });
+    }
+
+    if (!billNo) {
+      return res.status(400).json({
+        success: false,
+        field: 'billNo',
+        message: 'Bill number is missing'
+      });
+    }
+
+    if (!sysAcCode) {
+      return res.status(400).json({
+        success: false,
+        field: 'sysAcCode',
+        message: 'Customer account code is missing'
+      });
+    }
+
+    if (!Number.isFinite(oldBalance) || oldBalance <= 0) {
+      return res.status(400).json({
+        success: false,
+        field: 'oldBalance',
+        message: `Invalid pending balance: ${req.body.oldBalance}`
+      });
+    }
+
+    if (
+      !Number.isFinite(amountCollected) ||
+      amountCollected <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        field: 'amountCollected',
+        message:
+          `Invalid collection amount: ${req.body.amountCollected}`
+      });
+    }
+
+    if (amountCollected > oldBalance) {
+      return res.status(400).json({
+        success: false,
+        field: 'amountCollected',
+        message:
+          `Collection amount ₹${amountCollected} cannot exceed pending balance ₹${oldBalance}`
+      });
+    }
+
+    const newBalance = Math.max(
+      0,
+      Number(
+        (oldBalance - amountCollected).toFixed(2)
+      )
+    );
+
+    // ============================================================
+    // PAYMENT MODE
+    // ============================================================
+
+    let paymentMode = String(
+      req.body.paymentMode || 'Cash'
+    ).trim();
+
     if (cashAmount > 0 && chequeAmount > 0) {
       paymentMode = 'Cash+Cheque';
     } else if (chequeAmount > 0) {
       paymentMode = 'Cheque';
     } else if (cashAmount > 0) {
       paymentMode = 'Cash';
-    } else if (req.body.upiApp) {
+    } else if (
+      String(req.body.upiApp || '').trim()
+    ) {
       paymentMode = 'UPI';
     }
 
-    if (!distributorId || !salesmanId || !billSeries || !billNo || !sysAcCode) {
-      return res.status(400).json({
-        success: false,
-        message: 'Required bill/salesman/distributor details missing'
+    // ============================================================
+    // FIND OUTSTANDING BILL
+    // ============================================================
+
+    const billNoConditions = [
+      {
+        TrnNo: billNo
+      }
+    ];
+
+    const numericBillNo = Number(billNo);
+
+    if (Number.isFinite(numericBillNo)) {
+      billNoConditions.push({
+        TrnNo: numericBillNo
       });
     }
 
-    if (amountCollected <= 0 || amountCollected > oldBalance) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid collection amount'
+    const outstandingFilter = {
+      distributor_id: distributorId,
+      SysAcCode: sysAcCode,
+
+      $and: [
+        {
+          $or: billNoConditions
+        },
+        {
+          $or: [
+            {
+              salesman_id: salesmanId
+            },
+            {
+              salesman_id: {
+                $exists: false
+              }
+            },
+            {
+              salesman_id: ''
+            },
+            {
+              salesman_id: null
+            }
+          ]
+        }
+      ]
+    };
+
+    if (billSeries) {
+      outstandingFilter.TrnSeries = billSeries;
+    } else {
+      outstandingFilter.$and.push({
+        $or: [
+          {
+            TrnSeries: ''
+          },
+          {
+            TrnSeries: null
+          },
+          {
+            TrnSeries: {
+              $exists: false
+            }
+          }
+        ]
       });
     }
 
-    const collectionId = generateCollectionId();
+    console.log(
+      'OUTSTANDING SEARCH FILTER:',
+      JSON.stringify(outstandingFilter, null, 2)
+    );
 
-    let salesmanName = req.body.salesmanName || '';
+    const outstandingBill =
+      await collections.outstanding.findOne(
+        outstandingFilter
+      );
+
+    if (!outstandingBill) {
+      return res.status(404).json({
+        success: false,
+        message:
+          `Outstanding bill not found. ` +
+          `Series: ${billSeries || 'blank'}, ` +
+          `Bill No: ${billNo}, ` +
+          `Account: ${sysAcCode}`
+      });
+    }
+
+    // Use database balance as the final balance source.
+    const databaseBalance = Number(
+      outstandingBill.Bamt ??
+      outstandingBill.balance ??
+      oldBalance
+    );
+
+    if (
+      !Number.isFinite(databaseBalance) ||
+      databaseBalance <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        field: 'oldBalance',
+        message:
+          'This bill does not have any pending balance'
+      });
+    }
+
+    if (amountCollected > databaseBalance) {
+      return res.status(400).json({
+        success: false,
+        field: 'amountCollected',
+        message:
+          `Collection amount ₹${amountCollected} cannot exceed current pending balance ₹${databaseBalance}`
+      });
+    }
+
+    const finalNewBalance = Math.max(
+      0,
+      Number(
+        (
+          databaseBalance - amountCollected
+        ).toFixed(2)
+      )
+    );
+
+    // ============================================================
+    // SALESMAN DETAILS
+    // ============================================================
+
+    let salesmanName = salesmanNameFromRequest;
+
     if (!salesmanName) {
-      const salesman = await collections.salesman.findOne({ salesman_id: salesmanId });
+      const salesman =
+        await collections.salesman.findOne({
+          salesman_id: salesmanId
+        });
+
       if (salesman) {
-        salesmanName = salesman.name;
+        salesmanName =
+          salesman.name ||
+          salesman.salesman_name ||
+          '';
       } else {
-        const registerUser = await collections.register.findOne({ salesman_id: salesmanId });
-        if (registerUser) salesmanName = registerUser.fullName;
+        const registerUser =
+          await collections.register.findOne({
+            salesman_id: salesmanId
+          });
+
+        if (registerUser) {
+          salesmanName =
+            registerUser.fullName ||
+            registerUser.name ||
+            '';
+        }
       }
     }
 
+    // ============================================================
+    // DISTRIBUTOR DETAILS
+    // ============================================================
+
     let distributorName = '';
-    const distributor = await collections.distributor.findOne({ distributor_id: distributorId });
-    if (distributor) distributorName = distributor.name;
+
+    const distributor =
+      await collections.distributor.findOne({
+        distributor_id: distributorId
+      });
+
+    if (distributor) {
+      distributorName =
+        distributor.name ||
+        distributor.distributor_name ||
+        distributor.firmName ||
+        '';
+    }
+
+    const collectionId = generateCollectionId();
+    const now = new Date().toISOString();
+
+    // ============================================================
+    // PAYMENT DOCUMENT
+    // ============================================================
 
     const paymentDoc = {
       collection_id: collectionId,
-      collection_date: new Date().toISOString(),
+      collection_date: now,
+
       distributor_id: distributorId,
       distributor_name: distributorName,
+
       salesman_details: {
         id: salesmanId,
         name: salesmanName || salesmanId
       },
+
+      collected_by: {
+        type: 'salesman',
+        id: salesmanId,
+        name: salesmanName || salesmanId,
+        time: now
+      },
+
+      customer_id: sysAcCode,
+
+      customer_name: String(
+        req.body.customerName || ''
+      ).trim(),
+
       bill_details: {
         bill_series: billSeries,
         bill_no: billNo,
         sys_ac_code: sysAcCode,
-        customer_name: req.body.customerName || '',
-        bill_amount: Number(req.body.billAmount || oldBalance),
-        old_balance: oldBalance,
+
+        customer_name: String(
+          req.body.customerName || ''
+        ).trim(),
+
+        bill_amount: Number(
+          req.body.billAmount ??
+          outstandingBill.Amt ??
+          databaseBalance
+        ),
+
+        old_balance: databaseBalance,
         amount_collected: amountCollected,
-        balance_after_payment: newBalance
+        balance_after_payment:
+          finalNewBalance
       },
+
       payment_mode: paymentMode,
+
       payment_details: {
         cash_amount: cashAmount,
         cheque_amount: chequeAmount,
-        cheque_number: req.body.chequeNumber || null,
-        cheque_date: req.body.chequeDate || null,
-        bank_name: req.body.bankName || null,
-        upi_app: req.body.upiApp || null,
-        transaction_number: req.body.transactionNumber || null
+
+        cheque_number:
+          String(
+            req.body.chequeNumber || ''
+          ).trim() || null,
+
+        cheque_date:
+          String(
+            req.body.chequeDate || ''
+          ).trim() || null,
+
+        bank_name:
+          String(
+            req.body.bankName || ''
+          ).trim() || null,
+
+        upi_app:
+          String(
+            req.body.upiApp || ''
+          ).trim() || null,
+
+        transaction_number:
+          String(
+            req.body.transactionNumber || ''
+          ).trim() || null,
+
+        payment_photo_path:
+          String(
+            req.body.paymentPhotoPath || ''
+          ).trim() || null
       },
+
       amount_collected: amountCollected,
-      remark: req.body.remark || '',
+
+      remark: String(
+        req.body.remark || ''
+      ).trim(),
+
       status: 'completed',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
+      created_at: now,
+      updated_at: now
     };
 
-    const paymentResult = await collections.payment.insertOne(paymentDoc);
+    // ============================================================
+    // UPDATE OUTSTANDING FIRST
+    // ============================================================
 
-    const outstandingUpdateResult = await collections.outstanding.updateOne(
-      {
-        distributor_id: distributorId,
-        TrnSeries: billSeries,
-        TrnNo: billNo,
-        SysAcCode: sysAcCode,
-        $or: [
-          { salesman_id: salesmanId },
-          { salesman_id: { $exists: false } },
-          { salesman_id: '' },
-          { salesman_id: null }
-        ]
-      },
-      {
-        $set: {
-          Bamt: newBalance,
-          payment_status: newBalance <= 0 ? 'paid' : 'partial',
-          status: newBalance <= 0 ? 'paid' : 'pending',
-          last_payment_date: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+    const outstandingUpdateResult =
+      await collections.outstanding.updateOne(
+        {
+          _id: outstandingBill._id,
+
+          // Prevent simultaneous duplicate adjustment.
+          Bamt: outstandingBill.Bamt
         },
-        $inc: {
-          collected_amount: amountCollected
-        }
-      }
-    );
+        {
+          $set: {
+            Bamt: finalNewBalance,
 
-    if (outstandingUpdateResult.matchedCount === 0) {
-      return res.status(404).json({
+            payment_status:
+              finalNewBalance <= 0
+                ? 'paid'
+                : 'partial',
+
+            status:
+              finalNewBalance <= 0
+                ? 'paid'
+                : 'pending',
+
+            last_payment_date: now,
+            updated_at: now
+          },
+
+          $inc: {
+            collected_amount: amountCollected
+          }
+        }
+      );
+
+    if (
+      outstandingUpdateResult.matchedCount === 0
+    ) {
+      return res.status(409).json({
         success: false,
-        message: 'Payment saved, but outstanding bill not found for update'
+        message:
+          'Outstanding balance was changed by another request. Refresh the bills and try again.'
       });
     }
 
-    res.json({
-      success: true,
-      message: 'Outstanding payment saved successfully',
-      payment_id: paymentResult.insertedId,
-      collection_id: collectionId,
-      new_balance: newBalance,
-      payment_status: newBalance <= 0 ? 'paid' : 'partial'
-    });
+    // ============================================================
+    // SAVE PAYMENT
+    // ============================================================
+
+    try {
+      const paymentResult =
+        await collections.payment.insertOne(
+          paymentDoc
+        );
+
+      return res.status(201).json({
+        success: true,
+
+        message:
+          'Outstanding payment saved successfully',
+
+        payment_id:
+          paymentResult.insertedId,
+
+        collection_id:
+          collectionId,
+
+        old_balance:
+          databaseBalance,
+
+        amount_collected:
+          amountCollected,
+
+        new_balance:
+          finalNewBalance,
+
+        payment_status:
+          finalNewBalance <= 0
+            ? 'paid'
+            : 'partial'
+      });
+    } catch (paymentInsertError) {
+      console.error(
+        'Payment insertion failed. Rolling back outstanding:',
+        paymentInsertError
+      );
+
+      // Roll back outstanding if payment insert fails.
+      await collections.outstanding.updateOne(
+        {
+          _id: outstandingBill._id
+        },
+        {
+          $set: {
+            Bamt: databaseBalance,
+
+            payment_status:
+              databaseBalance > 0
+                ? 'pending'
+                : 'paid',
+
+            status:
+              databaseBalance > 0
+                ? 'pending'
+                : 'paid',
+
+            updated_at:
+              new Date().toISOString()
+          },
+
+          $inc: {
+            collected_amount:
+              -amountCollected
+          }
+        }
+      );
+
+      throw paymentInsertError;
+    }
   } catch (error) {
-    console.error('Outstanding payment error:', error);
-    res.status(500).json({
+    console.error(
+      'Outstanding payment error:',
+      error
+    );
+
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message:
+          'Duplicate collection detected. Please refresh and try again.'
+      });
+    }
+
+    return res.status(500).json({
       success: false,
-      message: error.message
+      message:
+        error.message ||
+        'Unable to save outstanding payment'
     });
   }
 });
