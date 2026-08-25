@@ -401,8 +401,12 @@ class CollectionHistoryModel {
       customerId: map['customer_id'] ?? '',
       customerName: map['customer_name'] ?? '',
       distributorId: map['distributor_id'] ?? '',
-      collectedBy: map['collected_by'] ?? {},
-      salesmanDetails: map['salesman_details'],
+      collectedBy: map['collected_by'] is Map
+          ? Map<String, dynamic>.from(map['collected_by'] as Map)
+          : <String, dynamic>{},
+      salesmanDetails: map['salesman_details'] is Map
+          ? Map<String, dynamic>.from(map['salesman_details'] as Map)
+          : null,
       billNo: map['bill_no'] ?? '',
       collectionDate: map['collection_date'] != null ? DateTime.parse(map['collection_date']) : DateTime.now(),
       createdAt: map['created_at'] != null ? DateTime.parse(map['created_at']) : DateTime.now(),
@@ -651,11 +655,23 @@ class CartItemData {
 // ==================== API Service for backend communication ====================
 class ApiService {
   static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
-  //static const String _remoteBaseUrl = 'http://localhost:3000/api';
+ // static const String _remoteBaseUrl = 'http://localhost:3000/api';
 
 static String get apiUrl {
   return _remoteBaseUrl;  // ✅ Now uses the correct URL
 }
+
+  // Flutter web can decode JSON objects as LinkedMap<dynamic, dynamic>.
+  // Convert at the HTTP boundary so callers always receive the declared type.
+  static Map<String, dynamic> _decodeJsonObject(String body) {
+    final decoded = json.decode(body);
+    if (decoded is Map) {
+      return decoded.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+    }
+    throw const FormatException('Expected a JSON object from the server');
+  }
 
   // ==================== GLOBAL SEARCH API ====================
   static Future<Map<String, dynamic>> searchGlobal(String distributorId, String query) async {
@@ -802,32 +818,62 @@ static Map<String, dynamic> _normalizeOutstandingBill(dynamic rawBill) {
   return bill;
 }
 
-static Future<List<dynamic>> getOutstandingBillsForSalesman(
-  String salesmanId,
+static Future<List<dynamic>> getOutstandingBillsForDistributor(
   String distributorId,
+  String salesmanId,
 ) async {
   try {
-    final url =
-        '$apiUrl/outstanding/salesman/$salesmanId?distributorId=$distributorId';
+    const pageSize = 500;
+    final allBills = <dynamic>[];
+    var page = 1;
 
-    print('Outstanding API URL: $url');
+    while (true) {
+      // This URL exists on both the current deployed backend and the updated
+      // backend. The backend uses distributorId as the only bill filter.
+      final uri = Uri.parse(
+        '$apiUrl/outstanding/salesman/${Uri.encodeComponent(salesmanId)}',
+      ).replace(queryParameters: {
+        'distributorId': distributorId,
+        'page': '$page',
+        'limit': '$pageSize',
+      });
 
-    final response = await http.get(Uri.parse(url));
+      print('Outstanding API URL: $uri');
 
-    print('Outstanding status: ${response.statusCode}');
-    print('Outstanding body: ${response.body}');
+      final response = await http
+          .get(uri)
+          .timeout(const Duration(seconds: 60));
 
-    if (response.statusCode == 200) {
+      print('Outstanding status: ${response.statusCode}');
+      print('Outstanding response size: ${response.bodyBytes.length} bytes');
+
+      if (response.statusCode != 200) {
+        throw Exception(
+          'Outstanding request failed with status ${response.statusCode}',
+        );
+      }
+
       final data = json.decode(response.body);
       final bills = data['bills'];
-      if (bills is! List) return [];
-      return bills.map(_normalizeOutstandingBill).toList();
+      if (bills is! List) {
+        throw const FormatException('Outstanding response has no bills list');
+      }
+
+      allBills.addAll(bills.map(_normalizeOutstandingBill));
+
+      final pagination = data['pagination'];
+      final hasMore = pagination is Map
+          ? pagination['hasMore'] == true
+          : false;
+
+      if (!hasMore) break;
+      page++;
     }
 
-    return [];
+    return allBills;
   } catch (e) {
     print('Error fetching outstanding bills: $e');
-    return [];
+    rethrow;
   }
 }
 static Future<Map<String, dynamic>> collectOutstandingPayment(
@@ -951,7 +997,7 @@ static Future<Map<String, dynamic>> collectOutstandingPayment(
       final response = await http.get(Uri.parse(url));
       
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        return _decodeJsonObject(response.body);
       }
       return {'collections': [], 'summary': {}};
     } catch (e) {
@@ -983,7 +1029,7 @@ static Future<Map<String, dynamic>> collectOutstandingPayment(
       final response = await http.get(Uri.parse(url));
       
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        return _decodeJsonObject(response.body);
       }
       return {'collections': [], 'summary': {}};
     } catch (e) {
@@ -1120,7 +1166,7 @@ static Future<Map<String, dynamic>> collectOutstandingPayment(
       );
       
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        return _decodeJsonObject(response.body);
       }
       throw Exception('Failed to fetch salesman data: ${response.statusCode}');
     } catch (e) {
@@ -2503,10 +2549,13 @@ class CollectionHistoryService {
         salesmanId: salesmanId,
       );
       _collections = (data['collections'] as List?)?.map((c) {
-        final id = c['_id']?.toString() ?? '';
-        return CollectionHistoryModel.fromMap(c, id);
+        final record = Map<String, dynamic>.from(c as Map);
+        final id = record['_id']?.toString() ?? '';
+        return CollectionHistoryModel.fromMap(record, id);
       }).toList() ?? [];
-      _summary = data['summary'] ?? {};
+      _summary = data['summary'] is Map
+          ? Map<String, dynamic>.from(data['summary'] as Map)
+          : <String, dynamic>{};
       return data;
     } else if (_currentSalesmanId != null) {
       final data = await ApiService.getCollectionHistoryForSalesman(
@@ -2515,10 +2564,13 @@ class CollectionHistoryService {
         endDate: endDate,
       );
       _collections = (data['collections'] as List?)?.map((c) {
-        final id = c['_id']?.toString() ?? '';
-        return CollectionHistoryModel.fromMap(c, id);
+        final record = Map<String, dynamic>.from(c as Map);
+        final id = record['_id']?.toString() ?? '';
+        return CollectionHistoryModel.fromMap(record, id);
       }).toList() ?? [];
-      _summary = data['summary'] ?? {};
+      _summary = data['summary'] is Map
+          ? Map<String, dynamic>.from(data['summary'] as Map)
+          : <String, dynamic>{};
       return data;
     }
     return {'collections': [], 'summary': {}};
@@ -10953,6 +11005,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   Map<String, dynamic> _permissions = {};
   List<CollectionHistoryModel> _collectionHistory = [];
   List<dynamic> _outstandingBills = [];
+  bool _isLoadingOutstanding = false;
+  String? _outstandingLoadError;
+  int _outstandingLoadGeneration = 0;
   final TextEditingController _outstandingSearchController =
     TextEditingController();
 
@@ -11796,17 +11851,64 @@ onPressed: () async {
       print('Error loading collection history: $e');
     }
   }
+Future<void> _loadOutstandingBills(
+  String distributorId,
+) async {
+  final generation = ++_outstandingLoadGeneration;
+
+  if (mounted) {
+    setState(() {
+      _isLoadingOutstanding = true;
+      _outstandingLoadError = null;
+    });
+  }
+
+  try {
+    final outstandingBills =
+        await ApiService.getOutstandingBillsForDistributor(
+      distributorId,
+      _currentSalesman.salesmanId ?? _currentSalesman.id,
+    );
+
+    if (mounted && generation == _outstandingLoadGeneration) {
+      setState(() => _outstandingBills = outstandingBills);
+    }
+  } catch (e) {
+    print('Error loading outstanding bills: $e');
+    if (mounted && generation == _outstandingLoadGeneration) {
+      setState(() {
+        _outstandingLoadError =
+            'Unable to load outstanding bills. Pull down or tap Sync Data to retry.';
+      });
+    }
+  } finally {
+    if (mounted && generation == _outstandingLoadGeneration) {
+      setState(() => _isLoadingOutstanding = false);
+    }
+  }
+}
+
 Future<void> _loadData() async {
   setState(() => _isLoading = true);
 
   try {
     if (_currentSalesman.salesmanId != null) {
-      final data = await ApiService.getSalesmanData(_currentSalesman.salesmanId!);
+      final loginDistributorId =
+          _currentSalesman.distributorId?.trim() ?? '';
 
-      final outstandingBills = await ApiService.getOutstandingBillsForSalesman(
-        _currentSalesman.salesmanId!,
-        _currentSalesman.distributorId ?? data['distributorId'] ?? '',
-      );
+      // Do not wait for customers/products/orders before requesting bills.
+      if (loginDistributorId.isNotEmpty) {
+        unawaited(_loadOutstandingBills(loginDistributorId));
+      }
+
+      final data = await ApiService.getSalesmanData(_currentSalesman.salesmanId!);
+      final distributorId = [
+        _currentSalesman.distributorId,
+        data['distributorId'],
+        data['distributor_id'],
+      ]
+          .map((value) => value?.toString().trim() ?? '')
+          .firstWhere((value) => value.isNotEmpty, orElse: () => '');
 
       const defaultPermissions = {
         'canAddProduct': false,
@@ -11824,14 +11926,16 @@ Future<void> _loadData() async {
 
       setState(() {
         _customers = (data['customers'] as List?)?.map((c) {
-              final id = c['_id']?.toString() ?? '';
-              return CustomerModel.fromMap(c, id);
+              final customer = Map<String, dynamic>.from(c as Map);
+              final id = customer['_id']?.toString() ?? '';
+              return CustomerModel.fromMap(customer, id);
             }).toList() ??
             [];
 
         _products = (data['products'] as List?)?.map((p) {
-              final id = p['_id']?.toString() ?? '';
-              return ProductModel.fromMap(p, id);
+              final product = Map<String, dynamic>.from(p as Map);
+              final id = product['_id']?.toString() ?? '';
+              return ProductModel.fromMap(product, id);
             }).toList() ??
             [];
 
@@ -11885,18 +11989,23 @@ Future<void> _loadData() async {
             [];
 
         _collectionHistory = (data['collectionHistory'] as List?)?.map((c) {
-              final id = c['_id']?.toString() ?? '';
-              return CollectionHistoryModel.fromMap(c, id);
+              final collection = Map<String, dynamic>.from(c as Map);
+              final id = collection['_id']?.toString() ?? '';
+              return CollectionHistoryModel.fromMap(collection, id);
             }).toList() ??
             [];
-
-        _outstandingBills = outstandingBills;
 
         _permissions = {
           ...defaultPermissions,
           ...Map<String, dynamic>.from(data['permissions'] ?? {}),
         };
       });
+
+      // If login data did not contain the distributor (or contained a stale
+      // value), load using the authoritative ID returned by the backend.
+      if (distributorId.isNotEmpty && distributorId != loginDistributorId) {
+        unawaited(_loadOutstandingBills(distributorId));
+      }
     }
   } catch (e) {
     print('Error loading salesman data: $e');
@@ -11905,7 +12014,6 @@ Future<void> _loadData() async {
       _customers = [];
       _products = [];
       _orders = [];
-      _outstandingBills = [];
       _permissions = {
         'canAddProduct': false,
         'canEditProduct': false,
@@ -14071,6 +14179,14 @@ Widget _buildQuickActions() {
             if (canCollectPayment)
               _buildActionCard('Collect Payment', Icons.payment,
                   const Color(0xFF16A34A), () {
+                final distributorId =
+                    _currentSalesman.distributorId?.trim() ?? '';
+                if (distributorId.isNotEmpty &&
+                    !_isLoadingOutstanding &&
+                    (_outstandingBills.isEmpty ||
+                        _outstandingLoadError != null)) {
+                  unawaited(_loadOutstandingBills(distributorId));
+                }
                 setState(() => _selectedIndex = 3);
               }),
             if (canViewOrders)
@@ -17321,6 +17437,11 @@ Widget _buildCollectPaymentFromOutstanding() {
             ],
           ),
 
+          if (_isLoadingOutstanding) ...[
+            const LinearProgressIndicator(minHeight: 2),
+            const SizedBox(height: 12),
+          ],
+
           const SizedBox(height: 14),
 
           Row(
@@ -17428,7 +17549,21 @@ Widget _buildCollectPaymentFromOutstanding() {
 
           const SizedBox(height: 12),
 
-          if (filteredBills.isEmpty)
+          if (_outstandingLoadError != null && filteredBills.isEmpty)
+            SizedBox(
+              height: 220,
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    _outstandingLoadError!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: errorRed),
+                  ),
+                ),
+              ),
+            )
+          else if (filteredBills.isEmpty)
             const SizedBox(
               height: 220,
               child: Center(child: Text('No outstanding bills found')),
@@ -17831,7 +17966,20 @@ Widget _buildPaymentsSection() {
       ),
 
       Expanded(
-        child: filteredBills.isEmpty
+        child: _isLoadingOutstanding && filteredBills.isEmpty
+            ? const Center(child: CircularProgressIndicator())
+            : _outstandingLoadError != null && filteredBills.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    _outstandingLoadError!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: errorRed),
+                  ),
+                ),
+              )
+            : filteredBills.isEmpty
             ? const Center(child: Text('No outstanding bills found'))
             : ListView.builder(
                 padding: const EdgeInsets.all(14),
@@ -18588,7 +18736,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   
   static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
- // static const String _remoteBaseUrl = 'http://localhost:3000/api';
+  //static const String _remoteBaseUrl = 'http://localhost:3000/api';
   
 
 static String get apiUrl {
