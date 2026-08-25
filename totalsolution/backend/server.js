@@ -3402,175 +3402,1896 @@ app.get('/api/health', (req, res) => {
         }, {})
     });
 });
-// ==================== OUTSTANDING BILL UPLOAD API ====================
-app.post('/api/outstanding/upload', async (req, res) => {
-  const errors = [];
+// ============================================================
+// OUTSTANDING BILL HELPER FUNCTIONS
+// ============================================================
 
-  const safeDate = (value) => {
-    if (!value) return null;
-    const d = new Date(value);
-    return isNaN(d.getTime()) ? null : d;
-  };
+// Safely convert value to Date
+function outstandingSafeDate(value) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  const d = new Date(value);
+
+  if (isNaN(d.getTime())) {
+    return null;
+  }
+
+  return d;
+}
+
+
+// Safely convert value to Number
+function outstandingSafeNumber(value) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  // JSON numbers arrive as numbers, but older desktop clients and imported
+  // rows can send coordinates as trimmed strings (and occasionally with a
+  // decimal comma). Normalize those representations before saving them.
+  let normalizedValue = value;
+
+  if (typeof normalizedValue === 'string') {
+    normalizedValue = normalizedValue.trim();
+
+    if (
+      normalizedValue.includes(',') &&
+      !normalizedValue.includes('.') &&
+      normalizedValue.indexOf(',') === normalizedValue.lastIndexOf(',')
+    ) {
+      normalizedValue = normalizedValue.replace(',', '.');
+    }
+  }
+
+  const n = Number(normalizedValue);
+
+  if (!Number.isFinite(n)) {
+    return null;
+  }
+
+  return n;
+}
+
+
+// Read a payload value without depending on JSON property casing. The VB.NET
+// uploader currently sends AcName/GeoLatitude/GeoLongitude, while this keeps
+// uploads from older desktop builds compatible too.
+function getOutstandingPayloadValue(source, keys) {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    if (
+      Object.prototype.hasOwnProperty.call(source, key) &&
+      source[key] !== null &&
+      source[key] !== undefined &&
+      (typeof source[key] !== 'string' || source[key].trim() !== '')
+    ) {
+      return source[key];
+    }
+  }
+
+  const actualKeys = Object.keys(source);
+
+  for (const key of keys) {
+    const actualKey = actualKeys.find(
+      (candidate) => candidate.toLowerCase() === key.toLowerCase()
+    );
+
+    if (
+      actualKey !== undefined &&
+      source[actualKey] !== null &&
+      source[actualKey] !== undefined &&
+      (
+        typeof source[actualKey] !== 'string' ||
+        source[actualKey].trim() !== ''
+      )
+    ) {
+      return source[actualKey];
+    }
+  }
+
+  return undefined;
+}
+
+
+// Safely convert value to trimmed String
+function outstandingSafeString(value) {
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return '';
+  }
+
+  return String(value).trim();
+}
+
+
+// Escape value before using in RegExp
+function escapeOutstandingRegex(value) {
+
+  return String(value)
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+
+// ============================================================
+// FIND CUSTOMER MASTER USING SYS ACCOUNT CODE
+// ============================================================
+//
+// This function is intentionally flexible because your
+// mas_customer.customer_id can be stored in different formats.
+//
+// Examples:
+//
+// 6041
+// XAPIKEY_6041
+//
+// It also checks the newly stored SysAcCode field.
+//
+// ============================================================
+
+async function findOutstandingCustomerMaster(
+  distributorId,
+  sysAcCode
+) {
 
   try {
-    const distributorId = String(req.body.distributorId || '').trim();
-    const bills = Array.isArray(req.body.bills) ? req.body.bills : [];
 
-    if (!distributorId) {
-      return res.status(400).json({ success: false, message: 'distributorId required' });
+    const distributor =
+      outstandingSafeString(distributorId);
+
+    const accountCode =
+      outstandingSafeString(sysAcCode);
+
+
+    if (
+      !distributor ||
+      !accountCode
+    ) {
+
+      return null;
+
     }
 
-    if (bills.length === 0) {
-      return res.status(400).json({ success: false, message: 'No outstanding bills found' });
-    }
 
-    const operations = [];
+    const numericSysAcCode =
+      outstandingSafeNumber(accountCode);
 
-    for (let i = 0; i < bills.length; i++) {
-      const b = bills[i];
 
-      const trnSeries = String(b.TrnSeries || '').trim();
-      const trnNo = Number(b.TrnNo || 0);
-      const sysAcCode = String(b.SysAcCode || '').trim();
-      const bamt = Number(b.Bamt || 0);
+    // --------------------------------------------------------
+    // FIRST TRY:
+    // Exact SysAcCode / exact customer_id
+    // --------------------------------------------------------
 
-      if (!trnNo || !sysAcCode || sysAcCode === '0' || bamt <= 0) {
-        errors.push(`Bill ${i + 1}: Invalid TrnNo/SysAcCode/Bamt`);
-        continue;
+    const exactConditions = [
+
+      {
+        SysAcCode:
+          accountCode
+      },
+
+      {
+        sysAcCode:
+          accountCode
+      },
+
+      {
+        sys_ac_code:
+          accountCode
+      },
+
+      {
+        customer_id:
+          accountCode
+      },
+
+      {
+        customerId:
+          accountCode
       }
 
-      const doc = {
-        distributor_id: distributorId,
-        distributorId: distributorId,
+    ];
 
-        salesman_id: String(b.salesman_id || b.SSMCode || b.SalesmanCode || '').trim(),
-        salesman_name: String(b.salesman_name || b.SalesmanName || '').trim(),
 
-        Trn: String(b.Trn || 'SAL'),
-        TrnSeries: trnSeries,
-        TrnNo: trnNo,
-        TrnDate: safeDate(b.TrnDate),
-        DorC: String(b.DorC || 'D'),
+    // If code is numeric, also try numeric value
+    if (numericSysAcCode !== null) {
 
-        SysAcCode: sysAcCode,
-        customer_id: sysAcCode,
+      exactConditions.push(
 
-        Amt: Number(b.Amt || 0),
-        Aamt: Number(b.Aamt || 0),
-        Bamt: bamt,
+        {
+          SysAcCode:
+            numericSysAcCode
+        },
 
-        ClrDate: safeDate(b.ClrDate),
-        ChqDate: safeDate(b.ChqDate),
-        DepDate: safeDate(b.DepDate),
-        DueDate: safeDate(b.DueDate),
+        {
+          sysAcCode:
+            numericSysAcCode
+        },
 
-        seqno: Number(b.seqno || 0),
-        VatAmt: Number(b.VatAmt || 0),
-        VatPer: Number(b.VatPer || 0),
-        VatType: String(b.VatType || ''),
-        ChqNo: String(b.ChqNo || ''),
-        BankCode: String(b.BankCode || ''),
-        DocNo: String(b.DocNo || `${trnSeries}-${trnNo}`),
-        Narr: String(b.Narr || ''),
+        {
+          sys_ac_code:
+            numericSysAcCode
+        }
 
-        status: 'pending',
-        updated_at: new Date()
+      );
+
+    }
+
+
+    let customer =
+      await collections.customer.findOne({
+
+        distributor_id:
+          distributor,
+
+        $or:
+          exactConditions
+
+      });
+
+
+    if (customer) {
+
+      return customer;
+
+    }
+
+
+    // --------------------------------------------------------
+    // SECOND TRY:
+    // Some old uploaded customer records use:
+    //
+    // XAPIKEY_6041
+    //
+    // instead of:
+    //
+    // 6041
+    //
+    // --------------------------------------------------------
+
+    const escapedCode =
+      escapeOutstandingRegex(accountCode);
+
+
+    const suffixRegex =
+      new RegExp(
+        `_${escapedCode}$`,
+        'i'
+      );
+
+
+    customer =
+      await collections.customer.findOne({
+
+        distributor_id:
+          distributor,
+
+        customer_id: {
+          $regex:
+            suffixRegex
+        }
+
+      });
+
+
+    if (customer) {
+
+      return customer;
+
+    }
+
+
+    // --------------------------------------------------------
+    // THIRD TRY:
+    // Compatibility for older customer master field names
+    // --------------------------------------------------------
+
+    customer =
+      await collections.customer.findOne({
+
+        distributor_id:
+          distributor,
+
+        $or: [
+
+          {
+            customer_code:
+              accountCode
+          },
+
+          {
+            CustomerCode:
+              accountCode
+          },
+
+          {
+            AcCode:
+              accountCode
+          },
+
+          {
+            acCode:
+              accountCode
+          }
+
+        ]
+
+      });
+
+
+    return customer || null;
+
+
+  } catch (error) {
+
+    console.error(
+      'findOutstandingCustomerMaster error:',
+      error
+    );
+
+    return null;
+
+  }
+
+}
+
+
+// ============================================================
+// READ CUSTOMER NAME FROM CUSTOMER MASTER
+// ============================================================
+
+function getOutstandingCustomerNameFromMaster(customer) {
+
+  if (!customer) {
+    return '';
+  }
+
+
+  return outstandingSafeString(
+
+    customer.name ||
+
+    customer.customer_name ||
+
+    customer.CustomerName ||
+
+    customer.customerName ||
+
+    customer.AcName ||
+
+    customer.acName ||
+
+    customer.PartyName ||
+
+    ''
+
+  );
+
+}
+
+
+// ============================================================
+// READ LATITUDE FROM CUSTOMER MASTER
+// ============================================================
+
+function getOutstandingLatitudeFromMaster(customer) {
+
+  if (!customer) {
+    return null;
+  }
+
+
+  return outstandingSafeNumber(
+
+    customer.GeoLatitude ??
+
+    customer.geoLatitude ??
+
+    customer.latitude ??
+
+    customer.Latitude ??
+
+    null
+
+  );
+
+}
+
+
+// ============================================================
+// READ LONGITUDE FROM CUSTOMER MASTER
+// ============================================================
+
+function getOutstandingLongitudeFromMaster(customer) {
+
+  if (!customer) {
+    return null;
+  }
+
+
+  return outstandingSafeNumber(
+
+    customer.GeoLongitude ??
+
+    customer.geoLongitude ??
+
+    customer.longitude ??
+
+    customer.Longitude ??
+
+    null
+
+  );
+
+}
+
+
+// ============================================================
+// OUTSTANDING BILL BULK UPLOAD
+// ============================================================
+
+app.post(
+  '/api/outstanding/upload',
+  async (req, res) => {
+
+    let inserted = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    const errors = [];
+
+
+    try {
+
+      // ======================================================
+      // READ DISTRIBUTOR
+      // ======================================================
+
+      const distributorId =
+        outstandingSafeString(
+
+          req.body.distributorId ||
+
+          req.body.distributor_id ||
+
+          ''
+
+        );
+
+
+      // ======================================================
+      // READ BILLS
+      // ======================================================
+
+      const bills =
+        Array.isArray(req.body.bills)
+          ? req.body.bills
+          : [];
+
+
+      console.log('');
+      console.log(
+        '================================================'
+      );
+
+      console.log(
+        'OUTSTANDING UPLOAD STARTED'
+      );
+
+      console.log(
+        'Distributor ID:',
+        distributorId
+      );
+
+      console.log(
+        'Bills received:',
+        bills.length
+      );
+
+      console.log(
+        '================================================'
+      );
+
+
+      // ======================================================
+      // VALIDATE DISTRIBUTOR
+      // ======================================================
+
+      if (!distributorId) {
+
+        return res.status(400).json({
+
+          success:
+            false,
+
+          message:
+            'Distributor ID is required',
+
+          inserted:
+            0,
+
+          updated:
+            0,
+
+          skipped:
+            bills.length
+
+        });
+
+      }
+
+
+      // ======================================================
+      // VALIDATE BILLS
+      // ======================================================
+
+      if (bills.length === 0) {
+
+        return res.status(400).json({
+
+          success:
+            false,
+
+          message:
+            'No outstanding bills received',
+
+          inserted:
+            0,
+
+          updated:
+            0,
+
+          skipped:
+            0
+
+        });
+
+      }
+
+
+      // ======================================================
+      // PROCESS EACH BILL
+      // ======================================================
+
+      for (
+        let i = 0;
+        i < bills.length;
+        i++
+      ) {
+
+        try {
+
+          const b =
+            bills[i] || {};
+
+
+          console.log('');
+
+          console.log(
+            '--------------------------------------------'
+          );
+
+          console.log(
+            `Processing Bill ${i + 1}`
+          );
+
+          console.log(
+            'Incoming bill:',
+            JSON.stringify(b)
+          );
+
+          console.log(
+            '--------------------------------------------'
+          );
+
+
+          // ==================================================
+          // TRANSACTION SERIES
+          // ==================================================
+
+          const trnSeries =
+            outstandingSafeString(
+
+              b.TrnSeries ||
+
+              b.trnSeries ||
+
+              ''
+
+            );
+
+
+          // ==================================================
+          // TRANSACTION NUMBER
+          // ==================================================
+
+          const trnNo =
+            Number(
+
+              b.TrnNo ||
+
+              b.trnNo ||
+
+              0
+
+            );
+
+
+          // ==================================================
+          // SYSTEM ACCOUNT CODE
+          // ==================================================
+
+          const sysAcCode =
+            outstandingSafeString(
+
+              b.SysAcCode ||
+
+              b.sysAcCode ||
+
+              b.customer_id ||
+
+              b.customerId ||
+
+              ''
+
+            );
+
+
+          // ==================================================
+          // BALANCE AMOUNT
+          // ==================================================
+
+          const bamt =
+            Number(
+
+              b.Bamt ||
+
+              b.bamt ||
+
+              b.balanceAmount ||
+
+              0
+
+            );
+
+
+          // ==================================================
+          // CUSTOMER NAME FROM VB.NET
+          // ==================================================
+
+          let customerName =
+            outstandingSafeString(
+
+              getOutstandingPayloadValue(
+                b,
+                [
+                  'AcName',
+                  'customer_name',
+                  'CustomerName',
+                  'customerName',
+                  'PartyName'
+                ]
+              )
+
+            );
+
+
+          // ==================================================
+          // LATITUDE FROM VB.NET
+          // ==================================================
+
+          let geoLatitude =
+            outstandingSafeNumber(
+
+              getOutstandingPayloadValue(
+                b,
+                [
+                  'GeoLatitude',
+                  'geoLatitude',
+                  'latitude',
+                  'Latitude',
+                  'lat'
+                ]
+              )
+
+            );
+
+
+          // ==================================================
+          // LONGITUDE FROM VB.NET
+          // ==================================================
+
+          let geoLongitude =
+            outstandingSafeNumber(
+
+              getOutstandingPayloadValue(
+                b,
+                [
+                  'GeoLongitude',
+                  'geoLongitude',
+                  'longitude',
+                  'Longitude',
+                  'lng',
+                  'lon'
+                ]
+              )
+
+            );
+
+
+          console.log(
+            'Values received directly from outstanding upload:'
+          );
+
+          console.log(
+            'SysAcCode:',
+            sysAcCode
+          );
+
+          console.log(
+            'Customer Name:',
+            customerName
+          );
+
+          console.log(
+            'Latitude:',
+            geoLatitude
+          );
+
+          console.log(
+            'Longitude:',
+            geoLongitude
+          );
+
+
+          // ==================================================
+          // VALIDATION
+          // ==================================================
+
+          if (
+
+            !trnNo ||
+
+            !sysAcCode ||
+
+            sysAcCode === '0' ||
+
+            bamt <= 0
+
+          ) {
+
+            skipped++;
+
+
+            errors.push(
+
+              `Bill ${i + 1}: Invalid TrnNo/SysAcCode/Bamt`
+
+            );
+
+
+            continue;
+
+          }
+
+
+          // ==================================================
+          // CUSTOMER MASTER FALLBACK
+          // ==================================================
+          //
+          // Only query customer master if any required
+          // customer information is missing.
+          //
+          // Existing supplied values are NEVER overwritten.
+          //
+          // ==================================================
+
+          if (
+
+            !customerName ||
+
+            geoLatitude === null ||
+
+            geoLongitude === null
+
+          ) {
+
+            console.log(
+              'Customer information incomplete.'
+            );
+
+            console.log(
+              'Searching mas_customer using SysAcCode:',
+              sysAcCode
+            );
+
+
+            const customerMaster =
+              await findOutstandingCustomerMaster(
+
+                distributorId,
+
+                sysAcCode
+
+              );
+
+
+            if (customerMaster) {
+
+              console.log(
+                'Customer master found:',
+                customerMaster._id
+              );
+
+
+              // ----------------------------------------------
+              // CUSTOMER NAME FALLBACK
+              // ----------------------------------------------
+
+              if (!customerName) {
+
+                customerName =
+                  getOutstandingCustomerNameFromMaster(
+                    customerMaster
+                  );
+
+              }
+
+
+              // ----------------------------------------------
+              // LATITUDE FALLBACK
+              // ----------------------------------------------
+
+              if (geoLatitude === null) {
+
+                geoLatitude =
+                  getOutstandingLatitudeFromMaster(
+                    customerMaster
+                  );
+
+              }
+
+
+              // ----------------------------------------------
+              // LONGITUDE FALLBACK
+              // ----------------------------------------------
+
+              if (geoLongitude === null) {
+
+                geoLongitude =
+                  getOutstandingLongitudeFromMaster(
+                    customerMaster
+                  );
+
+              }
+
+
+            } else {
+
+              console.log(
+                'Customer master NOT found for SysAcCode:',
+                sysAcCode
+              );
+
+            }
+
+          }
+
+
+          console.log(
+            'Final customer information:'
+          );
+
+          console.log(
+            'Customer Name:',
+            customerName
+          );
+
+          console.log(
+            'Latitude:',
+            geoLatitude
+          );
+
+          console.log(
+            'Longitude:',
+            geoLongitude
+          );
+
+
+          // ==================================================
+          // SALESMAN CODE
+          // ==================================================
+
+          const salesmanId =
+            outstandingSafeString(
+
+              b.salesman_id ||
+
+              b.SSMCode ||
+
+              b.SalesmanCode ||
+
+              ''
+
+            );
+
+
+          // ==================================================
+          // SALESMAN NAME
+          // ==================================================
+
+          const salesmanName =
+            outstandingSafeString(
+
+              b.salesman_name ||
+
+              b.SalesmanName ||
+
+              ''
+
+            );
+
+
+          // ==================================================
+          // PREPARE MONGODB DOCUMENT
+          // ==================================================
+
+          const doc = {
+
+
+            // ================================================
+            // DISTRIBUTOR
+            // ================================================
+
+            distributor_id:
+              distributorId,
+
+            distributorId:
+              distributorId,
+
+
+            // ================================================
+            // SALESMAN
+            // ================================================
+
+            salesman_id:
+              salesmanId,
+
+            salesman_name:
+              salesmanName,
+
+
+            // ================================================
+            // TRANSACTION
+            // ================================================
+
+            Trn:
+              outstandingSafeString(
+                b.Trn || 'SAL'
+              ),
+
+            TrnSeries:
+              trnSeries,
+
+            TrnNo:
+              trnNo,
+
+            TrnDate:
+              outstandingSafeDate(
+                b.TrnDate
+              ),
+
+            DorC:
+              outstandingSafeString(
+                b.DorC || 'D'
+              ),
+
+
+            // ================================================
+            // CUSTOMER DETAILS
+            // ================================================
+
+            SysAcCode:
+              sysAcCode,
+
+            customer_id:
+              sysAcCode,
+
+
+            // Original VB/desktop-compatible field
+            AcName:
+              customerName,
+
+
+            // Mobile-friendly field
+            customer_name:
+              customerName,
+
+
+            // Additional compatibility alias
+            customerName:
+              customerName,
+
+
+            // ================================================
+            // GEO LOCATION
+            // ================================================
+
+            GeoLatitude:
+              geoLatitude,
+
+            GeoLongitude:
+              geoLongitude,
+
+
+            // Mobile compatibility
+            latitude:
+              geoLatitude,
+
+            longitude:
+              geoLongitude,
+
+
+            // ================================================
+            // OUTSTANDING VALUES
+            // ================================================
+
+            Amt:
+              Number(
+                b.Amt || 0
+              ),
+
+            Aamt:
+              Number(
+                b.Aamt || 0
+              ),
+
+            Bamt:
+              bamt,
+
+
+            // ================================================
+            // DATES
+            // ================================================
+
+            ClrDate:
+              outstandingSafeDate(
+                b.ClrDate
+              ),
+
+            ChqDate:
+              outstandingSafeDate(
+                b.ChqDate
+              ),
+
+            DepDate:
+              outstandingSafeDate(
+                b.DepDate
+              ),
+
+            DueDate:
+              outstandingSafeDate(
+                b.DueDate
+              ),
+
+
+            // ================================================
+            // OTHER VALUES
+            // ================================================
+
+            seqno:
+              Number(
+                b.seqno || 0
+              ),
+
+            VatAmt:
+              Number(
+                b.VatAmt || 0
+              ),
+
+            VatPer:
+              Number(
+                b.VatPer || 0
+              ),
+
+            VatType:
+              outstandingSafeString(
+                b.VatType || ''
+              ),
+
+            ChqNo:
+              outstandingSafeString(
+                b.ChqNo || ''
+              ),
+
+            BankCode:
+              outstandingSafeString(
+                b.BankCode || ''
+              ),
+
+            DocNo:
+              outstandingSafeString(
+
+                b.DocNo ||
+
+                `${trnSeries}-${trnNo}`
+
+              ),
+
+            Narr:
+              outstandingSafeString(
+                b.Narr || ''
+              ),
+
+
+            // ================================================
+            // STATUS
+            // ================================================
+
+            status:
+              'pending',
+
+
+            // ================================================
+            // UPDATE DATE
+            // ================================================
+
+            updated_at:
+              new Date()
+
+          };
+
+
+          console.log(
+            'Mongo document:'
+          );
+
+          console.log(
+            JSON.stringify(
+              doc,
+              null,
+              2
+            )
+          );
+
+
+          // ==================================================
+          // UPSERT INTO Mas_Outstanding
+          // ==================================================
+
+          const result =
+            await collections.outstanding.updateOne(
+
+              {
+
+                distributor_id:
+                  distributorId,
+
+                TrnSeries:
+                  trnSeries,
+
+                TrnNo:
+                  trnNo,
+
+                SysAcCode:
+                  sysAcCode
+
+              },
+
+              {
+
+                $set:
+                  doc,
+
+                $setOnInsert: {
+
+                  uploaded_at:
+                    new Date()
+
+                }
+
+              },
+
+              {
+
+                upsert:
+                  true
+
+              }
+
+            );
+
+
+          // ==================================================
+          // COUNTERS
+          // ==================================================
+
+          if (
+            result.upsertedCount > 0
+          ) {
+
+            inserted++;
+
+          } else {
+
+            updated++;
+
+          }
+
+
+          console.log(
+            `Bill ${i + 1} successfully saved.`
+          );
+
+
+        } catch (billError) {
+
+          console.error(
+            `Outstanding Bill ${i + 1} Error:`,
+            billError
+          );
+
+
+          skipped++;
+
+
+          errors.push(
+
+            `Bill ${i + 1}: ${billError.message}`
+
+          );
+
+        }
+
+      }
+
+
+      // ======================================================
+      // FINAL RESPONSE
+      // ======================================================
+
+      return res.json({
+
+        success:
+          true,
+
+        message:
+          'Outstanding upload completed',
+
+        received:
+          bills.length,
+
+        inserted:
+          inserted,
+
+        updated:
+          updated,
+
+        skipped:
+          skipped,
+
+        errors:
+          errors.slice(0, 20)
+
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        'Outstanding upload fatal error:',
+        error
+      );
+
+
+      return res.status(500).json({
+
+        success:
+          false,
+
+        message:
+          error.message,
+
+        inserted:
+          inserted,
+
+        updated:
+          updated,
+
+        skipped:
+          skipped,
+
+        errors:
+          errors.slice(0, 20)
+
+      });
+
+    }
+
+  }
+);
+
+
+// ============================================================
+// OUTSTANDING BILL LOAD FOR SALESMAN
+// ============================================================
+
+app.get(
+  '/api/outstanding/salesman/:salesmanId',
+  async (req, res) => {
+
+    try {
+
+      // ======================================================
+      // SALESMAN ID
+      // ======================================================
+
+      const salesmanId =
+        outstandingSafeString(
+
+          req.params.salesmanId ||
+
+          ''
+
+        );
+
+
+      // ======================================================
+      // DISTRIBUTOR ID
+      // ======================================================
+
+      const distributorId =
+        outstandingSafeString(
+
+          req.query.distributorId ||
+
+          ''
+
+        );
+
+
+      // ======================================================
+      // VALIDATION
+      // ======================================================
+
+      if (
+
+        !salesmanId ||
+
+        !distributorId
+
+      ) {
+
+        return res.status(400).json({
+
+          success:
+            false,
+
+          message:
+            'salesmanId and distributorId required',
+
+          bills:
+            []
+
+        });
+
+      }
+
+
+      console.log('');
+      console.log(
+        '================================================'
+      );
+
+      console.log(
+        'OUTSTANDING LOAD STARTED'
+      );
+
+      console.log(
+        'Distributor:',
+        distributorId
+      );
+
+      console.log(
+        'Salesman:',
+        salesmanId
+      );
+
+      console.log(
+        '================================================'
+      );
+
+
+      // ======================================================
+      // OUTSTANDING QUERY
+      // ======================================================
+
+      const query = {
+
+        distributor_id:
+          distributorId,
+
+
+        Bamt: {
+
+          $gt:
+            0
+
+        },
+
+
+        SysAcCode: {
+
+          $ne:
+            '0'
+
+        },
+
+
+        status:
+          'pending',
+
+
+        $or: [
+
+          {
+
+            salesman_id:
+              salesmanId
+
+          },
+
+          {
+
+            salesman_id: {
+
+              $exists:
+                false
+
+            }
+
+          },
+
+          {
+
+            salesman_id:
+              ''
+
+          },
+
+          {
+
+            salesman_id:
+              null
+
+          }
+
+        ]
+
       };
 
-      operations.push({
-        updateOne: {
-          filter: {
-            distributor_id: distributorId,
-            TrnSeries: trnSeries,
-            TrnNo: trnNo,
-            SysAcCode: sysAcCode
-          },
-          update: {
-            $set: doc,
-            $setOnInsert: { uploaded_at: new Date() }
-          },
-          upsert: true
+
+      // ======================================================
+      // LOAD OUTSTANDING BILLS
+      // ======================================================
+
+      const bills =
+        await collections.outstanding
+
+          .find(query)
+
+          .sort({
+
+            TrnDate:
+              -1,
+
+            TrnNo:
+              -1
+
+          })
+
+          .toArray();
+
+
+      console.log(
+        'Outstanding bills found:',
+        bills.length
+      );
+
+
+      // ======================================================
+      // ENRICH CUSTOMER NAME + GEO LOCATION
+      // ======================================================
+      //
+      // This also fixes OLD outstanding records that were
+      // uploaded before AcName / latitude / longitude were
+      // stored correctly.
+      //
+      // ======================================================
+
+      const enrichedBills = [];
+
+
+      for (
+        let i = 0;
+        i < bills.length;
+        i++
+      ) {
+
+        const bill =
+          bills[i];
+
+
+        const sysAcCode =
+          outstandingSafeString(
+
+            bill.SysAcCode ||
+
+            bill.customer_id ||
+
+            bill.customerId ||
+
+            ''
+
+          );
+
+
+        // ====================================================
+        // CURRENT CUSTOMER NAME
+        // ====================================================
+
+        let customerName =
+          outstandingSafeString(
+
+            bill.AcName ||
+
+            bill.customer_name ||
+
+            bill.customerName ||
+
+            bill.CustomerName ||
+
+            ''
+
+          );
+
+
+        // ====================================================
+        // CURRENT LATITUDE
+        // ====================================================
+
+        let geoLatitude =
+          outstandingSafeNumber(
+
+            bill.GeoLatitude ??
+
+            bill.geoLatitude ??
+
+            bill.latitude ??
+
+            bill.Latitude
+
+          );
+
+
+        // ====================================================
+        // CURRENT LONGITUDE
+        // ====================================================
+
+        let geoLongitude =
+          outstandingSafeNumber(
+
+            bill.GeoLongitude ??
+
+            bill.geoLongitude ??
+
+            bill.longitude ??
+
+            bill.Longitude
+
+          );
+
+
+        let customerMaster =
+          null;
+
+
+        // ====================================================
+        // FALLBACK TO CUSTOMER MASTER
+        // ====================================================
+
+        if (
+
+          !customerName ||
+
+          geoLatitude === null ||
+
+          geoLongitude === null
+
+        ) {
+
+          customerMaster =
+            await findOutstandingCustomerMaster(
+
+              distributorId,
+
+              sysAcCode
+
+            );
+
+
+          if (customerMaster) {
+
+
+            // ----------------------------------------------
+            // NAME
+            // ----------------------------------------------
+
+            if (!customerName) {
+
+              customerName =
+                getOutstandingCustomerNameFromMaster(
+                  customerMaster
+                );
+
+            }
+
+
+            // ----------------------------------------------
+            // LATITUDE
+            // ----------------------------------------------
+
+            if (geoLatitude === null) {
+
+              geoLatitude =
+                getOutstandingLatitudeFromMaster(
+                  customerMaster
+                );
+
+            }
+
+
+            // ----------------------------------------------
+            // LONGITUDE
+            // ----------------------------------------------
+
+            if (geoLongitude === null) {
+
+              geoLongitude =
+                getOutstandingLongitudeFromMaster(
+                  customerMaster
+                );
+
+            }
+
+          }
+
         }
+
+
+        // ====================================================
+        // CREATE MOBILE RESPONSE
+        // ====================================================
+
+        const enrichedBill = {
+
+          ...bill,
+
+
+          // Customer code
+          SysAcCode:
+            sysAcCode,
+
+          customer_id:
+            sysAcCode,
+
+
+          // Customer name
+          AcName:
+            customerName,
+
+          customer_name:
+            customerName,
+
+          customerName:
+            customerName,
+
+
+          // Location
+          GeoLatitude:
+            geoLatitude,
+
+          GeoLongitude:
+            geoLongitude,
+
+          latitude:
+            geoLatitude,
+
+          longitude:
+            geoLongitude
+
+        };
+
+
+        enrichedBills.push(
+          enrichedBill
+        );
+
+
+        // ====================================================
+        // UPDATE OLD MONGODB DOCUMENT IF DATA WAS RECOVERED
+        // ====================================================
+        //
+        // This means once the name/coordinates are found in
+        // mas_customer, the old Mas_Outstanding document is
+        // repaired automatically.
+        //
+        // ====================================================
+
+        const updateFields = {};
+
+
+        if (
+          customerName &&
+          outstandingSafeString(bill.AcName) !== customerName
+        ) {
+
+          updateFields.AcName =
+            customerName;
+
+          updateFields.customer_name =
+            customerName;
+
+          updateFields.customerName =
+            customerName;
+
+        }
+
+
+        if (
+
+          geoLatitude !== null &&
+
+          outstandingSafeNumber(
+            bill.GeoLatitude
+          ) !== geoLatitude
+
+        ) {
+
+          updateFields.GeoLatitude =
+            geoLatitude;
+
+          updateFields.latitude =
+            geoLatitude;
+
+        }
+
+
+        if (
+
+          geoLongitude !== null &&
+
+          outstandingSafeNumber(
+            bill.GeoLongitude
+          ) !== geoLongitude
+
+        ) {
+
+          updateFields.GeoLongitude =
+            geoLongitude;
+
+          updateFields.longitude =
+            geoLongitude;
+
+        }
+
+
+        if (
+          Object.keys(updateFields).length > 0
+        ) {
+
+          updateFields.updated_at =
+            new Date();
+
+
+          try {
+
+            await collections.outstanding.updateOne(
+
+              {
+                _id:
+                  bill._id
+              },
+
+              {
+                $set:
+                  updateFields
+              }
+
+            );
+
+
+            console.log(
+              'Outstanding repaired:',
+              sysAcCode,
+              updateFields
+            );
+
+
+          } catch (repairError) {
+
+            console.error(
+              'Unable to repair outstanding document:',
+              bill._id,
+              repairError
+            );
+
+          }
+
+        }
+
+      }
+
+
+      // ======================================================
+      // RESPONSE
+      // ======================================================
+
+      return res.json({
+
+        success:
+          true,
+
+        count:
+          enrichedBills.length,
+
+        bills:
+          enrichedBills
+
       });
+
+
+    } catch (error) {
+
+      console.error(
+        'Fetch outstanding error:',
+        error
+      );
+
+
+      return res.status(500).json({
+
+        success:
+          false,
+
+        message:
+          error.message,
+
+        bills:
+          []
+
+      });
+
     }
 
-    if (operations.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'No valid outstanding bills to upload',
-        inserted: 0,
-        updated: 0,
-        skipped: errors.length,
-        errors: errors.slice(0, 20)
-      });
-    }
-
-    const result = await collections.outstanding.bulkWrite(operations, { ordered: false });
-
-    return res.json({
-      success: true,
-      message: 'Outstanding bulk upload completed',
-      received: bills.length,
-      valid: operations.length,
-      inserted: result.upsertedCount || 0,
-      updated: result.modifiedCount || result.matchedCount || 0,
-      skipped: errors.length,
-      errors: errors.slice(0, 20)
-    });
-
-  } catch (error) {
-    console.error('Outstanding bulk upload fatal error:', error);
-    return res.status(500).json({
-      success: false,
-      message: error.message
-    });
   }
-});
-// ==================== OUTSTANDING BILL LOAD FOR SALESMAN ====================
-app.get('/api/outstanding/salesman/:salesmanId', async (req, res) => {
-  try {
-    const { salesmanId } = req.params;
-    const distributorId = String(req.query.distributorId || '').trim();
-
-    if (!salesmanId || !distributorId) {
-      return res.status(400).json({
-        success: false,
-        message: 'salesmanId and distributorId required',
-        bills: []
-      });
-    }
-
-    const query = {
-      distributor_id: distributorId,
-      Bamt: { $gt: 0 },
-      SysAcCode: { $ne: '0' },
-      status: 'pending'
-    };
-
-    const bills = await collections.outstanding
-      .find({
-        ...query,
-        $or: [
-          { salesman_id: salesmanId },
-          { salesman_id: { $exists: false } },
-          { salesman_id: "" },
-          { salesman_id: null }
-        ]
-      })
-      .sort({ TrnDate: -1, TrnNo: -1 })
-      .toArray();
-
-    res.json({ success: true, bills });
-
-  } catch (error) {
-    console.error('Fetch outstanding error:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-      bills: []
-    });
-  }
-});
+);
 app.post('/api/outstanding/collect-payment', async (req, res) => {
   try {
     console.log(
