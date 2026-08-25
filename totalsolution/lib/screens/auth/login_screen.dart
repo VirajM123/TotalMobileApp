@@ -743,6 +743,65 @@ static String get apiUrl {
       throw Exception('Error adding product: $e');
     }
   }
+static Map<String, dynamic> _normalizeOutstandingBill(dynamic rawBill) {
+  if (rawBill is! Map) return <String, dynamic>{};
+
+  final bill = Map<String, dynamic>.from(rawBill);
+
+  dynamic firstValue(List<String> keys) {
+    for (final key in keys) {
+      final value = bill[key];
+      if (value != null && value.toString().trim().isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  double? coordinate(List<String> keys) {
+    final value = firstValue(keys);
+    if (value is num) return value.toDouble();
+    if (value == null) return null;
+    return double.tryParse(value.toString().trim().replaceAll(',', '.'));
+  }
+
+  final customerName = firstValue(const [
+    'AcName',
+    'customer_name',
+    'CustomerName',
+    'customerName',
+    'PartyName',
+  ]);
+  final latitude = coordinate(const [
+    'GeoLatitude',
+    'geoLatitude',
+    'latitude',
+    'Latitude',
+    'lat',
+  ]);
+  final longitude = coordinate(const [
+    'GeoLongitude',
+    'geoLongitude',
+    'longitude',
+    'Longitude',
+    'lng',
+    'lon',
+  ]);
+
+  if (customerName != null) {
+    bill['AcName'] = customerName.toString().trim();
+    bill['customer_name'] = customerName.toString().trim();
+  }
+  if (latitude != null) {
+    bill['GeoLatitude'] = latitude;
+    bill['latitude'] = latitude;
+  }
+  if (longitude != null) {
+    bill['GeoLongitude'] = longitude;
+    bill['longitude'] = longitude;
+  }
+
+  return bill;
+}
+
 static Future<List<dynamic>> getOutstandingBillsForSalesman(
   String salesmanId,
   String distributorId,
@@ -760,7 +819,9 @@ static Future<List<dynamic>> getOutstandingBillsForSalesman(
 
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
-      return data['bills'] ?? [];
+      final bills = data['bills'];
+      if (bills is! List) return [];
+      return bills.map(_normalizeOutstandingBill).toList();
     }
 
     return [];
@@ -11633,7 +11694,8 @@ onPressed: () async {
       'billSeries': bill['TrnSeries'] ?? '',
       'billNo': bill['TrnNo']?.toString() ?? '',
       'sysAcCode': bill['SysAcCode']?.toString() ?? '',
-      'customerName': bill['customer_name'] ?? bill['CustomerName'] ?? '',
+      'customerName':
+          bill['customer_name'] ?? bill['CustomerName'] ?? bill['AcName'] ?? '',
       'billAmount': billAmount,
       'oldBalance': balance,
       'amountCollected': amount,
@@ -16390,58 +16452,212 @@ Widget _buildProductSelectionStepWithScheme() {
             ),
           ),
           const SizedBox(height: 20),
-          
-          /// NAVIGATION
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton(
+        /// NAVIGATION - ALWAYS VISIBLE AT BOTTOM
+SafeArea(
+  top: false,
+  child: Container(
+    width: double.infinity,
+    padding: const EdgeInsets.fromLTRB(0, 10, 0, 6),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      border: Border(
+        top: BorderSide(
+          color: Colors.grey.shade300,
+          width: 1,
+        ),
+      ),
+    ),
+    child: Row(
+      children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: () {
+              FocusScope.of(context).unfocus();
+
+              setState(() {
+                _orderStep = 1;
+
+                // Do not clear the cart.
+                // Entered quantities will remain saved.
+                _productSearchQuery = '';
+                _productSearchController.clear();
+              });
+            },
+            icon: const Icon(Icons.arrow_back),
+            label: const Text('Back'),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(0, 48),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: ElevatedButton.icon(
+            onPressed: () {
+              FocusScope.of(context).unfocus();
+
+              if (_cart.isNotEmpty) {
+                setState(() {
+                  _orderStep = 3;
+                });
+
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Proceeding to next step'),
+                    backgroundColor: successGreen,
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Please enter quantity for at least one product',
+                    ),
+                    backgroundColor: Colors.orange,
+                    duration: Duration(seconds: 2),
+                  ),
+                );
+              }
+            },
+            icon: const Icon(Icons.arrow_forward),
+            label: const Text('Next'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: accentTeal,
+              foregroundColor: Colors.white,
+              minimumSize: const Size(0, 48),
+            ),
+          ),
+        ),
+      ],
+    ),
+  ),
+),
+],
+);
+},
+);
+}
+Widget _buildFixedOrderNavigation() {
+  return Material(
+    color: Colors.white,
+    elevation: 10,
+    shadowColor: Colors.black26,
+    child: SafeArea(
+      top: false,
+      bottom: false,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          border: Border(
+            top: BorderSide(
+              color: Color(0xFFE5E7EB),
+              width: 1,
+            ),
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 46,
+                child: OutlinedButton.icon(
                   onPressed: () {
+                    FocusScope.of(context).unfocus();
+
                     setState(() {
+                      // Go back to customer selection.
                       _orderStep = 1;
-                      _cart.clear();
-                      _stockAlertShown.clear();
-                      // Clear search controllers
+
+                      // Keep entered products in the cart.
                       _productSearchQuery = '';
                       _productSearchController.clear();
                     });
                   },
-                  child: const Text('← Back'),
+                  icon: const Icon(
+                    Icons.arrow_back,
+                    size: 18,
+                  ),
+                  label: const Text(
+                    'Back',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF1A3B70),
+                    side: const BorderSide(
+                      color: Color(0xFF1A3B70),
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton(
+            ),
+
+            const SizedBox(width: 10),
+
+            Expanded(
+              child: SizedBox(
+                height: 46,
+                child: ElevatedButton.icon(
                   onPressed: () {
-                    if (_cart.isNotEmpty) {
-                      setState(() => _orderStep = 3);
-                      
+                    FocusScope.of(context).unfocus();
+
+                    if (_cart.isEmpty) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('Proceeding to next step'),
-                          backgroundColor: successGreen,
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
-                    } else {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Please add at least one item to cart'),
+                          content: Text(
+                            'Please enter quantity for at least one product',
+                          ),
                           backgroundColor: Colors.orange,
                           duration: Duration(seconds: 2),
                         ),
                       );
+                      return;
                     }
+
+                    setState(() {
+                      _orderStep = 3;
+                    });
+
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Proceeding to next step'),
+                        backgroundColor: successGreen,
+                        duration: Duration(seconds: 1),
+                      ),
+                    );
                   },
-                  style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-                  child: const Text('Next →'),
+                  icon: const Icon(
+                    Icons.arrow_forward,
+                    size: 18,
+                  ),
+                  label: const Text(
+                    'Next',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: accentTeal,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(24),
+                    ),
+                  ),
                 ),
               ),
-            ],
-          ),
-        ],
-      );
-    },
+            ),
+          ],
+        ),
+      ),
+    ),
   );
 }
   Widget _buildReviewStep() {
@@ -16600,6 +16816,343 @@ Widget _buildProductSelectionStepWithScheme() {
       ],
     );
   }
+// ==================== CUSTOMER MAP HELPERS ====================
+// Reads latitude / longitude exactly as received from the outstanding-bill
+// backend. Supports the desktop field names GeoLatitude / GeoLongitude and
+// common alternative names without changing any other bill logic.
+double? _readBillCoordinate(
+  Map<String, dynamic> bill,
+  List<String> keys,
+) {
+  for (final key in keys) {
+    final value = bill[key];
+
+    if (value == null) continue;
+
+    if (value is num) {
+      return value.toDouble();
+    }
+
+    final text = value.toString().trim();
+
+    if (text.isEmpty || text.toLowerCase() == 'null') {
+      continue;
+    }
+
+    final parsed = double.tryParse(text.replaceAll(',', '.'));
+
+    if (parsed != null) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+double? _getBillLatitude(Map<String, dynamic> bill) {
+  return _readBillCoordinate(
+    bill,
+    const [
+      'GeoLatitude',
+      'geoLatitude',
+      'latitude',
+      'Latitude',
+      'lat',
+    ],
+  );
+}
+
+double? _getBillLongitude(Map<String, dynamic> bill) {
+  return _readBillCoordinate(
+    bill,
+    const [
+      'GeoLongitude',
+      'geoLongitude',
+      'longitude',
+      'Longitude',
+      'lng',
+      'lon',
+    ],
+  );
+}
+
+String _getOutstandingCustomerName(Map<String, dynamic> bill) {
+  final value =
+      bill['customer_name'] ??
+      bill['CustomerName'] ??
+      bill['AcName'] ??
+      bill['PartyName'] ??
+      '';
+
+  return value.toString().trim();
+}
+
+Future<void> _openOutstandingCustomerInGoogleMaps(
+  Map<String, dynamic> bill,
+) async {
+  final latitude = _getBillLatitude(bill);
+  final longitude = _getBillLongitude(bill);
+  final customerName = _getOutstandingCustomerName(bill);
+
+  if (latitude == null || longitude == null) {
+    if (mounted) {
+      showSafeSnackBar(
+        context,
+        customerName.isEmpty
+            ? 'Customer location is not available.'
+            : 'Location is not available for $customerName.',
+        backgroundColor: errorRed,
+      );
+    }
+    return;
+  }
+
+  if (latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180) {
+    if (mounted) {
+      showSafeSnackBar(
+        context,
+        'Invalid customer latitude or longitude.',
+        backgroundColor: errorRed,
+      );
+    }
+    return;
+  }
+
+  // This opens Google Maps at the exact customer latitude/longitude.
+  // No Google Maps SDK/API key is required for simply opening the Maps app.
+  final uri = Uri.parse(
+    'https://www.google.com/maps/search/?api=1'
+    '&query=${Uri.encodeComponent('$latitude,$longitude')}',
+  );
+
+  try {
+    final opened = await launchUrl(
+      uri,
+      mode: kIsWeb ? LaunchMode.platformDefault : LaunchMode.externalApplication,
+    );
+
+    if (!opened && mounted) {
+      showSafeSnackBar(
+        context,
+        'Unable to open Google Maps.',
+        backgroundColor: errorRed,
+      );
+    }
+  } catch (e) {
+    print('Error opening Google Maps: $e');
+
+    if (mounted) {
+      showSafeSnackBar(
+        context,
+        'Unable to open Google Maps.',
+        backgroundColor: errorRed,
+      );
+    }
+  }
+}
+
+Widget _buildOutstandingGoogleMapsLogo({required bool enabled}) {
+  return Container(
+    width: 32,
+    height: 32,
+    padding: const EdgeInsets.all(3),
+    decoration: BoxDecoration(
+      color: enabled ? Colors.white : const Color(0xFFF3F4F6),
+      borderRadius: BorderRadius.circular(8),
+      border: Border.all(
+        color: enabled ? const Color(0xFFD0D5DD) : const Color(0xFFE5E7EB),
+      ),
+    ),
+    child: Opacity(
+      opacity: enabled ? 1 : 0.45,
+      child: Image.asset(
+        'assets/images/Map.png',
+        fit: BoxFit.contain,
+      ),
+    ),
+  );
+}
+
+Future<void> _showOutstandingDetailsDialog(
+  Map<String, dynamic> bill,
+) async {
+  final customerName = _getOutstandingCustomerName(bill);
+  final customerCode = (bill['customer_id'] ??
+          bill['SysAcCode'] ??
+          bill['CustomerCode'] ??
+          '')
+      .toString()
+      .trim();
+
+  final latitude = _getBillLatitude(bill);
+  final longitude = _getBillLongitude(bill);
+  final hasLocation = latitude != null && longitude != null;
+
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) {
+      return AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        titlePadding: const EdgeInsets.fromLTRB(18, 16, 10, 8),
+        contentPadding: const EdgeInsets.fromLTRB(18, 4, 18, 12),
+        actionsPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        title: Row(
+          children: [
+            const Icon(
+              Icons.location_on,
+              color: Color(0xFF34A853),
+              size: 22,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                customerName.isEmpty
+                    ? '$customerCode - Customer Location'
+                    : '$customerName - Customer Location',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF101828),
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Close',
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              icon: const Icon(Icons.close),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 520,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (customerCode.isNotEmpty)
+                Text(
+                  'Customer Code: $customerCode',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF475467),
+                  ),
+                ),
+              if (customerName.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'Customer Name: $customerName',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF475467),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFE5E7EB)),
+                ),
+                child: hasLocation
+                    ? Row(
+                        children: [
+                          Tooltip(
+                            message: 'Open in Google Maps',
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () =>
+                                  _openOutstandingCustomerInGoogleMaps(bill),
+                              child: _buildOutstandingGoogleMapsLogo(
+                                enabled: true,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Latitude: ${latitude.toStringAsFixed(6)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF101828),
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  'Longitude: ${longitude.toStringAsFixed(6)}',
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                    color: Color(0xFF101828),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      )
+                    : const Text(
+                        'Customer location is not available for this account.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF667085),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          OutlinedButton.icon(
+            onPressed: hasLocation
+                ? () => _openOutstandingCustomerInGoogleMaps(bill)
+                : null,
+            icon: const Icon(Icons.open_in_new, size: 16),
+            label: const Text('Open in Google Maps'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+Widget _buildOutstandingMapButton(Map<String, dynamic> bill) {
+  final latitude = _getBillLatitude(bill);
+  final longitude = _getBillLongitude(bill);
+  final hasLocation = latitude != null && longitude != null;
+
+  return Tooltip(
+    message: hasLocation
+        ? 'View customer location'
+        : 'Customer location not available',
+    child: InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: hasLocation
+          ? () => _openOutstandingCustomerInGoogleMaps(bill)
+          : null,
+      child: _buildOutstandingGoogleMapsLogo(enabled: hasLocation),
+    ),
+  );
+}
+
 Widget _buildCollectPaymentFromOutstanding() {
   double getAmount(Map<String, dynamic> b, List<String> keys) {
     for (final k in keys) {
@@ -17029,7 +17582,7 @@ Widget _buildCollectPaymentFromOutstanding() {
                                   const SizedBox(width: 8),
                                   Flexible(
                                     child: Text(
-                                      'Customer: ${customerCode.isEmpty ? '-' : customerCode}',
+                                      'Code: ${customerCode.isEmpty ? '-' : customerCode}',
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: const TextStyle(
@@ -17087,6 +17640,13 @@ Widget _buildCollectPaymentFromOutstanding() {
                         ),
 
                         const SizedBox(width: 4),
+
+                        // Customer Google Maps button.
+                        // GeoLatitude / GeoLongitude are kept in the raw
+                        // outstanding bill map returned by the backend.
+                        _buildOutstandingMapButton(bill),
+
+                        const SizedBox(width: 2),
 
                         const Icon(
                           Icons.chevron_right,
@@ -17146,7 +17706,7 @@ Widget _buildCollectPaymentFromOutstanding() {
                           SizedBox(
                             height: 32,
                             child: OutlinedButton.icon(
-                              onPressed: () {},
+                              onPressed: () => _showOutstandingDetailsDialog(bill),
                               icon: const Icon(Icons.visibility, size: 12),
                               label: const Text('View Details'),
                               style: OutlinedButton.styleFrom(
