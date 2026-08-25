@@ -134,9 +134,16 @@ async function connectToMongoDB() {
         await collections.collectionHistory.createIndex({ distributor_id: 1 });
         await collections.collectionHistory.createIndex({ salesman_id: 1 });
         await collections.collectionHistory.createIndex({ created_at: -1 });
-        await collections.outstanding.createIndex({ distributor_id: 1 });
+await collections.outstanding.createIndex({ distributor_id: 1 });
+await collections.outstanding.createIndex({ distributorId: 1 });
 await collections.outstanding.createIndex({ salesman_id: 1 });
 await collections.outstanding.createIndex({ SysAcCode: 1 });
+await collections.outstanding.createIndex({
+  distributor_id: 1,
+  status: 1,
+  salesman_id: 1,
+  Bamt: 1
+});
 await collections.outstanding.createIndex(
   { distributor_id: 1, TrnSeries: 1, TrnNo: 1, SysAcCode: 1 },
   { unique: true }
@@ -434,17 +441,17 @@ app.get('/api/collection-history/distributor/:distributorId', async (req, res) =
             }
         }
         
-        const collections = await collections.collectionHistory
+        const collectionRecords = await collections.collectionHistory
             .find(query)
             .sort({ collection_date: -1 })
             .toArray();
         
         // Calculate totals
-        const totalCollected = collections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        const totalCollected = collectionRecords.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
         
         // Group by salesman
         const salesmanSummary = {};
-        collections.forEach(c => {
+        collectionRecords.forEach(c => {
             if (c.salesman_details && c.salesman_details.id) {
                 const salesmanIdKey = c.salesman_details.id;
                 if (!salesmanSummary[salesmanIdKey]) {
@@ -461,10 +468,10 @@ app.get('/api/collection-history/distributor/:distributorId', async (req, res) =
         });
         
         res.json({
-            collections: collections,
+            collections: collectionRecords,
             summary: {
                 total_collected: totalCollected,
-                total_transactions: collections.length,
+                total_transactions: collectionRecords.length,
                 salesman_wise: Object.values(salesmanSummary)
             }
         });
@@ -492,18 +499,18 @@ app.get('/api/collection-history/salesman/:salesmanId', async (req, res) => {
             }
         }
         
-        const collections = await collections.collectionHistory
+        const collectionRecords = await collections.collectionHistory
             .find(query)
             .sort({ collection_date: -1 })
             .toArray();
         
-        const totalCollected = collections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        const totalCollected = collectionRecords.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
         
         res.json({
-            collections: collections,
+            collections: collectionRecords,
             summary: {
                 total_collected: totalCollected,
-                total_transactions: collections.length
+                total_transactions: collectionRecords.length
             }
         });
     } catch (error) {
@@ -531,18 +538,18 @@ app.get('/api/collection-history/reconcile/:distributorId', async (req, res) => 
             };
         }
         
-        const collections = await collections.collectionHistory
+        const collectionRecords = await collections.collectionHistory
             .find(query)
             .sort({ collection_date: -1 })
             .toArray();
         
-        const totalCollected = collections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        const totalCollected = collectionRecords.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
         const expected = parseFloat(expectedAmount) || totalCollected;
         const difference = expected - totalCollected;
         
         // Group by salesman for discrepancy tracking
         const salesmanCollections = {};
-        collections.forEach(c => {
+        collectionRecords.forEach(c => {
             if (c.salesman_details && c.salesman_details.id) {
                 const id = c.salesman_details.id;
                 if (!salesmanCollections[id]) {
@@ -564,7 +571,7 @@ app.get('/api/collection-history/reconcile/:distributorId', async (req, res) => 
             difference: difference,
             is_matching: difference === 0,
             message: difference === 0 ? 'Collections match expected amount' : (difference > 0 ? `Cash short by ₹${difference}` : `Cash excess by ₹${Math.abs(difference)}`),
-            collections: collections,
+            collections: collectionRecords,
             salesman_breakdown: Object.values(salesmanCollections)
         });
     } catch (error) {
@@ -1994,6 +2001,8 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
             .toArray();
         
         res.json({
+            distributorId: distributorId,
+            distributor_id: distributorId,
             customers: customers,
             products: products,
             orders: orders,
@@ -4732,8 +4741,82 @@ app.post(
 // OUTSTANDING BILL LOAD FOR SALESMAN
 // ============================================================
 
+// Collection Payment must show every bill owned by the logged-in
+// distributor. Keep this endpoint deliberately independent of salesman,
+// customer, status, balance and account-code data.
+async function loadOutstandingBillsForDistributor(req, res) {
+    try {
+      const distributorId = outstandingSafeString(
+        req.params.distributorId || req.query.distributorId
+      );
+
+      if (!distributorId) {
+        return res.status(400).json({
+          success: false,
+          message: 'distributorId required',
+          bills: []
+        });
+      }
+
+      const requestedPage = Number.parseInt(req.query.page, 10);
+      const requestedLimit = Number.parseInt(req.query.limit, 10);
+      const page = Number.isFinite(requestedPage) && requestedPage > 0
+        ? requestedPage
+        : 1;
+      const pageSize = Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.min(requestedLimit, 1000)
+        : 500;
+
+      // Older uploads used distributorId while current uploads use
+      // distributor_id. Both represent the same distributor and no other
+      // collection or field is used to decide which bills are returned.
+      const query = {
+        $or: [
+          { distributor_id: distributorId },
+          { distributorId: distributorId }
+        ]
+      };
+
+      const bills = await collections.outstanding
+        .find(query)
+        .skip((page - 1) * pageSize)
+        .limit(pageSize)
+        .toArray();
+
+      return res.json({
+        success: true,
+        count: bills.length,
+        pagination: {
+          page,
+          limit: pageSize,
+          hasMore: bills.length === pageSize
+        },
+        bills
+      });
+    } catch (error) {
+      console.error('Fetch distributor outstanding error:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message,
+        bills: []
+      });
+    }
+}
+
+app.get(
+  '/api/outstanding/distributor/:distributorId',
+  loadOutstandingBillsForDistributor
+);
+
+// Keep the already-deployed mobile URL working, but use exactly the same
+// distributor-only query. salesmanId is intentionally not part of the query.
 app.get(
   '/api/outstanding/salesman/:salesmanId',
+  loadOutstandingBillsForDistributor
+);
+
+app.get(
+  '/api/outstanding/salesman-legacy/:salesmanId',
   async (req, res) => {
 
     try {
@@ -4891,22 +4974,39 @@ app.get(
       // LOAD OUTSTANDING BILLS
       // ======================================================
 
-      const bills =
-        await collections.outstanding
+      // The mobile client requests large accounts in bounded pages. Keeping
+      // pagination optional preserves the existing response for older clients.
+      const requestedPage = Number.parseInt(req.query.page, 10);
+      const requestedLimit = Number.parseInt(req.query.limit, 10);
+      const page = Number.isFinite(requestedPage) && requestedPage > 0
+        ? requestedPage
+        : 1;
+      const pageSize = Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.min(requestedLimit, 1000)
+        : null;
 
+      let billsCursor = collections.outstanding
           .find(query)
-
           .sort({
 
             TrnDate:
               -1,
 
             TrnNo:
+              -1,
+
+            _id:
               -1
 
-          })
+          });
 
-          .toArray();
+      if (pageSize !== null) {
+        billsCursor = billsCursor
+          .skip((page - 1) * pageSize)
+          .limit(pageSize);
+      }
+
+      const bills = await billsCursor.toArray();
 
 
       console.log(
@@ -4925,17 +5025,106 @@ app.get(
       //
       // ======================================================
 
-      const enrichedBills = [];
+      // Load customer master data once for this distributor. The old code did
+      // up to three MongoDB queries per customer whenever coordinates were
+      // missing. Large outstanding lists commonly have null coordinates, which
+      // made the endpoint perform thousands of queries before it could respond.
+      const customerMasterByCode = new Map();
+      const repairOperations = [];
 
+      const requiresCustomerMaster = bills.some((bill) =>
+        !outstandingSafeString(
+          bill.AcName ||
+          bill.customer_name ||
+          bill.customerName ||
+          bill.CustomerName ||
+          ''
+        ) ||
+        outstandingSafeNumber(
+          bill.GeoLatitude ??
+          bill.geoLatitude ??
+          bill.latitude ??
+          bill.Latitude
+        ) === null ||
+        outstandingSafeNumber(
+          bill.GeoLongitude ??
+          bill.geoLongitude ??
+          bill.longitude ??
+          bill.Longitude
+        ) === null
+      );
 
-      for (
-        let i = 0;
-        i < bills.length;
-        i++
-      ) {
+      if (requiresCustomerMaster) {
+        const customerMasters = await collections.customer
+          .find(
+            { distributor_id: distributorId },
+            {
+              projection: {
+                SysAcCode: 1,
+                sysAcCode: 1,
+                sys_ac_code: 1,
+                customer_id: 1,
+                customerId: 1,
+                customer_code: 1,
+                CustomerCode: 1,
+                AcCode: 1,
+                acCode: 1,
+                name: 1,
+                customer_name: 1,
+                CustomerName: 1,
+                customerName: 1,
+                AcName: 1,
+                acName: 1,
+                PartyName: 1,
+                GeoLatitude: 1,
+                geoLatitude: 1,
+                latitude: 1,
+                Latitude: 1,
+                GeoLongitude: 1,
+                geoLongitude: 1,
+                longitude: 1,
+                Longitude: 1
+              }
+            }
+          )
+          .toArray();
 
-        const bill =
-          bills[i];
+        for (const customerMaster of customerMasters) {
+          const identifiers = [
+            customerMaster.SysAcCode,
+            customerMaster.sysAcCode,
+            customerMaster.sys_ac_code,
+            customerMaster.customer_id,
+            customerMaster.customerId,
+            customerMaster.customer_code,
+            customerMaster.CustomerCode,
+            customerMaster.AcCode,
+            customerMaster.acCode
+          ];
+
+          for (const identifier of identifiers) {
+            const normalizedIdentifier = outstandingSafeString(identifier);
+
+            if (!normalizedIdentifier) continue;
+
+            if (!customerMasterByCode.has(normalizedIdentifier)) {
+              customerMasterByCode.set(normalizedIdentifier, customerMaster);
+            }
+
+            // Older customer IDs can be stored as XAPIKEY_6041 while the
+            // outstanding document contains only 6041.
+            const underscoreIndex = normalizedIdentifier.lastIndexOf('_');
+            if (underscoreIndex >= 0 && underscoreIndex < normalizedIdentifier.length - 1) {
+              const suffix = normalizedIdentifier.slice(underscoreIndex + 1);
+              if (!customerMasterByCode.has(suffix)) {
+                customerMasterByCode.set(suffix, customerMaster);
+              }
+            }
+          }
+        }
+      }
+
+      const enrichBill = async (bill) => {
 
 
         const sysAcCode =
@@ -5027,13 +5216,7 @@ app.get(
         ) {
 
           customerMaster =
-            await findOutstandingCustomerMaster(
-
-              distributorId,
-
-              sysAcCode
-
-            );
+            customerMasterByCode.get(sysAcCode) || null;
 
 
           if (customerMaster) {
@@ -5129,11 +5312,6 @@ app.get(
         };
 
 
-        enrichedBills.push(
-          enrichedBill
-        );
-
-
         // ====================================================
         // UPDATE OLD MONGODB DOCUMENT IF DATA WAS RECOVERED
         // ====================================================
@@ -5210,42 +5388,65 @@ app.get(
             new Date();
 
 
-          try {
-
-            await collections.outstanding.updateOne(
-
-              {
-                _id:
-                  bill._id
-              },
-
-              {
-                $set:
-                  updateFields
-              }
-
-            );
-
-
-            console.log(
-              'Outstanding repaired:',
-              sysAcCode,
-              updateFields
-            );
-
-
-          } catch (repairError) {
-
-            console.error(
-              'Unable to repair outstanding document:',
-              bill._id,
-              repairError
-            );
-
-          }
+          repairOperations.push({
+            updateOne: {
+              filter: { _id: bill._id },
+              update: { $set: updateFields }
+            }
+          });
 
         }
 
+        return enrichedBill;
+      };
+
+      // Limit concurrent fallback queries so a very large account cannot
+      // exhaust the MongoDB connection pool on a small deployed instance.
+      const enrichedBills = [];
+      const enrichmentBatchSize = 25;
+
+      for (let index = 0; index < bills.length; index += enrichmentBatchSize) {
+        const enrichedChunk = await Promise.all(
+          bills
+            .slice(index, index + enrichmentBatchSize)
+            .map(enrichBill)
+        );
+
+        enrichedBills.push(...enrichedChunk);
+      }
+
+      // Legacy field repair is useful, but it is not part of this GET request's
+      // result. Run it only after the response has been flushed so thousands of
+      // writes can never make the mobile request time out.
+      if (repairOperations.length > 0) {
+        res.once('finish', () => {
+          setImmediate(async () => {
+            try {
+              const repairBatchSize = 500;
+
+              for (
+                let index = 0;
+                index < repairOperations.length;
+                index += repairBatchSize
+              ) {
+                await collections.outstanding.bulkWrite(
+                  repairOperations.slice(index, index + repairBatchSize),
+                  { ordered: false }
+                );
+              }
+
+              console.log(
+                'Outstanding records repaired:',
+                repairOperations.length
+              );
+            } catch (repairError) {
+              console.error(
+                'Unable to bulk repair outstanding documents:',
+                repairError
+              );
+            }
+          });
+        });
       }
 
 
@@ -5260,6 +5461,15 @@ app.get(
 
         count:
           enrichedBills.length,
+
+        pagination:
+          pageSize === null
+            ? null
+            : {
+                page,
+                limit: pageSize,
+                hasMore: bills.length === pageSize
+              },
 
         bills:
           enrichedBills
