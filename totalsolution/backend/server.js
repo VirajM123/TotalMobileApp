@@ -4783,15 +4783,105 @@ async function loadOutstandingBillsForDistributor(req, res) {
         .limit(pageSize)
         .toArray();
 
+      // Route planning needs the customer-master location, name and address.
+      // Outstanding uploads do not always contain those fields, so enrich the
+      // page in one customer query while keeping the distributor-only bill
+      // selection used by Collection Payment.
+      const customerMasters = await collections.customer
+        .find({
+          $or: [
+            { distributor_id: distributorId },
+            { distributorId: distributorId }
+          ]
+        })
+        .toArray();
+      const customersByCode = new Map();
+
+      for (const customer of customerMasters) {
+        const identifiers = [
+          customer.SysAcCode,
+          customer.sysAcCode,
+          customer.sys_ac_code,
+          customer.customer_id,
+          customer.customerId,
+          customer.customer_code,
+          customer.CustomerCode,
+          customer.AcCode,
+          customer.acCode
+        ];
+
+        for (const identifier of identifiers) {
+          const code = outstandingSafeString(identifier);
+          if (!code) continue;
+          customersByCode.set(code.toLowerCase(), customer);
+
+          const separator = code.lastIndexOf('_');
+          if (separator >= 0 && separator < code.length - 1) {
+            customersByCode.set(code.slice(separator + 1).toLowerCase(), customer);
+          }
+        }
+      }
+
+      const enrichedBills = bills.map((bill) => {
+        const code = outstandingSafeString(
+          bill.SysAcCode || bill.customer_id || bill.customerId || ''
+        );
+        const customer = customersByCode.get(code.toLowerCase());
+        const customerName = outstandingSafeString(
+          bill.AcName ||
+          bill.customer_name ||
+          bill.CustomerName ||
+          getOutstandingCustomerNameFromMaster(customer)
+        );
+        const latitude = outstandingSafeNumber(
+          bill.GeoLatitude ??
+          bill.geoLatitude ??
+          bill.latitude ??
+          bill.Latitude
+        ) ?? getOutstandingLatitudeFromMaster(customer);
+        const longitude = outstandingSafeNumber(
+          bill.GeoLongitude ??
+          bill.geoLongitude ??
+          bill.longitude ??
+          bill.Longitude
+        ) ?? getOutstandingLongitudeFromMaster(customer);
+        const address = outstandingSafeString(
+          bill.Address ||
+          bill.address ||
+          bill.CustomerAddress ||
+          customer?.address ||
+          customer?.Address ||
+          customer?.area ||
+          customer?.AreaName ||
+          customer?.route ||
+          customer?.RouteName ||
+          ''
+        );
+
+        return {
+          ...bill,
+          SysAcCode: code,
+          customer_id: code,
+          AcName: customerName,
+          customer_name: customerName,
+          Address: address,
+          address,
+          GeoLatitude: latitude,
+          GeoLongitude: longitude,
+          latitude,
+          longitude
+        };
+      });
+
       return res.json({
         success: true,
-        count: bills.length,
+        count: enrichedBills.length,
         pagination: {
           page,
           limit: pageSize,
           hasMore: bills.length === pageSize
         },
-        bills
+        bills: enrichedBills
       });
     } catch (error) {
       console.error('Fetch distributor outstanding error:', error);
@@ -5502,6 +5592,83 @@ app.get(
 
   }
 );
+
+app.put('/api/outstanding/delivery-status', async (req, res) => {
+  try {
+    const distributorId = outstandingSafeString(req.body.distributorId);
+    const salesmanId = outstandingSafeString(req.body.salesmanId);
+    const billSeries = outstandingSafeString(req.body.billSeries);
+    const billNo = outstandingSafeString(req.body.billNo);
+    const sysAcCode = outstandingSafeString(req.body.sysAcCode);
+    const outstandingId = outstandingSafeString(req.body.outstandingId);
+
+    if (!distributorId || !salesmanId || !billNo || !sysAcCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Distributor, salesman, bill number and customer are required'
+      });
+    }
+
+    const billIdentity = [];
+    if (ObjectId.isValid(outstandingId)) {
+      billIdentity.push({ _id: new ObjectId(outstandingId) });
+    }
+    billIdentity.push({ TrnNo: billNo, SysAcCode: sysAcCode });
+    const numericBillNo = Number(billNo);
+    if (Number.isFinite(numericBillNo)) {
+      billIdentity.push({ TrnNo: numericBillNo, SysAcCode: sysAcCode });
+    }
+
+    const filter = {
+      $and: [
+        {
+          $or: [
+            { distributor_id: distributorId },
+            { distributorId }
+          ]
+        },
+        {
+          $or: [
+            { TrnSeries: billSeries },
+            ...(billSeries ? [] : [
+              { TrnSeries: '' },
+              { TrnSeries: null },
+              { TrnSeries: { $exists: false } }
+            ])
+          ]
+        },
+        {
+          $or: billIdentity
+        }
+      ]
+    };
+    const deliveredAt = new Date().toISOString();
+    const result = await collections.outstanding.updateOne(filter, {
+      $set: {
+        delivery_status: 'completed',
+        delivered_at: deliveredAt,
+        delivered_by: salesmanId,
+        updated_at: deliveredAt
+      }
+    });
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Delivery bill not found'
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Delivery marked completed',
+      delivered_at: deliveredAt
+    });
+  } catch (error) {
+    console.error('Complete outstanding delivery error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
 app.post('/api/outstanding/collect-payment', async (req, res) => {
   try {
     console.log(
@@ -6066,6 +6233,261 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
     });
   }
 });
+// ============================================================
+// LOAD DELIVERY BULK UPLOAD
+// ============================================================
+
+app.post('/api/load-delivery/upload', async (req, res) => {
+    let inserted = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    try {
+        const distributorId = String(
+            req.body?.distributorId ?? req.body?.distributor_id ?? ''
+        ).trim();
+        const bills = Array.isArray(req.body?.bills) ? req.body.bills : [];
+
+        if (!distributorId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Distributor ID is required',
+                inserted,
+                updated,
+                skipped: bills.length
+            });
+        }
+
+        if (bills.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No load delivery bills received',
+                inserted,
+                updated,
+                skipped
+            });
+        }
+
+        const requestLoadSeries = String(
+            req.body?.LoadSeries ?? bills[0]?.LoadSeries ?? ''
+        ).trim();
+        const requestLoadNo = Number(
+            req.body?.LoadNo ?? bills[0]?.LoadNo
+        );
+        const uploadedAt = new Date();
+        const deliveryBills = [];
+
+        if (!Number.isInteger(requestLoadNo)) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid Load No is required',
+                inserted,
+                updated,
+                skipped: bills.length
+            });
+        }
+
+        for (const bill of bills) {
+            const trnSeries = String(bill?.TrnSeries ?? '').trim();
+            const trnNo = Number(bill?.TrnNo);
+            const sysAcCode = String(bill?.SysAcCode ?? '').trim();
+            const billAmount = Number(bill?.BillAmount ?? 0);
+
+            if (
+                !trnSeries ||
+                !Number.isInteger(trnNo) ||
+                !sysAcCode ||
+                !Number.isFinite(billAmount)
+            ) {
+                skipped += 1;
+                continue;
+            }
+
+            deliveryBills.push({
+                LoadSeries: requestLoadSeries,
+                LoadNo: requestLoadNo,
+                TrnSeries: trnSeries,
+                TrnNo: trnNo,
+                SysAcCode: sysAcCode,
+                AcName: String(bill?.AcName ?? '').trim(),
+                BillAmount: billAmount,
+                GeoLatitude:
+                    bill?.GeoLatitude === null || bill?.GeoLatitude === undefined
+                        ? ''
+                        : String(bill.GeoLatitude).trim(),
+                GeoLongitude:
+                    bill?.GeoLongitude === null || bill?.GeoLongitude === undefined
+                        ? ''
+                        : String(bill.GeoLongitude).trim(),
+                delivery_status: String(
+                    bill?.delivery_status ?? 'pending'
+                ).trim() || 'pending'
+            });
+        }
+
+        if (deliveryBills.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No valid load delivery bills received',
+                inserted,
+                updated,
+                skipped
+            });
+        }
+
+        const deliveryCollection = db.collection('Mas_Delivery');
+        const loadFilter = {
+            distributorId,
+            LoadSeries: requestLoadSeries,
+            LoadNo: requestLoadNo
+        };
+        const existingLoad = await deliveryCollection.findOne(loadFilter, {
+            projection: { _id: 1 }
+        });
+        const deliveryDocument = {
+            distributorId,
+            LoadSeries: requestLoadSeries,
+            LoadNo: requestLoadNo,
+            bills: deliveryBills,
+            uploadType: 'LOAD_DELIVERY',
+            uploadedAt
+        };
+        let loadDocumentId;
+
+        if (existingLoad) {
+            await deliveryCollection.replaceOne(
+                { _id: existingLoad._id },
+                deliveryDocument
+            );
+            loadDocumentId = existingLoad._id;
+            updated = deliveryBills.length;
+        } else {
+            const insertResult = await deliveryCollection.insertOne(
+                deliveryDocument
+            );
+            loadDocumentId = insertResult.insertedId;
+            inserted = deliveryBills.length;
+        }
+
+        // Remove old one-document-per-bill records for this same load. This
+        // leaves exactly one load document containing the complete bills array.
+        await deliveryCollection.deleteMany({
+            ...loadFilter,
+            _id: { $ne: loadDocumentId }
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: 'Load delivery uploaded successfully',
+            inserted,
+            updated,
+            skipped
+        });
+    } catch (error) {
+        console.error('Load delivery upload error:', error);
+
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Unable to upload load delivery',
+            inserted,
+            updated,
+            skipped
+        });
+    }
+});
+
+app.get('/api/load-delivery/:distributorId', async (req, res) => {
+    try {
+        const distributorId = String(req.params.distributorId ?? '').trim();
+
+        if (!distributorId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Distributor ID is required',
+                loads: []
+            });
+        }
+
+        const loads = await db
+            .collection('Mas_Delivery')
+            .find({ distributorId })
+            .sort({ uploadedAt: -1, LoadNo: -1 })
+            .toArray();
+
+        return res.json({ success: true, loads });
+    } catch (error) {
+        console.error('Load delivery download error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Unable to load delivery records',
+            loads: []
+        });
+    }
+});
+
+app.put('/api/load-delivery/delivery-status', async (req, res) => {
+    try {
+        const distributorId = String(req.body?.distributorId ?? '').trim();
+        const loadDocumentId = String(req.body?.loadDocumentId ?? '').trim();
+        const trnSeries = String(req.body?.billSeries ?? '').trim();
+        const trnNo = Number(req.body?.billNo);
+        const sysAcCode = String(req.body?.sysAcCode ?? '').trim();
+
+        if (
+            !distributorId ||
+            !ObjectId.isValid(loadDocumentId) ||
+            !trnSeries ||
+            !Number.isInteger(trnNo) ||
+            !sysAcCode
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Valid load and bill details are required'
+            });
+        }
+
+        const deliveredAt = new Date();
+        const result = await db.collection('Mas_Delivery').updateOne(
+            {
+                _id: new ObjectId(loadDocumentId),
+                distributorId,
+                bills: {
+                    $elemMatch: {
+                        TrnSeries: trnSeries,
+                        TrnNo: trnNo,
+                        SysAcCode: sysAcCode
+                    }
+                }
+            },
+            {
+                $set: {
+                    'bills.$.delivery_status': 'completed',
+                    'bills.$.delivered_at': deliveredAt
+                }
+            }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Load delivery bill not found'
+            });
+        }
+
+        return res.json({
+            success: true,
+            message: 'Delivery marked completed',
+            delivered_at: deliveredAt
+        });
+    } catch (error) {
+        console.error('Load delivery status error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Unable to update delivery status'
+        });
+    }
+});
+
 app.listen(PORT, async () => {
     try {
         await connectToMongoDB();
