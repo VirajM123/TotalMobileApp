@@ -31,8 +31,37 @@
 
   <title>totalsolution</title>
   <link rel="manifest" href="manifest.json">
+  <script src="maps_api_key.js"></script>
+  <script>
+    // google_maps_flutter_web 0.6.3 reads legacy globals such as
+    // google.maps.MapTypeId during startup. Load Maps completely before
+    // booting Flutter so those globals are available.
+    window.addEventListener('load', function () {
+      const bootFlutter = function () {
+        const flutterScript = document.createElement('script');
+        flutterScript.src = 'flutter_bootstrap.js';
+        flutterScript.async = true;
+        document.body.appendChild(flutterScript);
+      };
+
+      if (!window.googleMapsApiKey) {
+        console.error('Google Maps JavaScript API key is missing.');
+        bootFlutter();
+        return;
+      }
+
+      const mapsScript = document.createElement('script');
+      mapsScript.src = 'https://maps.googleapis.com/maps/api/js?key=' +
+          encodeURIComponent(window.googleMapsApiKey) + '&v=weekly';
+      mapsScript.async = true;
+      mapsScript.onload = bootFlutter;
+      mapsScript.onerror = function () {
+        console.error('Google Maps JavaScript API failed to load.');
+        bootFlutter();
+      };
+      document.head.appendChild(mapsScript);
+    });
+  </script>
 </head>
-<body>
-  <script src="flutter_bootstrap.js" async></script>
-</body>
+<body></body>
 </html>

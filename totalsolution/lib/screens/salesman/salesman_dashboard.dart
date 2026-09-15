@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../../models/models.dart';
 import '../../services/services.dart';
 import '../auth/login_screen.dart';
+
 
 class SalesmanDashboard extends StatefulWidget {
   const SalesmanDashboard({super.key});
@@ -221,129 +223,166 @@ class _SalesmanDashboardState extends State<SalesmanDashboard> {
 
     final product = _products.firstWhere((p) => p.id == productId);
 
-    // FIXED: Use the current quantity from cart item (which should have the correct quantity from loadOrderToCart)
-    // Initialize with current cart values, not defaults
-    final qtyController = TextEditingController(
-      text: cartItem.quantity.toString(),
-    );
-    final rateController = TextEditingController(
-      text: cartItem.rate.toStringAsFixed(2),
-    );
-    final schPerController = TextEditingController(
-      text: cartItem.schPer.toString(),
-    );
+    final qtyController = TextEditingController(text: cartItem.quantity.toString());
+    final rateController = TextEditingController(text: cartItem.rate.toStringAsFixed(2));
+    final schPerController = TextEditingController(text: cartItem.schPer.toString());
+
+    int parseQty(String s) {
+      final cleaned = s.trim();
+      if (cleaned.isEmpty) return cartItem.quantity;
+      return int.tryParse(cleaned) ?? cartItem.quantity;
+    }
+
+    double parseDecimal(String s, double fallback) {
+      final cleaned = s.trim();
+      if (cleaned.isEmpty) return fallback;
+      // accept both 12.50 and 12,50
+      final normalized = cleaned.replaceAll(',', '.');
+      return double.tryParse(normalized) ?? fallback;
+    }
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Edit ${product.name}'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Quantity
-              TextField(
-                controller: qtyController,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: 'Quantity',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              // Rate
-              TextField(
-                controller: rateController,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: 'Rate (₹)',
-                  prefixText: '₹ ',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              // Scheme Percentage
-              TextField(
-                controller: schPerController,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  labelText: 'Scheme %',
-                  suffixText: '%',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              // Live calculation preview
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.blue[50],
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Gross: ₹${(cartItem.grossAmt).toStringAsFixed(2)}',
-                      style: const TextStyle(fontSize: 12),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Edit ${product.name}'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Quantity (only digits)
+                TextField(
+                  controller: qtyController,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.done,
+                  inputFormatters: <TextInputFormatter>[
+                    FilteringTextInputFormatter.digitsOnly,
+                  ],
+                  decoration: InputDecoration(
+                    labelText: 'Quantity',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                    Text(
-                      'Scheme: -₹${(cartItem.schAmt).toStringAsFixed(2)}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.orange,
-                      ),
-                    ),
-                    Text(
-                      'Net: ₹${(cartItem.netAmt).toStringAsFixed(2)}',
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: primaryBlue,
-                      ),
+                  ),
+                  onChanged: (_) => setDialogState(() {}),
+                ),
+                const SizedBox(height: 12),
+
+                // Rate (decimal allowed)
+                TextField(
+                  controller: rateController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: false),
+                  textInputAction: TextInputAction.done,
+                  inputFormatters: <TextInputFormatter>[
+                    FilteringTextInputFormatter.allow(
+                      RegExp(r'^\d*([\.,]?\d{0,2})?$'),
                     ),
                   ],
+                  decoration: InputDecoration(
+                    labelText: 'Rate (₹)',
+                    prefixText: '₹ ',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onChanged: (_) => setDialogState(() {}),
                 ),
-              ),
-            ],
+                const SizedBox(height: 12),
+
+                // Scheme % (decimal allowed)
+                TextField(
+                  controller: schPerController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: false),
+                  textInputAction: TextInputAction.done,
+                  inputFormatters: <TextInputFormatter>[
+                    FilteringTextInputFormatter.allow(
+                      RegExp(r'^\d*([\.,]?\d{0,2})?$'),
+                    ),
+                  ],
+                  decoration: InputDecoration(
+                    labelText: 'Scheme %',
+                    suffixText: '%',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  onChanged: (_) => setDialogState(() {}),
+                ),
+                const SizedBox(height: 16),
+
+                // Live calculation preview
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Builder(builder: (_) {
+                        final qty = parseQty(qtyController.text);
+                        final rate = parseDecimal(rateController.text, product.price);
+                        final schPer = parseDecimal(schPerController.text, 0);
+
+                        final temp = CartItemData(
+                          productId: cartItem.productId,
+                          productName: cartItem.productName,
+                          sku: cartItem.sku,
+                          quantity: qty,
+                          rate: rate,
+                          schPer: schPer,
+                        );
+                        temp.calculate();
+
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Gross: ₹${temp.grossAmt.toStringAsFixed(2)}', style: const TextStyle(fontSize: 12)),
+                            Text('Scheme: -₹${temp.schAmt.toStringAsFixed(2)}', style: const TextStyle(fontSize: 12, color: Colors.orange)),
+                            Text(
+                              'Net: ₹${temp.netAmt.toStringAsFixed(2)}',
+                              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: primaryBlue),
+                            ),
+                          ],
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                final qty = parseQty(qtyController.text);
+                final rate = parseDecimal(rateController.text, product.price);
+                final schPer = parseDecimal(schPerController.text, 0);
+
+                updateCartItem(
+                  productId,
+                  quantity: qty,
+                  rate: rate,
+                  schPer: schPer,
+                );
+
+                Navigator.pop(context);
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
+              child: const Text('Save'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final qty = int.tryParse(qtyController.text) ?? 1;
-              final rate =
-                  double.tryParse(rateController.text) ?? product.price;
-              final schPer = double.tryParse(schPerController.text) ?? 0;
-
-              updateCartItem(
-                productId,
-                quantity: qty,
-                rate: rate,
-                schPer: schPer,
-              );
-
-              Navigator.pop(context);
-              // Refresh the dialog that called this
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-            child: const Text('Save'),
-          ),
-        ],
       ),
     );
   }
+
 
   // Load an existing order back into the cart for editing
   // FIXED: Now properly loads quantity, schPer, schAmt and recalculates

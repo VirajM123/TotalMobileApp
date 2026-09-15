@@ -52,11 +52,17 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
-app.use('/uploads', express.static('uploads'));
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+
 
 // MongoDB connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
+const MONGODB_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+  console.error("MongoDB URI missing in .env");
+  process.exit(1);
+}
 const DB_NAME = 'TotalApp';
 
 // Collection names
@@ -69,7 +75,8 @@ const COLLECTIONS = {
   ORDER: 'mas_order',
   PAYMENT: 'mas_payment',
   NOTIFICATION: 'mas_notification',
-  COLLECTION_HISTORY: 'mas_collection_history'
+  COLLECTION_HISTORY: 'mas_collection_history',
+OUTSTANDING: 'Mas_Outstanding'
 };
 
 let db;
@@ -92,6 +99,7 @@ async function connectToMongoDB() {
         collections.payment = db.collection(COLLECTIONS.PAYMENT);
         collections.notification = db.collection(COLLECTIONS.NOTIFICATION);
         collections.collectionHistory = db.collection(COLLECTIONS.COLLECTION_HISTORY);
+        collections.outstanding = db.collection(COLLECTIONS.OUTSTANDING);
         
         console.log('Connected to MongoDB successfully');
         console.log(`Database: ${DB_NAME}`);
@@ -126,7 +134,20 @@ async function connectToMongoDB() {
         await collections.collectionHistory.createIndex({ distributor_id: 1 });
         await collections.collectionHistory.createIndex({ salesman_id: 1 });
         await collections.collectionHistory.createIndex({ created_at: -1 });
-        
+await collections.outstanding.createIndex({ distributor_id: 1 });
+await collections.outstanding.createIndex({ distributorId: 1 });
+await collections.outstanding.createIndex({ salesman_id: 1 });
+await collections.outstanding.createIndex({ SysAcCode: 1 });
+await collections.outstanding.createIndex({
+  distributor_id: 1,
+  status: 1,
+  salesman_id: 1,
+  Bamt: 1
+});
+await collections.outstanding.createIndex(
+  { distributor_id: 1, TrnSeries: 1, TrnNo: 1, SysAcCode: 1 },
+  { unique: true }
+);
         console.log('Indexes created successfully');
     } catch (error) {
         console.error('MongoDB connection error:', error);
@@ -420,17 +441,17 @@ app.get('/api/collection-history/distributor/:distributorId', async (req, res) =
             }
         }
         
-        const collections = await collections.collectionHistory
+        const collectionRecords = await collections.collectionHistory
             .find(query)
             .sort({ collection_date: -1 })
             .toArray();
         
         // Calculate totals
-        const totalCollected = collections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        const totalCollected = collectionRecords.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
         
         // Group by salesman
         const salesmanSummary = {};
-        collections.forEach(c => {
+        collectionRecords.forEach(c => {
             if (c.salesman_details && c.salesman_details.id) {
                 const salesmanIdKey = c.salesman_details.id;
                 if (!salesmanSummary[salesmanIdKey]) {
@@ -447,10 +468,10 @@ app.get('/api/collection-history/distributor/:distributorId', async (req, res) =
         });
         
         res.json({
-            collections: collections,
+            collections: collectionRecords,
             summary: {
                 total_collected: totalCollected,
-                total_transactions: collections.length,
+                total_transactions: collectionRecords.length,
                 salesman_wise: Object.values(salesmanSummary)
             }
         });
@@ -478,18 +499,18 @@ app.get('/api/collection-history/salesman/:salesmanId', async (req, res) => {
             }
         }
         
-        const collections = await collections.collectionHistory
+        const collectionRecords = await collections.collectionHistory
             .find(query)
             .sort({ collection_date: -1 })
             .toArray();
         
-        const totalCollected = collections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        const totalCollected = collectionRecords.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
         
         res.json({
-            collections: collections,
+            collections: collectionRecords,
             summary: {
                 total_collected: totalCollected,
-                total_transactions: collections.length
+                total_transactions: collectionRecords.length
             }
         });
     } catch (error) {
@@ -517,18 +538,18 @@ app.get('/api/collection-history/reconcile/:distributorId', async (req, res) => 
             };
         }
         
-        const collections = await collections.collectionHistory
+        const collectionRecords = await collections.collectionHistory
             .find(query)
             .sort({ collection_date: -1 })
             .toArray();
         
-        const totalCollected = collections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        const totalCollected = collectionRecords.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
         const expected = parseFloat(expectedAmount) || totalCollected;
         const difference = expected - totalCollected;
         
         // Group by salesman for discrepancy tracking
         const salesmanCollections = {};
-        collections.forEach(c => {
+        collectionRecords.forEach(c => {
             if (c.salesman_details && c.salesman_details.id) {
                 const id = c.salesman_details.id;
                 if (!salesmanCollections[id]) {
@@ -550,7 +571,7 @@ app.get('/api/collection-history/reconcile/:distributorId', async (req, res) => 
             difference: difference,
             is_matching: difference === 0,
             message: difference === 0 ? 'Collections match expected amount' : (difference > 0 ? `Cash short by ₹${difference}` : `Cash excess by ₹${Math.abs(difference)}`),
-            collections: collections,
+            collections: collectionRecords,
             salesman_breakdown: Object.values(salesmanCollections)
         });
     } catch (error) {
@@ -1980,6 +2001,8 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
             .toArray();
         
         res.json({
+            distributorId: distributorId,
+            distributor_id: distributorId,
             customers: customers,
             products: products,
             orders: orders,
@@ -2698,20 +2721,85 @@ app.get('/api/payments', async (req, res) => {
     }
 });
 
-app.get('/api/payments/distributor/:distributorId', async (req, res) => {
-    try {
-        const { distributorId } = req.params;
-        const payments = await collections.payment
-            .find({ 'collected_by.id': distributorId })
-            .sort({ created_at: -1 })
-            .toArray();
-        res.json(payments);
-    } catch (error) {
-        console.error('Error fetching payments:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+// ==================== PAYMENT / RECEIPT DOWNLOAD API ====================
 
+app.get('/api/payments/distributor/:distributorId', async (req, res) => {
+  try {
+    const distributorId = decodeURIComponent(req.params.distributorId || '').trim();
+
+    console.log("========== PAYMENT DOWNLOAD DEBUG ==========");
+    console.log("DB NAME:", db.databaseName);
+    console.log("Collection:", COLLECTIONS.PAYMENT);
+    console.log("Distributor ID received:", distributorId);
+
+    const totalInCollection = await collections.payment.countDocuments();
+    const exactCount = await collections.payment.countDocuments({
+      distributor_id: distributorId
+    });
+
+    console.log("Total mas_payment records:", totalInCollection);
+    console.log("Exact distributor_id count:", exactCount);
+
+    const sample = await collections.payment.findOne({});
+    console.log("Sample distributor_id:", sample?.distributor_id);
+
+    const payments = await collections.payment
+      .find({ distributor_id: distributorId })
+      .sort({ collection_date: -1 })
+      .toArray();
+
+    console.log("Returning payments:", payments.length);
+    console.log("===========================================");
+
+    return res.json(payments);
+  } catch (error) {
+    console.error("Payment download error:", error);
+    return res.status(500).json([]);
+  }
+});
+app.put('/api/payments/status/:collectionId', async (req, res) => {
+  try {
+    const collectionId = req.params.collectionId;
+
+    const result = await collections.payment.updateOne(
+      { collection_id: collectionId },
+      {
+        $set: {
+          download_status: 'downloaded',
+          downloadedAt: new Date().toISOString()
+        }
+      }
+    );
+
+    res.json({
+      success: result.matchedCount > 0,
+      matchedCount: result.matchedCount
+    });
+  } catch (error) {
+    console.error('Error updating payment status:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+app.get('/api/payments/debug/all', async (req, res) => {
+  try {
+    const count = await collections.payment.countDocuments();
+
+    const sample = await collections.payment
+      .find({})
+      .sort({ created_at: -1 })
+      .limit(10)
+      .toArray();
+
+    res.json({
+      dbName: db.databaseName,
+      collection: 'mas_payment',
+      totalPayments: count,
+      sample
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 app.get('/api/payments/salesman/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
@@ -2888,10 +2976,14 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
         }
         
         // FIXED: Payment record with correct IDs and all payment details
-        const paymentRecord = {
-            collection_id: collectionId,
-            collection_date: new Date().toISOString(),
-            customer_id: actualCustomerId,
+       const paymentRecord = {
+    collection_id: collectionId,
+    collection_date: new Date().toISOString(),
+
+    // IMPORTANT FIX FOR RECEIPT DOWNLOAD
+    distributor_id: order.distributor_id || req.body.distributorId || null,
+
+    customer_id: actualCustomerId,
             customer_name: actualCustomerName,
             amount_collected: paymentAmount,
             payment_mode: paymentMode,
@@ -2921,15 +3013,16 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
             reference_number: reference || chequeNumber || transactionNumber || null,
             photo_path: photoPath,
             remark: remark || null,
-            order_details: {
-                order_id: order.orderNumber,
-                order_amount: order.grand_total,
-                previous_paid: order.paidAmount || 0,
-                previous_due: order.dueAmount || order.grand_total,
-                status: newDueAmount <= 0 ? 'completed' : 'partial',
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            }
+           order_details: {
+    order_id: order.orderNumber,
+    distributor_id: order.distributor_id || req.body.distributorId || null,
+    order_amount: order.grand_total,
+    previous_paid: order.paidAmount || 0,
+    previous_due: order.dueAmount || order.grand_total,
+    status: newDueAmount <= 0 ? 'completed' : 'partial',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+}
         };
         
         console.log('Payment record to save:', JSON.stringify(paymentRecord, null, 2));
@@ -3318,91 +3411,3183 @@ app.get('/api/health', (req, res) => {
         }, {})
     });
 });
+// ============================================================
+// OUTSTANDING BILL HELPER FUNCTIONS
+// ============================================================
+
+// Safely convert value to Date
+function outstandingSafeDate(value) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  const d = new Date(value);
+
+  if (isNaN(d.getTime())) {
+    return null;
+  }
+
+  return d;
+}
+
+
+// Safely convert value to Number
+function outstandingSafeNumber(value) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  // JSON numbers arrive as numbers, but older desktop clients and imported
+  // rows can send coordinates as trimmed strings (and occasionally with a
+  // decimal comma). Normalize those representations before saving them.
+  let normalizedValue = value;
+
+  if (typeof normalizedValue === 'string') {
+    normalizedValue = normalizedValue.trim();
+
+    if (
+      normalizedValue.includes(',') &&
+      !normalizedValue.includes('.') &&
+      normalizedValue.indexOf(',') === normalizedValue.lastIndexOf(',')
+    ) {
+      normalizedValue = normalizedValue.replace(',', '.');
+    }
+  }
+
+  const n = Number(normalizedValue);
+
+  if (!Number.isFinite(n)) {
+    return null;
+  }
+
+  return n;
+}
+
+
+// Read a payload value without depending on JSON property casing. The VB.NET
+// uploader currently sends AcName/GeoLatitude/GeoLongitude, while this keeps
+// uploads from older desktop builds compatible too.
+function getOutstandingPayloadValue(source, keys) {
+  if (!source || typeof source !== 'object') {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    if (
+      Object.prototype.hasOwnProperty.call(source, key) &&
+      source[key] !== null &&
+      source[key] !== undefined &&
+      (typeof source[key] !== 'string' || source[key].trim() !== '')
+    ) {
+      return source[key];
+    }
+  }
+
+  const actualKeys = Object.keys(source);
+
+  for (const key of keys) {
+    const actualKey = actualKeys.find(
+      (candidate) => candidate.toLowerCase() === key.toLowerCase()
+    );
+
+    if (
+      actualKey !== undefined &&
+      source[actualKey] !== null &&
+      source[actualKey] !== undefined &&
+      (
+        typeof source[actualKey] !== 'string' ||
+        source[actualKey].trim() !== ''
+      )
+    ) {
+      return source[actualKey];
+    }
+  }
+
+  return undefined;
+}
+
+
+// Safely convert value to trimmed String
+function outstandingSafeString(value) {
+
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return '';
+  }
+
+  return String(value).trim();
+}
+
+
+// Escape value before using in RegExp
+function escapeOutstandingRegex(value) {
+
+  return String(value)
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+
+// ============================================================
+// FIND CUSTOMER MASTER USING SYS ACCOUNT CODE
+// ============================================================
+//
+// This function is intentionally flexible because your
+// mas_customer.customer_id can be stored in different formats.
+//
+// Examples:
+//
+// 6041
+// XAPIKEY_6041
+//
+// It also checks the newly stored SysAcCode field.
+//
+// ============================================================
+
+async function findOutstandingCustomerMaster(
+  distributorId,
+  sysAcCode
+) {
+
+  try {
+
+    const distributor =
+      outstandingSafeString(distributorId);
+
+    const accountCode =
+      outstandingSafeString(sysAcCode);
+
+
+    if (
+      !distributor ||
+      !accountCode
+    ) {
+
+      return null;
+
+    }
+
+
+    const numericSysAcCode =
+      outstandingSafeNumber(accountCode);
+
+
+    // --------------------------------------------------------
+    // FIRST TRY:
+    // Exact SysAcCode / exact customer_id
+    // --------------------------------------------------------
+
+    const exactConditions = [
+
+      {
+        SysAcCode:
+          accountCode
+      },
+
+      {
+        sysAcCode:
+          accountCode
+      },
+
+      {
+        sys_ac_code:
+          accountCode
+      },
+
+      {
+        customer_id:
+          accountCode
+      },
+
+      {
+        customerId:
+          accountCode
+      }
+
+    ];
+
+
+    // If code is numeric, also try numeric value
+    if (numericSysAcCode !== null) {
+
+      exactConditions.push(
+
+        {
+          SysAcCode:
+            numericSysAcCode
+        },
+
+        {
+          sysAcCode:
+            numericSysAcCode
+        },
+
+        {
+          sys_ac_code:
+            numericSysAcCode
+        }
+
+      );
+
+    }
+
+
+    let customer =
+      await collections.customer.findOne({
+
+        distributor_id:
+          distributor,
+
+        $or:
+          exactConditions
+
+      });
+
+
+    if (customer) {
+
+      return customer;
+
+    }
+
+
+    // --------------------------------------------------------
+    // SECOND TRY:
+    // Some old uploaded customer records use:
+    //
+    // XAPIKEY_6041
+    //
+    // instead of:
+    //
+    // 6041
+    //
+    // --------------------------------------------------------
+
+    const escapedCode =
+      escapeOutstandingRegex(accountCode);
+
+
+    const suffixRegex =
+      new RegExp(
+        `_${escapedCode}$`,
+        'i'
+      );
+
+
+    customer =
+      await collections.customer.findOne({
+
+        distributor_id:
+          distributor,
+
+        customer_id: {
+          $regex:
+            suffixRegex
+        }
+
+      });
+
+
+    if (customer) {
+
+      return customer;
+
+    }
+
+
+    // --------------------------------------------------------
+    // THIRD TRY:
+    // Compatibility for older customer master field names
+    // --------------------------------------------------------
+
+    customer =
+      await collections.customer.findOne({
+
+        distributor_id:
+          distributor,
+
+        $or: [
+
+          {
+            customer_code:
+              accountCode
+          },
+
+          {
+            CustomerCode:
+              accountCode
+          },
+
+          {
+            AcCode:
+              accountCode
+          },
+
+          {
+            acCode:
+              accountCode
+          }
+
+        ]
+
+      });
+
+
+    return customer || null;
+
+
+  } catch (error) {
+
+    console.error(
+      'findOutstandingCustomerMaster error:',
+      error
+    );
+
+    return null;
+
+  }
+
+}
+
+
+// ============================================================
+// READ CUSTOMER NAME FROM CUSTOMER MASTER
+// ============================================================
+
+function getOutstandingCustomerNameFromMaster(customer) {
+
+  if (!customer) {
+    return '';
+  }
+
+
+  return outstandingSafeString(
+
+    customer.name ||
+
+    customer.customer_name ||
+
+    customer.CustomerName ||
+
+    customer.customerName ||
+
+    customer.AcName ||
+
+    customer.acName ||
+
+    customer.PartyName ||
+
+    ''
+
+  );
+
+}
+
+
+// ============================================================
+// READ LATITUDE FROM CUSTOMER MASTER
+// ============================================================
+
+function getOutstandingLatitudeFromMaster(customer) {
+
+  if (!customer) {
+    return null;
+  }
+
+
+  return outstandingSafeNumber(
+
+    customer.GeoLatitude ??
+
+    customer.geoLatitude ??
+
+    customer.latitude ??
+
+    customer.Latitude ??
+
+    null
+
+  );
+
+}
+
+
+// ============================================================
+// READ LONGITUDE FROM CUSTOMER MASTER
+// ============================================================
+
+function getOutstandingLongitudeFromMaster(customer) {
+
+  if (!customer) {
+    return null;
+  }
+
+
+  return outstandingSafeNumber(
+
+    customer.GeoLongitude ??
+
+    customer.geoLongitude ??
+
+    customer.longitude ??
+
+    customer.Longitude ??
+
+    null
+
+  );
+
+}
+
+
+// ============================================================
+// OUTSTANDING BILL BULK UPLOAD
+// ============================================================
+
+app.post(
+  '/api/outstanding/upload',
+  async (req, res) => {
+
+    let inserted = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    const errors = [];
+
+
+    try {
+
+      // ======================================================
+      // READ DISTRIBUTOR
+      // ======================================================
+
+      const distributorId =
+        outstandingSafeString(
+
+          req.body.distributorId ||
+
+          req.body.distributor_id ||
+
+          ''
+
+        );
+
+
+      // ======================================================
+      // READ BILLS
+      // ======================================================
+
+      const bills =
+        Array.isArray(req.body.bills)
+          ? req.body.bills
+          : [];
+
+
+      console.log('');
+      console.log(
+        '================================================'
+      );
+
+      console.log(
+        'OUTSTANDING UPLOAD STARTED'
+      );
+
+      console.log(
+        'Distributor ID:',
+        distributorId
+      );
+
+      console.log(
+        'Bills received:',
+        bills.length
+      );
+
+      console.log(
+        '================================================'
+      );
+
+
+      // ======================================================
+      // VALIDATE DISTRIBUTOR
+      // ======================================================
+
+      if (!distributorId) {
+
+        return res.status(400).json({
+
+          success:
+            false,
+
+          message:
+            'Distributor ID is required',
+
+          inserted:
+            0,
+
+          updated:
+            0,
+
+          skipped:
+            bills.length
+
+        });
+
+      }
+
+
+      // ======================================================
+      // VALIDATE BILLS
+      // ======================================================
+
+      if (bills.length === 0) {
+
+        return res.status(400).json({
+
+          success:
+            false,
+
+          message:
+            'No outstanding bills received',
+
+          inserted:
+            0,
+
+          updated:
+            0,
+
+          skipped:
+            0
+
+        });
+
+      }
+
+
+      // ======================================================
+      // PROCESS EACH BILL
+      // ======================================================
+
+      for (
+        let i = 0;
+        i < bills.length;
+        i++
+      ) {
+
+        try {
+
+          const b =
+            bills[i] || {};
+
+
+          console.log('');
+
+          console.log(
+            '--------------------------------------------'
+          );
+
+          console.log(
+            `Processing Bill ${i + 1}`
+          );
+
+          console.log(
+            'Incoming bill:',
+            JSON.stringify(b)
+          );
+
+          console.log(
+            '--------------------------------------------'
+          );
+
+
+          // ==================================================
+          // TRANSACTION SERIES
+          // ==================================================
+
+          const trnSeries =
+            outstandingSafeString(
+
+              b.TrnSeries ||
+
+              b.trnSeries ||
+
+              ''
+
+            );
+
+
+          // ==================================================
+          // TRANSACTION NUMBER
+          // ==================================================
+
+          const trnNo =
+            Number(
+
+              b.TrnNo ||
+
+              b.trnNo ||
+
+              0
+
+            );
+
+
+          // ==================================================
+          // SYSTEM ACCOUNT CODE
+          // ==================================================
+
+          const sysAcCode =
+            outstandingSafeString(
+
+              b.SysAcCode ||
+
+              b.sysAcCode ||
+
+              b.customer_id ||
+
+              b.customerId ||
+
+              ''
+
+            );
+
+
+          // ==================================================
+          // BALANCE AMOUNT
+          // ==================================================
+
+          const bamt =
+            Number(
+
+              b.Bamt ||
+
+              b.bamt ||
+
+              b.balanceAmount ||
+
+              0
+
+            );
+
+
+          // ==================================================
+          // CUSTOMER NAME FROM VB.NET
+          // ==================================================
+
+          let customerName =
+            outstandingSafeString(
+
+              getOutstandingPayloadValue(
+                b,
+                [
+                  'AcName',
+                  'customer_name',
+                  'CustomerName',
+                  'customerName',
+                  'PartyName'
+                ]
+              )
+
+            );
+
+
+          // ==================================================
+          // LATITUDE FROM VB.NET
+          // ==================================================
+
+          let geoLatitude =
+            outstandingSafeNumber(
+
+              getOutstandingPayloadValue(
+                b,
+                [
+                  'GeoLatitude',
+                  'geoLatitude',
+                  'latitude',
+                  'Latitude',
+                  'lat'
+                ]
+              )
+
+            );
+
+
+          // ==================================================
+          // LONGITUDE FROM VB.NET
+          // ==================================================
+
+          let geoLongitude =
+            outstandingSafeNumber(
+
+              getOutstandingPayloadValue(
+                b,
+                [
+                  'GeoLongitude',
+                  'geoLongitude',
+                  'longitude',
+                  'Longitude',
+                  'lng',
+                  'lon'
+                ]
+              )
+
+            );
+
+
+          console.log(
+            'Values received directly from outstanding upload:'
+          );
+
+          console.log(
+            'SysAcCode:',
+            sysAcCode
+          );
+
+          console.log(
+            'Customer Name:',
+            customerName
+          );
+
+          console.log(
+            'Latitude:',
+            geoLatitude
+          );
+
+          console.log(
+            'Longitude:',
+            geoLongitude
+          );
+
+
+          // ==================================================
+          // VALIDATION
+          // ==================================================
+
+          if (
+
+            !trnNo ||
+
+            !sysAcCode ||
+
+            sysAcCode === '0' ||
+
+            bamt <= 0
+
+          ) {
+
+            skipped++;
+
+
+            errors.push(
+
+              `Bill ${i + 1}: Invalid TrnNo/SysAcCode/Bamt`
+
+            );
+
+
+            continue;
+
+          }
+
+
+          // ==================================================
+          // CUSTOMER MASTER FALLBACK
+          // ==================================================
+          //
+          // Only query customer master if any required
+          // customer information is missing.
+          //
+          // Existing supplied values are NEVER overwritten.
+          //
+          // ==================================================
+
+          if (
+
+            !customerName ||
+
+            geoLatitude === null ||
+
+            geoLongitude === null
+
+          ) {
+
+            console.log(
+              'Customer information incomplete.'
+            );
+
+            console.log(
+              'Searching mas_customer using SysAcCode:',
+              sysAcCode
+            );
+
+
+            const customerMaster =
+              await findOutstandingCustomerMaster(
+
+                distributorId,
+
+                sysAcCode
+
+              );
+
+
+            if (customerMaster) {
+
+              console.log(
+                'Customer master found:',
+                customerMaster._id
+              );
+
+
+              // ----------------------------------------------
+              // CUSTOMER NAME FALLBACK
+              // ----------------------------------------------
+
+              if (!customerName) {
+
+                customerName =
+                  getOutstandingCustomerNameFromMaster(
+                    customerMaster
+                  );
+
+              }
+
+
+              // ----------------------------------------------
+              // LATITUDE FALLBACK
+              // ----------------------------------------------
+
+              if (geoLatitude === null) {
+
+                geoLatitude =
+                  getOutstandingLatitudeFromMaster(
+                    customerMaster
+                  );
+
+              }
+
+
+              // ----------------------------------------------
+              // LONGITUDE FALLBACK
+              // ----------------------------------------------
+
+              if (geoLongitude === null) {
+
+                geoLongitude =
+                  getOutstandingLongitudeFromMaster(
+                    customerMaster
+                  );
+
+              }
+
+
+            } else {
+
+              console.log(
+                'Customer master NOT found for SysAcCode:',
+                sysAcCode
+              );
+
+            }
+
+          }
+
+
+          console.log(
+            'Final customer information:'
+          );
+
+          console.log(
+            'Customer Name:',
+            customerName
+          );
+
+          console.log(
+            'Latitude:',
+            geoLatitude
+          );
+
+          console.log(
+            'Longitude:',
+            geoLongitude
+          );
+
+
+          // ==================================================
+          // SALESMAN CODE
+          // ==================================================
+
+          const salesmanId =
+            outstandingSafeString(
+
+              b.salesman_id ||
+
+              b.SSMCode ||
+
+              b.SalesmanCode ||
+
+              ''
+
+            );
+
+
+          // ==================================================
+          // SALESMAN NAME
+          // ==================================================
+
+          const salesmanName =
+            outstandingSafeString(
+
+              b.salesman_name ||
+
+              b.SalesmanName ||
+
+              ''
+
+            );
+
+
+          // ==================================================
+          // PREPARE MONGODB DOCUMENT
+          // ==================================================
+
+          const doc = {
+
+
+            // ================================================
+            // DISTRIBUTOR
+            // ================================================
+
+            distributor_id:
+              distributorId,
+
+            distributorId:
+              distributorId,
+
+
+            // ================================================
+            // SALESMAN
+            // ================================================
+
+            salesman_id:
+              salesmanId,
+
+            salesman_name:
+              salesmanName,
+
+
+            // ================================================
+            // TRANSACTION
+            // ================================================
+
+            Trn:
+              outstandingSafeString(
+                b.Trn || 'SAL'
+              ),
+
+            TrnSeries:
+              trnSeries,
+
+            TrnNo:
+              trnNo,
+
+            TrnDate:
+              outstandingSafeDate(
+                b.TrnDate
+              ),
+
+            DorC:
+              outstandingSafeString(
+                b.DorC || 'D'
+              ),
+
+
+            // ================================================
+            // CUSTOMER DETAILS
+            // ================================================
+
+            SysAcCode:
+              sysAcCode,
+
+            customer_id:
+              sysAcCode,
+
+
+            // Original VB/desktop-compatible field
+            AcName:
+              customerName,
+
+
+            // Mobile-friendly field
+            customer_name:
+              customerName,
+
+
+            // Additional compatibility alias
+            customerName:
+              customerName,
+
+
+            // ================================================
+            // GEO LOCATION
+            // ================================================
+
+            GeoLatitude:
+              geoLatitude,
+
+            GeoLongitude:
+              geoLongitude,
+
+
+            // Mobile compatibility
+            latitude:
+              geoLatitude,
+
+            longitude:
+              geoLongitude,
+
+
+            // ================================================
+            // OUTSTANDING VALUES
+            // ================================================
+
+            Amt:
+              Number(
+                b.Amt || 0
+              ),
+
+            Aamt:
+              Number(
+                b.Aamt || 0
+              ),
+
+            Bamt:
+              bamt,
+
+
+            // ================================================
+            // DATES
+            // ================================================
+
+            ClrDate:
+              outstandingSafeDate(
+                b.ClrDate
+              ),
+
+            ChqDate:
+              outstandingSafeDate(
+                b.ChqDate
+              ),
+
+            DepDate:
+              outstandingSafeDate(
+                b.DepDate
+              ),
+
+            DueDate:
+              outstandingSafeDate(
+                b.DueDate
+              ),
+
+
+            // ================================================
+            // OTHER VALUES
+            // ================================================
+
+            seqno:
+              Number(
+                b.seqno || 0
+              ),
+
+            VatAmt:
+              Number(
+                b.VatAmt || 0
+              ),
+
+            VatPer:
+              Number(
+                b.VatPer || 0
+              ),
+
+            VatType:
+              outstandingSafeString(
+                b.VatType || ''
+              ),
+
+            ChqNo:
+              outstandingSafeString(
+                b.ChqNo || ''
+              ),
+
+            BankCode:
+              outstandingSafeString(
+                b.BankCode || ''
+              ),
+
+            DocNo:
+              outstandingSafeString(
+
+                b.DocNo ||
+
+                `${trnSeries}-${trnNo}`
+
+              ),
+
+            Narr:
+              outstandingSafeString(
+                b.Narr || ''
+              ),
+
+
+            // ================================================
+            // STATUS
+            // ================================================
+
+            status:
+              'pending',
+
+
+            // ================================================
+            // UPDATE DATE
+            // ================================================
+
+            updated_at:
+              new Date()
+
+          };
+
+
+          console.log(
+            'Mongo document:'
+          );
+
+          console.log(
+            JSON.stringify(
+              doc,
+              null,
+              2
+            )
+          );
+
+
+          // ==================================================
+          // UPSERT INTO Mas_Outstanding
+          // ==================================================
+
+          const result =
+            await collections.outstanding.updateOne(
+
+              {
+
+                distributor_id:
+                  distributorId,
+
+                TrnSeries:
+                  trnSeries,
+
+                TrnNo:
+                  trnNo,
+
+                SysAcCode:
+                  sysAcCode
+
+              },
+
+              {
+
+                $set:
+                  doc,
+
+                $setOnInsert: {
+
+                  uploaded_at:
+                    new Date()
+
+                }
+
+              },
+
+              {
+
+                upsert:
+                  true
+
+              }
+
+            );
+
+
+          // ==================================================
+          // COUNTERS
+          // ==================================================
+
+          if (
+            result.upsertedCount > 0
+          ) {
+
+            inserted++;
+
+          } else {
+
+            updated++;
+
+          }
+
+
+          console.log(
+            `Bill ${i + 1} successfully saved.`
+          );
+
+
+        } catch (billError) {
+
+          console.error(
+            `Outstanding Bill ${i + 1} Error:`,
+            billError
+          );
+
+
+          skipped++;
+
+
+          errors.push(
+
+            `Bill ${i + 1}: ${billError.message}`
+
+          );
+
+        }
+
+      }
+
+
+      // ======================================================
+      // FINAL RESPONSE
+      // ======================================================
+
+      return res.json({
+
+        success:
+          true,
+
+        message:
+          'Outstanding upload completed',
+
+        received:
+          bills.length,
+
+        inserted:
+          inserted,
+
+        updated:
+          updated,
+
+        skipped:
+          skipped,
+
+        errors:
+          errors.slice(0, 20)
+
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        'Outstanding upload fatal error:',
+        error
+      );
+
+
+      return res.status(500).json({
+
+        success:
+          false,
+
+        message:
+          error.message,
+
+        inserted:
+          inserted,
+
+        updated:
+          updated,
+
+        skipped:
+          skipped,
+
+        errors:
+          errors.slice(0, 20)
+
+      });
+
+    }
+
+  }
+);
+
+
+// ============================================================
+// OUTSTANDING BILL LOAD FOR SALESMAN
+// ============================================================
+
+// Collection Payment must show every bill owned by the logged-in
+// distributor. Keep this endpoint deliberately independent of salesman,
+// customer, status, balance and account-code data.
+async function loadOutstandingBillsForDistributor(req, res) {
+    try {
+      const distributorId = outstandingSafeString(
+        req.params.distributorId || req.query.distributorId
+      );
+
+      if (!distributorId) {
+        return res.status(400).json({
+          success: false,
+          message: 'distributorId required',
+          bills: []
+        });
+      }
+
+      const requestedPage = Number.parseInt(req.query.page, 10);
+      const requestedLimit = Number.parseInt(req.query.limit, 10);
+      const page = Number.isFinite(requestedPage) && requestedPage > 0
+        ? requestedPage
+        : 1;
+      const pageSize = Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.min(requestedLimit, 1000)
+        : 500;
+
+      // Older uploads used distributorId while current uploads use
+      // distributor_id. Both represent the same distributor and no other
+      // collection or field is used to decide which bills are returned.
+      const query = {
+        $or: [
+          { distributor_id: distributorId },
+          { distributorId: distributorId }
+        ]
+      };
+
+      const bills = await collections.outstanding
+        .find(query)
+        .skip((page - 1) * pageSize)
+        .limit(pageSize)
+        .toArray();
+
+      // Route planning needs the customer-master location, name and address.
+      // Outstanding uploads do not always contain those fields, so enrich the
+      // page in one customer query while keeping the distributor-only bill
+      // selection used by Collection Payment.
+      const customerMasters = await collections.customer
+        .find({
+          $or: [
+            { distributor_id: distributorId },
+            { distributorId: distributorId }
+          ]
+        })
+        .toArray();
+      const customersByCode = new Map();
+
+      for (const customer of customerMasters) {
+        const identifiers = [
+          customer.SysAcCode,
+          customer.sysAcCode,
+          customer.sys_ac_code,
+          customer.customer_id,
+          customer.customerId,
+          customer.customer_code,
+          customer.CustomerCode,
+          customer.AcCode,
+          customer.acCode
+        ];
+
+        for (const identifier of identifiers) {
+          const code = outstandingSafeString(identifier);
+          if (!code) continue;
+          customersByCode.set(code.toLowerCase(), customer);
+
+          const separator = code.lastIndexOf('_');
+          if (separator >= 0 && separator < code.length - 1) {
+            customersByCode.set(code.slice(separator + 1).toLowerCase(), customer);
+          }
+        }
+      }
+
+      const enrichedBills = bills.map((bill) => {
+        const code = outstandingSafeString(
+          bill.SysAcCode || bill.customer_id || bill.customerId || ''
+        );
+        const customer = customersByCode.get(code.toLowerCase());
+        const customerName = outstandingSafeString(
+          bill.AcName ||
+          bill.customer_name ||
+          bill.CustomerName ||
+          getOutstandingCustomerNameFromMaster(customer)
+        );
+        const latitude = outstandingSafeNumber(
+          bill.GeoLatitude ??
+          bill.geoLatitude ??
+          bill.latitude ??
+          bill.Latitude
+        ) ?? getOutstandingLatitudeFromMaster(customer);
+        const longitude = outstandingSafeNumber(
+          bill.GeoLongitude ??
+          bill.geoLongitude ??
+          bill.longitude ??
+          bill.Longitude
+        ) ?? getOutstandingLongitudeFromMaster(customer);
+        const address = outstandingSafeString(
+          bill.Address ||
+          bill.address ||
+          bill.CustomerAddress ||
+          customer?.address ||
+          customer?.Address ||
+          customer?.area ||
+          customer?.AreaName ||
+          customer?.route ||
+          customer?.RouteName ||
+          ''
+        );
+
+        return {
+          ...bill,
+          SysAcCode: code,
+          customer_id: code,
+          AcName: customerName,
+          customer_name: customerName,
+          Address: address,
+          address,
+          GeoLatitude: latitude,
+          GeoLongitude: longitude,
+          latitude,
+          longitude
+        };
+      });
+
+      return res.json({
+        success: true,
+        count: enrichedBills.length,
+        pagination: {
+          page,
+          limit: pageSize,
+          hasMore: bills.length === pageSize
+        },
+        bills: enrichedBills
+      });
+    } catch (error) {
+      console.error('Fetch distributor outstanding error:', error);
+      return res.status(500).json({
+        success: false,
+        message: error.message,
+        bills: []
+      });
+    }
+}
+
+app.get(
+  '/api/outstanding/distributor/:distributorId',
+  loadOutstandingBillsForDistributor
+);
+
+// Keep the already-deployed mobile URL working, but use exactly the same
+// distributor-only query. salesmanId is intentionally not part of the query.
+app.get(
+  '/api/outstanding/salesman/:salesmanId',
+  loadOutstandingBillsForDistributor
+);
+
+app.get(
+  '/api/outstanding/salesman-legacy/:salesmanId',
+  async (req, res) => {
+
+    try {
+
+      // ======================================================
+      // SALESMAN ID
+      // ======================================================
+
+      const salesmanId =
+        outstandingSafeString(
+
+          req.params.salesmanId ||
+
+          ''
+
+        );
+
+
+      // ======================================================
+      // DISTRIBUTOR ID
+      // ======================================================
+
+      const distributorId =
+        outstandingSafeString(
+
+          req.query.distributorId ||
+
+          ''
+
+        );
+
+
+      // ======================================================
+      // VALIDATION
+      // ======================================================
+
+      if (
+
+        !salesmanId ||
+
+        !distributorId
+
+      ) {
+
+        return res.status(400).json({
+
+          success:
+            false,
+
+          message:
+            'salesmanId and distributorId required',
+
+          bills:
+            []
+
+        });
+
+      }
+
+
+      console.log('');
+      console.log(
+        '================================================'
+      );
+
+      console.log(
+        'OUTSTANDING LOAD STARTED'
+      );
+
+      console.log(
+        'Distributor:',
+        distributorId
+      );
+
+      console.log(
+        'Salesman:',
+        salesmanId
+      );
+
+      console.log(
+        '================================================'
+      );
+
+
+      // ======================================================
+      // OUTSTANDING QUERY
+      // ======================================================
+
+      const query = {
+
+        distributor_id:
+          distributorId,
+
+
+        Bamt: {
+
+          $gt:
+            0
+
+        },
+
+
+        SysAcCode: {
+
+          $ne:
+            '0'
+
+        },
+
+
+        status:
+          'pending',
+
+
+        $or: [
+
+          {
+
+            salesman_id:
+              salesmanId
+
+          },
+
+          {
+
+            salesman_id: {
+
+              $exists:
+                false
+
+            }
+
+          },
+
+          {
+
+            salesman_id:
+              ''
+
+          },
+
+          {
+
+            salesman_id:
+              null
+
+          }
+
+        ]
+
+      };
+
+
+      // ======================================================
+      // LOAD OUTSTANDING BILLS
+      // ======================================================
+
+      // The mobile client requests large accounts in bounded pages. Keeping
+      // pagination optional preserves the existing response for older clients.
+      const requestedPage = Number.parseInt(req.query.page, 10);
+      const requestedLimit = Number.parseInt(req.query.limit, 10);
+      const page = Number.isFinite(requestedPage) && requestedPage > 0
+        ? requestedPage
+        : 1;
+      const pageSize = Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.min(requestedLimit, 1000)
+        : null;
+
+      let billsCursor = collections.outstanding
+          .find(query)
+          .sort({
+
+            TrnDate:
+              -1,
+
+            TrnNo:
+              -1,
+
+            _id:
+              -1
+
+          });
+
+      if (pageSize !== null) {
+        billsCursor = billsCursor
+          .skip((page - 1) * pageSize)
+          .limit(pageSize);
+      }
+
+      const bills = await billsCursor.toArray();
+
+
+      console.log(
+        'Outstanding bills found:',
+        bills.length
+      );
+
+
+      // ======================================================
+      // ENRICH CUSTOMER NAME + GEO LOCATION
+      // ======================================================
+      //
+      // This also fixes OLD outstanding records that were
+      // uploaded before AcName / latitude / longitude were
+      // stored correctly.
+      //
+      // ======================================================
+
+      // Load customer master data once for this distributor. The old code did
+      // up to three MongoDB queries per customer whenever coordinates were
+      // missing. Large outstanding lists commonly have null coordinates, which
+      // made the endpoint perform thousands of queries before it could respond.
+      const customerMasterByCode = new Map();
+      const repairOperations = [];
+
+      const requiresCustomerMaster = bills.some((bill) =>
+        !outstandingSafeString(
+          bill.AcName ||
+          bill.customer_name ||
+          bill.customerName ||
+          bill.CustomerName ||
+          ''
+        ) ||
+        outstandingSafeNumber(
+          bill.GeoLatitude ??
+          bill.geoLatitude ??
+          bill.latitude ??
+          bill.Latitude
+        ) === null ||
+        outstandingSafeNumber(
+          bill.GeoLongitude ??
+          bill.geoLongitude ??
+          bill.longitude ??
+          bill.Longitude
+        ) === null
+      );
+
+      if (requiresCustomerMaster) {
+        const customerMasters = await collections.customer
+          .find(
+            { distributor_id: distributorId },
+            {
+              projection: {
+                SysAcCode: 1,
+                sysAcCode: 1,
+                sys_ac_code: 1,
+                customer_id: 1,
+                customerId: 1,
+                customer_code: 1,
+                CustomerCode: 1,
+                AcCode: 1,
+                acCode: 1,
+                name: 1,
+                customer_name: 1,
+                CustomerName: 1,
+                customerName: 1,
+                AcName: 1,
+                acName: 1,
+                PartyName: 1,
+                GeoLatitude: 1,
+                geoLatitude: 1,
+                latitude: 1,
+                Latitude: 1,
+                GeoLongitude: 1,
+                geoLongitude: 1,
+                longitude: 1,
+                Longitude: 1
+              }
+            }
+          )
+          .toArray();
+
+        for (const customerMaster of customerMasters) {
+          const identifiers = [
+            customerMaster.SysAcCode,
+            customerMaster.sysAcCode,
+            customerMaster.sys_ac_code,
+            customerMaster.customer_id,
+            customerMaster.customerId,
+            customerMaster.customer_code,
+            customerMaster.CustomerCode,
+            customerMaster.AcCode,
+            customerMaster.acCode
+          ];
+
+          for (const identifier of identifiers) {
+            const normalizedIdentifier = outstandingSafeString(identifier);
+
+            if (!normalizedIdentifier) continue;
+
+            if (!customerMasterByCode.has(normalizedIdentifier)) {
+              customerMasterByCode.set(normalizedIdentifier, customerMaster);
+            }
+
+            // Older customer IDs can be stored as XAPIKEY_6041 while the
+            // outstanding document contains only 6041.
+            const underscoreIndex = normalizedIdentifier.lastIndexOf('_');
+            if (underscoreIndex >= 0 && underscoreIndex < normalizedIdentifier.length - 1) {
+              const suffix = normalizedIdentifier.slice(underscoreIndex + 1);
+              if (!customerMasterByCode.has(suffix)) {
+                customerMasterByCode.set(suffix, customerMaster);
+              }
+            }
+          }
+        }
+      }
+
+      const enrichBill = async (bill) => {
+
+
+        const sysAcCode =
+          outstandingSafeString(
+
+            bill.SysAcCode ||
+
+            bill.customer_id ||
+
+            bill.customerId ||
+
+            ''
+
+          );
+
+
+        // ====================================================
+        // CURRENT CUSTOMER NAME
+        // ====================================================
+
+        let customerName =
+          outstandingSafeString(
+
+            bill.AcName ||
+
+            bill.customer_name ||
+
+            bill.customerName ||
+
+            bill.CustomerName ||
+
+            ''
+
+          );
+
+
+        // ====================================================
+        // CURRENT LATITUDE
+        // ====================================================
+
+        let geoLatitude =
+          outstandingSafeNumber(
+
+            bill.GeoLatitude ??
+
+            bill.geoLatitude ??
+
+            bill.latitude ??
+
+            bill.Latitude
+
+          );
+
+
+        // ====================================================
+        // CURRENT LONGITUDE
+        // ====================================================
+
+        let geoLongitude =
+          outstandingSafeNumber(
+
+            bill.GeoLongitude ??
+
+            bill.geoLongitude ??
+
+            bill.longitude ??
+
+            bill.Longitude
+
+          );
+
+
+        let customerMaster =
+          null;
+
+
+        // ====================================================
+        // FALLBACK TO CUSTOMER MASTER
+        // ====================================================
+
+        if (
+
+          !customerName ||
+
+          geoLatitude === null ||
+
+          geoLongitude === null
+
+        ) {
+
+          customerMaster =
+            customerMasterByCode.get(sysAcCode) || null;
+
+
+          if (customerMaster) {
+
+
+            // ----------------------------------------------
+            // NAME
+            // ----------------------------------------------
+
+            if (!customerName) {
+
+              customerName =
+                getOutstandingCustomerNameFromMaster(
+                  customerMaster
+                );
+
+            }
+
+
+            // ----------------------------------------------
+            // LATITUDE
+            // ----------------------------------------------
+
+            if (geoLatitude === null) {
+
+              geoLatitude =
+                getOutstandingLatitudeFromMaster(
+                  customerMaster
+                );
+
+            }
+
+
+            // ----------------------------------------------
+            // LONGITUDE
+            // ----------------------------------------------
+
+            if (geoLongitude === null) {
+
+              geoLongitude =
+                getOutstandingLongitudeFromMaster(
+                  customerMaster
+                );
+
+            }
+
+          }
+
+        }
+
+
+        // ====================================================
+        // CREATE MOBILE RESPONSE
+        // ====================================================
+
+        const enrichedBill = {
+
+          ...bill,
+
+
+          // Customer code
+          SysAcCode:
+            sysAcCode,
+
+          customer_id:
+            sysAcCode,
+
+
+          // Customer name
+          AcName:
+            customerName,
+
+          customer_name:
+            customerName,
+
+          customerName:
+            customerName,
+
+
+          // Location
+          GeoLatitude:
+            geoLatitude,
+
+          GeoLongitude:
+            geoLongitude,
+
+          latitude:
+            geoLatitude,
+
+          longitude:
+            geoLongitude
+
+        };
+
+
+        // ====================================================
+        // UPDATE OLD MONGODB DOCUMENT IF DATA WAS RECOVERED
+        // ====================================================
+        //
+        // This means once the name/coordinates are found in
+        // mas_customer, the old Mas_Outstanding document is
+        // repaired automatically.
+        //
+        // ====================================================
+
+        const updateFields = {};
+
+
+        if (
+          customerName &&
+          outstandingSafeString(bill.AcName) !== customerName
+        ) {
+
+          updateFields.AcName =
+            customerName;
+
+          updateFields.customer_name =
+            customerName;
+
+          updateFields.customerName =
+            customerName;
+
+        }
+
+
+        if (
+
+          geoLatitude !== null &&
+
+          outstandingSafeNumber(
+            bill.GeoLatitude
+          ) !== geoLatitude
+
+        ) {
+
+          updateFields.GeoLatitude =
+            geoLatitude;
+
+          updateFields.latitude =
+            geoLatitude;
+
+        }
+
+
+        if (
+
+          geoLongitude !== null &&
+
+          outstandingSafeNumber(
+            bill.GeoLongitude
+          ) !== geoLongitude
+
+        ) {
+
+          updateFields.GeoLongitude =
+            geoLongitude;
+
+          updateFields.longitude =
+            geoLongitude;
+
+        }
+
+
+        if (
+          Object.keys(updateFields).length > 0
+        ) {
+
+          updateFields.updated_at =
+            new Date();
+
+
+          repairOperations.push({
+            updateOne: {
+              filter: { _id: bill._id },
+              update: { $set: updateFields }
+            }
+          });
+
+        }
+
+        return enrichedBill;
+      };
+
+      // Limit concurrent fallback queries so a very large account cannot
+      // exhaust the MongoDB connection pool on a small deployed instance.
+      const enrichedBills = [];
+      const enrichmentBatchSize = 25;
+
+      for (let index = 0; index < bills.length; index += enrichmentBatchSize) {
+        const enrichedChunk = await Promise.all(
+          bills
+            .slice(index, index + enrichmentBatchSize)
+            .map(enrichBill)
+        );
+
+        enrichedBills.push(...enrichedChunk);
+      }
+
+      // Legacy field repair is useful, but it is not part of this GET request's
+      // result. Run it only after the response has been flushed so thousands of
+      // writes can never make the mobile request time out.
+      if (repairOperations.length > 0) {
+        res.once('finish', () => {
+          setImmediate(async () => {
+            try {
+              const repairBatchSize = 500;
+
+              for (
+                let index = 0;
+                index < repairOperations.length;
+                index += repairBatchSize
+              ) {
+                await collections.outstanding.bulkWrite(
+                  repairOperations.slice(index, index + repairBatchSize),
+                  { ordered: false }
+                );
+              }
+
+              console.log(
+                'Outstanding records repaired:',
+                repairOperations.length
+              );
+            } catch (repairError) {
+              console.error(
+                'Unable to bulk repair outstanding documents:',
+                repairError
+              );
+            }
+          });
+        });
+      }
+
+
+      // ======================================================
+      // RESPONSE
+      // ======================================================
+
+      return res.json({
+
+        success:
+          true,
+
+        count:
+          enrichedBills.length,
+
+        pagination:
+          pageSize === null
+            ? null
+            : {
+                page,
+                limit: pageSize,
+                hasMore: bills.length === pageSize
+              },
+
+        bills:
+          enrichedBills
+
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        'Fetch outstanding error:',
+        error
+      );
+
+
+      return res.status(500).json({
+
+        success:
+          false,
+
+        message:
+          error.message,
+
+        bills:
+          []
+
+      });
+
+    }
+
+  }
+);
+
+app.put('/api/outstanding/delivery-status', async (req, res) => {
+  try {
+    const distributorId = outstandingSafeString(req.body.distributorId);
+    const salesmanId = outstandingSafeString(req.body.salesmanId);
+    const billSeries = outstandingSafeString(req.body.billSeries);
+    const billNo = outstandingSafeString(req.body.billNo);
+    const sysAcCode = outstandingSafeString(req.body.sysAcCode);
+    const outstandingId = outstandingSafeString(req.body.outstandingId);
+
+    if (!distributorId || !salesmanId || !billNo || !sysAcCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Distributor, salesman, bill number and customer are required'
+      });
+    }
+
+    const billIdentity = [];
+    if (ObjectId.isValid(outstandingId)) {
+      billIdentity.push({ _id: new ObjectId(outstandingId) });
+    }
+    billIdentity.push({ TrnNo: billNo, SysAcCode: sysAcCode });
+    const numericBillNo = Number(billNo);
+    if (Number.isFinite(numericBillNo)) {
+      billIdentity.push({ TrnNo: numericBillNo, SysAcCode: sysAcCode });
+    }
+
+    const filter = {
+      $and: [
+        {
+          $or: [
+            { distributor_id: distributorId },
+            { distributorId }
+          ]
+        },
+        {
+          $or: [
+            { TrnSeries: billSeries },
+            ...(billSeries ? [] : [
+              { TrnSeries: '' },
+              { TrnSeries: null },
+              { TrnSeries: { $exists: false } }
+            ])
+          ]
+        },
+        {
+          $or: billIdentity
+        }
+      ]
+    };
+    const deliveredAt = new Date().toISOString();
+    const result = await collections.outstanding.updateOne(filter, {
+      $set: {
+        delivery_status: 'completed',
+        delivered_at: deliveredAt,
+        delivered_by: salesmanId,
+        updated_at: deliveredAt
+      }
+    });
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Delivery bill not found'
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Delivery marked completed',
+      delivered_at: deliveredAt
+    });
+  } catch (error) {
+    console.error('Complete outstanding delivery error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+app.post('/api/outstanding/collect-payment', async (req, res) => {
+  try {
+    console.log(
+      'COLLECTION PAYMENT REQUEST:',
+      JSON.stringify(req.body, null, 2)
+    );
+
+    const distributorId = String(
+      req.body.distributorId || ''
+    ).trim();
+
+    const salesmanId = String(
+      req.body.salesmanId || ''
+    ).trim();
+
+    const salesmanNameFromRequest = String(
+      req.body.salesmanName || ''
+    ).trim();
+
+    // Bill series is allowed to be blank.
+    const billSeries = String(
+      req.body.billSeries ?? ''
+    ).trim();
+
+    // Keep bill number as String because it may be alphanumeric.
+    const billNo = String(
+      req.body.billNo ?? ''
+    ).trim();
+
+    const sysAcCode = String(
+      req.body.sysAcCode || ''
+    ).trim();
+
+    const oldBalance = Number(
+      req.body.oldBalance ??
+      req.body.balance ??
+      0
+    );
+
+    const amountCollected = Number(
+      req.body.amountCollected ??
+      req.body.amount ??
+      0
+    );
+
+    const cashAmount = Number(
+      req.body.cashAmount ?? 0
+    );
+
+    const chequeAmount = Number(
+      req.body.chequeAmount ?? 0
+    );
+
+    // ============================================================
+    // VALIDATION
+    // ============================================================
+
+    if (!distributorId) {
+      return res.status(400).json({
+        success: false,
+        field: 'distributorId',
+        message: 'Distributor ID is missing'
+      });
+    }
+
+    if (!salesmanId) {
+      return res.status(400).json({
+        success: false,
+        field: 'salesmanId',
+        message: 'Salesman ID is missing'
+      });
+    }
+
+    if (!billNo) {
+      return res.status(400).json({
+        success: false,
+        field: 'billNo',
+        message: 'Bill number is missing'
+      });
+    }
+
+    if (!sysAcCode) {
+      return res.status(400).json({
+        success: false,
+        field: 'sysAcCode',
+        message: 'Customer account code is missing'
+      });
+    }
+
+    if (!Number.isFinite(oldBalance) || oldBalance <= 0) {
+      return res.status(400).json({
+        success: false,
+        field: 'oldBalance',
+        message: `Invalid pending balance: ${req.body.oldBalance}`
+      });
+    }
+
+    if (
+      !Number.isFinite(amountCollected) ||
+      amountCollected <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        field: 'amountCollected',
+        message:
+          `Invalid collection amount: ${req.body.amountCollected}`
+      });
+    }
+
+    if (amountCollected > oldBalance) {
+      return res.status(400).json({
+        success: false,
+        field: 'amountCollected',
+        message:
+          `Collection amount ₹${amountCollected} cannot exceed pending balance ₹${oldBalance}`
+      });
+    }
+
+    const newBalance = Math.max(
+      0,
+      Number(
+        (oldBalance - amountCollected).toFixed(2)
+      )
+    );
+
+    // ============================================================
+    // PAYMENT MODE
+    // ============================================================
+
+    let paymentMode = String(
+      req.body.paymentMode || 'Cash'
+    ).trim();
+
+    if (cashAmount > 0 && chequeAmount > 0) {
+      paymentMode = 'Cash+Cheque';
+    } else if (chequeAmount > 0) {
+      paymentMode = 'Cheque';
+    } else if (cashAmount > 0) {
+      paymentMode = 'Cash';
+    } else if (
+      String(req.body.upiApp || '').trim()
+    ) {
+      paymentMode = 'UPI';
+    }
+
+    // ============================================================
+    // FIND OUTSTANDING BILL
+    // ============================================================
+
+    const billNoConditions = [
+      {
+        TrnNo: billNo
+      }
+    ];
+
+    const numericBillNo = Number(billNo);
+
+    if (Number.isFinite(numericBillNo)) {
+      billNoConditions.push({
+        TrnNo: numericBillNo
+      });
+    }
+
+    const outstandingFilter = {
+      distributor_id: distributorId,
+      SysAcCode: sysAcCode,
+
+      $and: [
+        {
+          $or: billNoConditions
+        },
+        {
+          $or: [
+            {
+              salesman_id: salesmanId
+            },
+            {
+              salesman_id: {
+                $exists: false
+              }
+            },
+            {
+              salesman_id: ''
+            },
+            {
+              salesman_id: null
+            }
+          ]
+        }
+      ]
+    };
+
+    if (billSeries) {
+      outstandingFilter.TrnSeries = billSeries;
+    } else {
+      outstandingFilter.$and.push({
+        $or: [
+          {
+            TrnSeries: ''
+          },
+          {
+            TrnSeries: null
+          },
+          {
+            TrnSeries: {
+              $exists: false
+            }
+          }
+        ]
+      });
+    }
+
+    console.log(
+      'OUTSTANDING SEARCH FILTER:',
+      JSON.stringify(outstandingFilter, null, 2)
+    );
+
+    const outstandingBill =
+      await collections.outstanding.findOne(
+        outstandingFilter
+      );
+
+    if (!outstandingBill) {
+      return res.status(404).json({
+        success: false,
+        message:
+          `Outstanding bill not found. ` +
+          `Series: ${billSeries || 'blank'}, ` +
+          `Bill No: ${billNo}, ` +
+          `Account: ${sysAcCode}`
+      });
+    }
+
+    // Use database balance as the final balance source.
+    const databaseBalance = Number(
+      outstandingBill.Bamt ??
+      outstandingBill.balance ??
+      oldBalance
+    );
+
+    if (
+      !Number.isFinite(databaseBalance) ||
+      databaseBalance <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        field: 'oldBalance',
+        message:
+          'This bill does not have any pending balance'
+      });
+    }
+
+    if (amountCollected > databaseBalance) {
+      return res.status(400).json({
+        success: false,
+        field: 'amountCollected',
+        message:
+          `Collection amount ₹${amountCollected} cannot exceed current pending balance ₹${databaseBalance}`
+      });
+    }
+
+    const finalNewBalance = Math.max(
+      0,
+      Number(
+        (
+          databaseBalance - amountCollected
+        ).toFixed(2)
+      )
+    );
+
+    // ============================================================
+    // SALESMAN DETAILS
+    // ============================================================
+
+    let salesmanName = salesmanNameFromRequest;
+
+    if (!salesmanName) {
+      const salesman =
+        await collections.salesman.findOne({
+          salesman_id: salesmanId
+        });
+
+      if (salesman) {
+        salesmanName =
+          salesman.name ||
+          salesman.salesman_name ||
+          '';
+      } else {
+        const registerUser =
+          await collections.register.findOne({
+            salesman_id: salesmanId
+          });
+
+        if (registerUser) {
+          salesmanName =
+            registerUser.fullName ||
+            registerUser.name ||
+            '';
+        }
+      }
+    }
+
+    // ============================================================
+    // DISTRIBUTOR DETAILS
+    // ============================================================
+
+    let distributorName = '';
+
+    const distributor =
+      await collections.distributor.findOne({
+        distributor_id: distributorId
+      });
+
+    if (distributor) {
+      distributorName =
+        distributor.name ||
+        distributor.distributor_name ||
+        distributor.firmName ||
+        '';
+    }
+
+    const collectionId = generateCollectionId();
+    const now = new Date().toISOString();
+
+    // ============================================================
+    // PAYMENT DOCUMENT
+    // ============================================================
+
+    const paymentDoc = {
+      collection_id: collectionId,
+      collection_date: now,
+
+      distributor_id: distributorId,
+      distributor_name: distributorName,
+
+      salesman_details: {
+        id: salesmanId,
+        name: salesmanName || salesmanId
+      },
+
+      collected_by: {
+        type: 'salesman',
+        id: salesmanId,
+        name: salesmanName || salesmanId,
+        time: now
+      },
+
+      customer_id: sysAcCode,
+
+      customer_name: String(
+        req.body.customerName || ''
+      ).trim(),
+
+      bill_details: {
+        bill_series: billSeries,
+        bill_no: billNo,
+        sys_ac_code: sysAcCode,
+
+        customer_name: String(
+          req.body.customerName || ''
+        ).trim(),
+
+        bill_amount: Number(
+          req.body.billAmount ??
+          outstandingBill.Amt ??
+          databaseBalance
+        ),
+
+        old_balance: databaseBalance,
+        amount_collected: amountCollected,
+        balance_after_payment:
+          finalNewBalance
+      },
+
+      payment_mode: paymentMode,
+
+      payment_details: {
+        cash_amount: cashAmount,
+        cheque_amount: chequeAmount,
+
+        cheque_number:
+          String(
+            req.body.chequeNumber || ''
+          ).trim() || null,
+
+        cheque_date:
+          String(
+            req.body.chequeDate || ''
+          ).trim() || null,
+
+        bank_name:
+          String(
+            req.body.bankName || ''
+          ).trim() || null,
+
+        upi_app:
+          String(
+            req.body.upiApp || ''
+          ).trim() || null,
+
+        transaction_number:
+          String(
+            req.body.transactionNumber || ''
+          ).trim() || null,
+
+        payment_photo_path:
+          String(
+            req.body.paymentPhotoPath || ''
+          ).trim() || null
+      },
+
+      amount_collected: amountCollected,
+
+      remark: String(
+        req.body.remark || ''
+      ).trim(),
+
+      status: 'completed',
+      created_at: now,
+      updated_at: now
+    };
+
+    // ============================================================
+    // UPDATE OUTSTANDING FIRST
+    // ============================================================
+
+    const outstandingUpdateResult =
+      await collections.outstanding.updateOne(
+        {
+          _id: outstandingBill._id,
+
+          // Prevent simultaneous duplicate adjustment.
+          Bamt: outstandingBill.Bamt
+        },
+        {
+          $set: {
+            Bamt: finalNewBalance,
+
+            payment_status:
+              finalNewBalance <= 0
+                ? 'paid'
+                : 'partial',
+
+            status:
+              finalNewBalance <= 0
+                ? 'paid'
+                : 'pending',
+
+            last_payment_date: now,
+            updated_at: now
+          },
+
+          $inc: {
+            collected_amount: amountCollected
+          }
+        }
+      );
+
+    if (
+      outstandingUpdateResult.matchedCount === 0
+    ) {
+      return res.status(409).json({
+        success: false,
+        message:
+          'Outstanding balance was changed by another request. Refresh the bills and try again.'
+      });
+    }
+
+    // ============================================================
+    // SAVE PAYMENT
+    // ============================================================
+
+    try {
+      const paymentResult =
+        await collections.payment.insertOne(
+          paymentDoc
+        );
+
+      return res.status(201).json({
+        success: true,
+
+        message:
+          'Outstanding payment saved successfully',
+
+        payment_id:
+          paymentResult.insertedId,
+
+        collection_id:
+          collectionId,
+
+        old_balance:
+          databaseBalance,
+
+        amount_collected:
+          amountCollected,
+
+        new_balance:
+          finalNewBalance,
+
+        payment_status:
+          finalNewBalance <= 0
+            ? 'paid'
+            : 'partial'
+      });
+    } catch (paymentInsertError) {
+      console.error(
+        'Payment insertion failed. Rolling back outstanding:',
+        paymentInsertError
+      );
+
+      // Roll back outstanding if payment insert fails.
+      await collections.outstanding.updateOne(
+        {
+          _id: outstandingBill._id
+        },
+        {
+          $set: {
+            Bamt: databaseBalance,
+
+            payment_status:
+              databaseBalance > 0
+                ? 'pending'
+                : 'paid',
+
+            status:
+              databaseBalance > 0
+                ? 'pending'
+                : 'paid',
+
+            updated_at:
+              new Date().toISOString()
+          },
+
+          $inc: {
+            collected_amount:
+              -amountCollected
+          }
+        }
+      );
+
+      throw paymentInsertError;
+    }
+  } catch (error) {
+    console.error(
+      'Outstanding payment error:',
+      error
+    );
+
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message:
+          'Duplicate collection detected. Please refresh and try again.'
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        'Unable to save outstanding payment'
+    });
+  }
+});
+// ============================================================
+// LOAD DELIVERY BULK UPLOAD
+// ============================================================
+
+app.post('/api/load-delivery/upload', async (req, res) => {
+    let inserted = 0;
+    let updated = 0;
+    let skipped = 0;
+
+    try {
+        const distributorId = String(
+            req.body?.distributorId ?? req.body?.distributor_id ?? ''
+        ).trim();
+        const bills = Array.isArray(req.body?.bills) ? req.body.bills : [];
+
+        if (!distributorId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Distributor ID is required',
+                inserted,
+                updated,
+                skipped: bills.length
+            });
+        }
+
+        if (bills.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No load delivery bills received',
+                inserted,
+                updated,
+                skipped
+            });
+        }
+
+        const requestLoadSeries = String(
+            req.body?.LoadSeries ?? bills[0]?.LoadSeries ?? ''
+        ).trim();
+        const requestLoadNo = Number(
+            req.body?.LoadNo ?? bills[0]?.LoadNo
+        );
+        const uploadedAt = new Date();
+        const deliveryBills = [];
+
+        if (!Number.isInteger(requestLoadNo)) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid Load No is required',
+                inserted,
+                updated,
+                skipped: bills.length
+            });
+        }
+
+        for (const bill of bills) {
+            const trnSeries = String(bill?.TrnSeries ?? '').trim();
+            const trnNo = Number(bill?.TrnNo);
+            const sysAcCode = String(bill?.SysAcCode ?? '').trim();
+            const billAmount = Number(bill?.BillAmount ?? 0);
+
+            if (
+                !trnSeries ||
+                !Number.isInteger(trnNo) ||
+                !sysAcCode ||
+                !Number.isFinite(billAmount)
+            ) {
+                skipped += 1;
+                continue;
+            }
+
+            deliveryBills.push({
+                LoadSeries: requestLoadSeries,
+                LoadNo: requestLoadNo,
+                TrnSeries: trnSeries,
+                TrnNo: trnNo,
+                SysAcCode: sysAcCode,
+                AcName: String(bill?.AcName ?? '').trim(),
+                BillAmount: billAmount,
+                GeoLatitude:
+                    bill?.GeoLatitude === null || bill?.GeoLatitude === undefined
+                        ? ''
+                        : String(bill.GeoLatitude).trim(),
+                GeoLongitude:
+                    bill?.GeoLongitude === null || bill?.GeoLongitude === undefined
+                        ? ''
+                        : String(bill.GeoLongitude).trim(),
+                delivery_status: String(
+                    bill?.delivery_status ?? 'pending'
+                ).trim() || 'pending'
+            });
+        }
+
+        if (deliveryBills.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'No valid load delivery bills received',
+                inserted,
+                updated,
+                skipped
+            });
+        }
+
+        const deliveryCollection = db.collection('Mas_Delivery');
+        const loadFilter = {
+            distributorId,
+            LoadSeries: requestLoadSeries,
+            LoadNo: requestLoadNo
+        };
+        const existingLoad = await deliveryCollection.findOne(loadFilter, {
+            projection: { _id: 1 }
+        });
+        const deliveryDocument = {
+            distributorId,
+            LoadSeries: requestLoadSeries,
+            LoadNo: requestLoadNo,
+            bills: deliveryBills,
+            uploadType: 'LOAD_DELIVERY',
+            uploadedAt
+        };
+        let loadDocumentId;
+
+        if (existingLoad) {
+            await deliveryCollection.replaceOne(
+                { _id: existingLoad._id },
+                deliveryDocument
+            );
+            loadDocumentId = existingLoad._id;
+            updated = deliveryBills.length;
+        } else {
+            const insertResult = await deliveryCollection.insertOne(
+                deliveryDocument
+            );
+            loadDocumentId = insertResult.insertedId;
+            inserted = deliveryBills.length;
+        }
+
+        // Remove old one-document-per-bill records for this same load. This
+        // leaves exactly one load document containing the complete bills array.
+        await deliveryCollection.deleteMany({
+            ...loadFilter,
+            _id: { $ne: loadDocumentId }
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: 'Load delivery uploaded successfully',
+            inserted,
+            updated,
+            skipped
+        });
+    } catch (error) {
+        console.error('Load delivery upload error:', error);
+
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Unable to upload load delivery',
+            inserted,
+            updated,
+            skipped
+        });
+    }
+});
+
+app.get('/api/load-delivery/:distributorId', async (req, res) => {
+    try {
+        const distributorId = String(req.params.distributorId ?? '').trim();
+
+        if (!distributorId) {
+            return res.status(400).json({
+                success: false,
+                message: 'Distributor ID is required',
+                loads: []
+            });
+        }
+
+        const loads = await db
+            .collection('Mas_Delivery')
+            .find({ distributorId })
+            .sort({ uploadedAt: -1, LoadNo: -1 })
+            .toArray();
+
+        return res.json({ success: true, loads });
+    } catch (error) {
+        console.error('Load delivery download error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Unable to load delivery records',
+            loads: []
+        });
+    }
+});
+
+// Calculates a road-following route for the salesman without exposing the
+// Google Routes API key to the Flutter client.
+app.post('/api/load-delivery/route', async (req, res) => {
+    try {
+        const apiKey = String(process.env.GOOGLE_ROUTES_API_KEY ?? '').trim();
+        if (!apiKey) {
+            return res.status(503).json({
+                success: false,
+                message: 'Google Routes API is not configured on the server'
+            });
+        }
+
+        const origin = req.body?.origin;
+        const stops = Array.isArray(req.body?.stops) ? req.body.stops : [];
+        const isCoordinate = (point) => {
+            const latitude = Number(point?.latitude);
+            const longitude = Number(point?.longitude);
+            return Number.isFinite(latitude) &&
+                Number.isFinite(longitude) &&
+                latitude >= -90 && latitude <= 90 &&
+                longitude >= -180 && longitude <= 180 &&
+                !(latitude === 0 && longitude === 0);
+        };
+
+        if (!isCoordinate(origin) || stops.length === 0 || !stops.every(isCoordinate)) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid salesman origin and customer stops are required'
+            });
+        }
+        if (stops.length > 25) {
+            return res.status(400).json({
+                success: false,
+                message: 'A delivery route can contain at most 25 customer stops'
+            });
+        }
+
+        const waypoint = (point) => ({
+            location: {
+                latLng: {
+                    latitude: Number(point.latitude),
+                    longitude: Number(point.longitude)
+                }
+            }
+        });
+        const destination = stops[stops.length - 1];
+        const routesResponse = await fetch(
+            'https://routes.googleapis.com/directions/v2:computeRoutes',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': apiKey,
+                    'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline'
+                },
+                body: JSON.stringify({
+                    origin: waypoint(origin),
+                    destination: waypoint(destination),
+                    intermediates: stops.slice(0, -1).map(waypoint),
+                    travelMode: 'DRIVE',
+                    routingPreference: 'TRAFFIC_AWARE',
+                    polylineQuality: 'HIGH_QUALITY',
+                    polylineEncoding: 'ENCODED_POLYLINE'
+                })
+            }
+        );
+        const routesData = await routesResponse.json();
+        if (!routesResponse.ok || !Array.isArray(routesData.routes) || !routesData.routes[0]) {
+            console.error('Google Routes API error:', routesData?.error?.message ?? routesResponse.status);
+            return res.status(502).json({
+                success: false,
+                message: routesData?.error?.message || 'Unable to calculate the Google route'
+            });
+        }
+
+        const route = routesData.routes[0];
+        const durationMatch = String(route.duration ?? '').match(/^([0-9.]+)s$/);
+        return res.json({
+            success: true,
+            encodedPolyline: route.polyline?.encodedPolyline ?? '',
+            distanceMeters: Number(route.distanceMeters ?? 0),
+            durationSeconds: durationMatch ? Number(durationMatch[1]) : 0
+        });
+    } catch (error) {
+        console.error('Delivery route calculation error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Unable to calculate delivery route'
+        });
+    }
+});
+
+app.put('/api/load-delivery/delivery-status', async (req, res) => {
+    try {
+        const distributorId = String(req.body?.distributorId ?? '').trim();
+        const loadDocumentId = String(req.body?.loadDocumentId ?? '').trim();
+        const trnSeries = String(req.body?.billSeries ?? '').trim();
+        const trnNo = Number(req.body?.billNo);
+        const sysAcCode = String(req.body?.sysAcCode ?? '').trim();
+
+        if (
+            !distributorId ||
+            !ObjectId.isValid(loadDocumentId) ||
+            !trnSeries ||
+            !Number.isInteger(trnNo) ||
+            !sysAcCode
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'Valid load and bill details are required'
+            });
+        }
+
+        const deliveredAt = new Date();
+        const result = await db.collection('Mas_Delivery').updateOne(
+            {
+                _id: new ObjectId(loadDocumentId),
+                distributorId,
+                bills: {
+                    $elemMatch: {
+                        TrnSeries: trnSeries,
+                        TrnNo: trnNo,
+                        SysAcCode: sysAcCode
+                    }
+                }
+            },
+            {
+                $set: {
+                    'bills.$.delivery_status': 'completed',
+                    'bills.$.delivered_at': deliveredAt
+                }
+            }
+        );
+
+        if (result.matchedCount === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Load delivery bill not found'
+            });
+        }
+
+        return res.json({
+            success: true,
+            message: 'Delivery marked completed',
+            delivered_at: deliveredAt
+        });
+    } catch (error) {
+        console.error('Load delivery status error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Unable to update delivery status'
+        });
+    }
+});
 
 app.listen(PORT, async () => {
-    await connectToMongoDB();
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`API endpoints available at http://localhost:${PORT}/api`);
-    console.log(`Logo available at http://localhost:${PORT}/isset/image/TotalSolution.png`);
-    console.log(`\nAPI Endpoints:`);
-    console.log(`\nAuth:`);
-    console.log(`  POST /api/login - User login`);
-    console.log(`  POST /api/logout - User logout`);
-    console.log(`  POST /api/register - User registration`);
-    console.log(`\nSearch:`);
-    console.log(`  GET /api/search/:distributorId?query=term - Global search for products, customers, orders`);
-    console.log(`\nImport Master Data:`);
-    console.log(`  POST /api/import/customers - Import customers from Excel (with updateExisting flag)`);
-    console.log(`  POST /api/import/products - Import products from Excel (with updateExisting flag)`);
-    console.log(`\nDistributors:`);
-    console.log(`  GET /api/distributors - Get all distributors`);
-    console.log(`  GET /api/distributors/:distributorId - Get distributor by ID`);
-    console.log(`\nCustomers:`);
-    console.log(`  GET /api/customers/:distributorId - Get all customers`);
-    console.log(`  POST /api/customers - Add new customer`);
-    console.log(`  GET /api/customers/id/:id - Get single customer`);
-    console.log(`  PUT /api/customers/:id - Update customer (ALL fields editable for imported customers)`);
-    console.log(`  DELETE /api/customers/:id - Delete customer (only if no orders exist)`);
-    console.log(`\nProducts:`);
-    console.log(`  GET /api/products/:distributorId - Get all products (includes MRP field)`);
-    console.log(`  POST /api/products - Add new product (includes MRP)`);
-    console.log(`  GET /api/products/id/:id - Get single product`);
-    console.log(`  PUT /api/products/:id - Update product`);
-    console.log(`  DELETE /api/products/:id - Delete product (deactivate if used in orders)`);
-    console.log(`  PUT /api/products/:id/stock - Update product stock (correct calculation)`);
-    console.log(`  GET /api/products/:productId/last-sale - Get last sale for product`);
-    console.log(`\nSalesmen:`);
-    console.log(`  GET /api/salesmen/:distributorId - Get all salesmen`);
-    console.log(`  POST /api/salesmen - Add new salesman`);
-    console.log(`  GET /api/salesmen/id/:id - Get single salesman`);
-    console.log(`  GET /api/salesmen/by-id/:salesmanId - Get salesman by salesman_id`);
-    console.log(`  PUT /api/salesmen/:id - Update salesman`);
-    console.log(`  DELETE /api/salesmen/:id - Delete salesman (deactivate if has orders)`);
-    console.log(`\nPermissions:`);
-    console.log(`  GET /api/salesmen/permissions/:salesmanId - Get permissions`);
-    console.log(`  PUT /api/salesmen/permissions/:salesmanId - Update permissions`);
-    console.log(`\nSalesman Data:`);
-    console.log(`  GET /api/salesman-data/:salesmanId - Get all data for salesman (includes totalCollection from collection history)`);
-    console.log(`\nOrders:`);
-    console.log(`  POST /api/orders - Create order (auto-updates stock and saves MRP)`);
-    console.log(`  PUT /api/orders/:orderId - Edit order (adjusts stock and sends notification)`);
-    console.log(`  DELETE /api/orders/:orderId - Delete order (restores stock and sends notification)`);
-    console.log(`  GET /api/orders/salesman/:salesmanId - Get orders by salesman`);
-    console.log(`  GET /api/orders/distributor/:distributorId - Get orders by distributor`);
-    console.log(`  GET /api/orders/download/:distributorId - Download orders as Excel with MRP and QTY columns`);
-    console.log(`  PUT /api/orders/status/:orderId - Update order status to 'downloaded' (for tracking downloaded orders)`);
-    console.log(`  GET /api/orders/customer/:customerId - Get orders by customer`);
-    console.log(`  GET /api/orders/customer/:customerId/last - Get last order by customer`);
-    console.log(`  GET /api/orders/:orderId - Get single order`);
-    console.log(`  PUT /api/orders/:orderId/status - Update order status`);
-    console.log(`\nPayments & Collection History:`);
-    console.log(`  POST /api/orders/:orderId/payment - Record payment with file upload (sends notification to distributor)`);
-    console.log(`  GET /api/payments - Get all payments`);
-    console.log(`  GET /api/payments/distributor/:distributorId - Get payments for distributor`);
-    console.log(`  GET /api/payments/salesman/:salesmanId - Get payments for salesman`);
-    console.log(`  GET /api/collection-history/distributor/:distributorId - Get collection history for distributor (from mas_payment collection)`);
-    console.log(`  GET /api/collection-history/salesman/:salesmanId - Get collection history for salesman (from mas_payment collection)`);
-    console.log(`  GET /api/collection-history/reconcile/:distributorId - Reconcile collections with expected amount`);
-    console.log(`  GET /api/customers/:customerId/outstanding - Get customer outstanding balance`);
-    console.log(`  GET /api/banks - Get list of Indian banks`);
-    console.log(`  GET /api/upi-types - Get list of UPI types`);
-    console.log(`\nDashboard:`);
-    console.log(`  GET /api/dashboard/stats/:distributorId - Get dashboard statistics with salesman performance (Revenue = sum of order amounts, Collection = sum of collection history)`);
-    console.log(`\nNotifications:`);
-    console.log(`  GET /api/notifications/:distributorId - Get notifications for distributor`);
-    console.log(`  GET /api/notifications/unread-count/:distributorId - Get unread count`);
-    console.log(`  PUT /api/notifications/:notificationId/read - Mark notification as read (returns redirect_to URL)`);
-    console.log(`  PUT /api/notifications/mark-all-read/:distributorId - Mark all as read`);
-    console.log(`\nAreas & Routes:`);
-    console.log(`  GET /api/areas - Get major Indian cities and areas`);
-    console.log(`  GET /api/sub-areas - Get real sub-areas/routes for selected area`);
-    console.log(`\nPassword Change:`);
-    console.log(`  POST /api/change-password - Change user password`);
-    console.log(`  GET /api/users-under-distributor/:distributorId - Get users under distributor`);
-    console.log(`\n✅ NEW FEATURE ADDED:`);
-    console.log(`  1) ✅ Added PUT /api/orders/status/:orderId endpoint to update order status to 'downloaded'`);
-    console.log(`  2) ✅ Orders now have a 'status' field that can be set to 'downloaded' when orders are downloaded to desktop`);
-    console.log(`  3) ✅ Added 'downloadedAt' timestamp to track when order was downloaded`);
-    console.log(`  4) ✅ Added index on 'status' field for faster queries`);
-    console.log(`\n✅ FIXED: Salesman ID is now properly stored in orders - using the actual salesman_id from mas_salesman collection`);
+    try {
+        await connectToMongoDB();
+        console.log(`Server running on http://localhost:${PORT}`);
+        console.log(`API endpoints available at http://localhost:${PORT}/api`);
+        // ... rest of your startup logs
+    } catch (error) {
+        console.error('Failed to start server:', error);
+        process.exit(1);
+    }
 });
