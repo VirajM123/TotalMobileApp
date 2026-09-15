@@ -6425,6 +6425,98 @@ app.get('/api/load-delivery/:distributorId', async (req, res) => {
     }
 });
 
+// Calculates a road-following route for the salesman without exposing the
+// Google Routes API key to the Flutter client.
+app.post('/api/load-delivery/route', async (req, res) => {
+    try {
+        const apiKey = String(process.env.GOOGLE_ROUTES_API_KEY ?? '').trim();
+        if (!apiKey) {
+            return res.status(503).json({
+                success: false,
+                message: 'Google Routes API is not configured on the server'
+            });
+        }
+
+        const origin = req.body?.origin;
+        const stops = Array.isArray(req.body?.stops) ? req.body.stops : [];
+        const isCoordinate = (point) => {
+            const latitude = Number(point?.latitude);
+            const longitude = Number(point?.longitude);
+            return Number.isFinite(latitude) &&
+                Number.isFinite(longitude) &&
+                latitude >= -90 && latitude <= 90 &&
+                longitude >= -180 && longitude <= 180 &&
+                !(latitude === 0 && longitude === 0);
+        };
+
+        if (!isCoordinate(origin) || stops.length === 0 || !stops.every(isCoordinate)) {
+            return res.status(400).json({
+                success: false,
+                message: 'A valid salesman origin and customer stops are required'
+            });
+        }
+        if (stops.length > 25) {
+            return res.status(400).json({
+                success: false,
+                message: 'A delivery route can contain at most 25 customer stops'
+            });
+        }
+
+        const waypoint = (point) => ({
+            location: {
+                latLng: {
+                    latitude: Number(point.latitude),
+                    longitude: Number(point.longitude)
+                }
+            }
+        });
+        const destination = stops[stops.length - 1];
+        const routesResponse = await fetch(
+            'https://routes.googleapis.com/directions/v2:computeRoutes',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': apiKey,
+                    'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline'
+                },
+                body: JSON.stringify({
+                    origin: waypoint(origin),
+                    destination: waypoint(destination),
+                    intermediates: stops.slice(0, -1).map(waypoint),
+                    travelMode: 'DRIVE',
+                    routingPreference: 'TRAFFIC_AWARE',
+                    polylineQuality: 'HIGH_QUALITY',
+                    polylineEncoding: 'ENCODED_POLYLINE'
+                })
+            }
+        );
+        const routesData = await routesResponse.json();
+        if (!routesResponse.ok || !Array.isArray(routesData.routes) || !routesData.routes[0]) {
+            console.error('Google Routes API error:', routesData?.error?.message ?? routesResponse.status);
+            return res.status(502).json({
+                success: false,
+                message: routesData?.error?.message || 'Unable to calculate the Google route'
+            });
+        }
+
+        const route = routesData.routes[0];
+        const durationMatch = String(route.duration ?? '').match(/^([0-9.]+)s$/);
+        return res.json({
+            success: true,
+            encodedPolyline: route.polyline?.encodedPolyline ?? '',
+            distanceMeters: Number(route.distanceMeters ?? 0),
+            durationSeconds: durationMatch ? Number(durationMatch[1]) : 0
+        });
+    } catch (error) {
+        console.error('Delivery route calculation error:', error);
+        return res.status(500).json({
+            success: false,
+            message: error.message || 'Unable to calculate delivery route'
+        });
+    }
+});
+
 app.put('/api/load-delivery/delivery-status', async (req, res) => {
     try {
         const distributorId = String(req.body?.distributorId ?? '').trim();
