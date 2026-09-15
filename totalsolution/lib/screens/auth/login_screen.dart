@@ -17,6 +17,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:geolocator/geolocator.dart';
 
 // Define models inline if missing
 enum UserRole { distributor, salesman }
@@ -1043,7 +1044,7 @@ class ApiService {
       // each old load is uploaded once and consolidated by the backend.
       if (bills is List) {
         for (final billValue in bills.whereType<Map>()) {
-          final bill = Map<String, dynamic>.from(billValue);
+          final bill = _normalizeOutstandingBill(billValue);
           bill['LoadSeries'] ??= load['LoadSeries'];
           bill['LoadNo'] ??= load['LoadNo'];
           bill['uploadType'] ??= load['uploadType'];
@@ -1055,6 +1056,10 @@ class ApiService {
           flattenedBills.add(bill);
         }
       } else {
+        final normalizedLoad = _normalizeOutstandingBill(load);
+        load
+          ..clear()
+          ..addAll(normalizedLoad);
         load['_deliveryLoadId'] = loadId;
         load['Amt'] ??= load['BillAmount'] ?? 0;
         load['Amount'] ??= load['BillAmount'] ?? 0;
@@ -1085,6 +1090,45 @@ class ApiService {
     if (response.statusCode != 200 || data['success'] == false) {
       throw Exception(
         data['message'] ?? data['error'] ?? 'Unable to complete this delivery',
+      );
+    }
+    return data;
+  }
+
+  static Future<Map<String, dynamic>> getDeliveryRoute({
+    required double originLatitude,
+    required double originLongitude,
+    required List<LatLng> stops,
+  }) async {
+    final response = await http
+        .post(
+          Uri.parse('$apiUrl/load-delivery/route'),
+          headers: const {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          body: json.encode({
+            'origin': {
+              'latitude': originLatitude,
+              'longitude': originLongitude,
+            },
+            'stops': stops
+                .map(
+                  (stop) => {
+                    'latitude': stop.latitude,
+                    'longitude': stop.longitude,
+                  },
+                )
+                .toList(),
+          }),
+        )
+        .timeout(const Duration(seconds: 45));
+    final data = response.body.trim().isEmpty
+        ? <String, dynamic>{}
+        : _decodeJsonObject(response.body);
+    if (response.statusCode != 200 || data['success'] == false) {
+      throw Exception(
+        data['message'] ?? data['error'] ?? 'Unable to calculate delivery route',
       );
     }
     return data;
@@ -10982,6 +11026,7 @@ class _DistributorDashboardEnhancedState
     );
   }
 
+
   Widget _buildCreateOrderSection() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
@@ -11007,7 +11052,7 @@ class _DistributorDashboardEnhancedState
       ),
       child: Row(
         children: [
-          _buildStepCircle(1, 'Customer'),
+          _buildStepCircle(1, 'Customer & Route'),
           _buildStepLine(1),
           _buildStepCircle(2, 'Products'),
           _buildStepLine(2),
@@ -12248,6 +12293,13 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   String? _selectedLoadSeries;
   String? _activeLoadSeries;
   String? _activeLoadNumber;
+  Position? _salesmanPosition;
+  List<LatLng> _deliveryRoadRoute = const [];
+  double? _deliveryRoadDistanceKm;
+  int? _deliveryRoadDurationMinutes;
+  StreamSubscription<Position>? _deliveryPositionSubscription;
+  Position? _lastDeliveryRouteOrigin;
+  bool _isRecalculatingDeliveryRoute = false;
 
   // Add this near other state variables
   String? _persistedSelectedRoute; // This will persist the route selection
@@ -18207,9 +18259,383 @@ Thank you.
     );
   }
 
+  Widget _buildRedesignedCustomerSelectionStep() {
+    final routeSelected =
+        _selectedOrderRoute != null && _selectedOrderRoute!.isNotEmpty;
+
+    InputDecoration outlinedFieldDecoration({
+      required String label,
+      required IconData icon,
+      String? hint,
+    }) {
+      return InputDecoration(
+        labelText: label,
+        hintText: hint,
+        prefixIcon: Icon(icon, color: primaryBlue),
+        filled: true,
+        fillColor: Colors.white,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFFD5DEEA)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(14),
+          borderSide: const BorderSide(color: Color(0xFF2563EB), width: 1.5),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFE3EAF4)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x0A0F172A),
+                blurRadius: 18,
+                offset: Offset(0, 7),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Order Details',
+                style: TextStyle(
+                  color: primaryBlue,
+                  fontSize: 19,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                initialValue: _persistedSelectedRoute ?? _selectedOrderRoute,
+                isExpanded: true,
+                decoration: outlinedFieldDecoration(
+                  label: 'Select Route',
+                  icon: Icons.location_on,
+                ),
+                selectedItemBuilder: (context) => orderRoutes
+                    .map(
+                      (route) => Text(
+                        route,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    )
+                    .toList(),
+                items: orderRoutes
+                    .map(
+                      (route) => DropdownMenuItem<String>(
+                        value: route,
+                        child: Text(route, overflow: TextOverflow.ellipsis),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  setState(() {
+                    _persistedSelectedRoute = value;
+                    _selectedOrderRoute = value;
+                    _selectedCustomerId = null;
+                    _customerSearchQuery = '';
+                    _customerSearchController.clear();
+                  });
+                },
+              ),
+              if (routeSelected) ...[
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildOrderDetailChip(
+                        icon: Icons.location_on,
+                        text: 'Area: ${_selectedOrderRoute!.toUpperCase()}',
+                        foreground: primaryBlue,
+                        background: const Color(0xFFF0F6FF),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _buildOrderDetailChip(
+                        icon: Icons.account_balance_wallet,
+                        text: 'Credit ₹25,000',
+                        foreground: successGreen,
+                        background: const Color(0xFFF0FAF2),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xFFE3EAF4)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x0A0F172A),
+                blurRadius: 18,
+                offset: Offset(0, 7),
+              ),
+            ],
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Choose Customer',
+                style: TextStyle(
+                  color: primaryBlue,
+                  fontSize: 19,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _customerSearchController,
+                enabled: routeSelected,
+                decoration: outlinedFieldDecoration(
+                  label: 'Search customers',
+                  icon: Icons.search,
+                  hint: 'Name, code or address',
+                ),
+                onChanged: (value) =>
+                    setState(() => _customerSearchQuery = value),
+              ),
+              const SizedBox(height: 12),
+              if (!routeSelected)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 36),
+                  child: Center(
+                    child: Text(
+                      'Select a route to load customers',
+                      style: TextStyle(color: Color(0xFF64748B)),
+                    ),
+                  ),
+                )
+              else if (orderFilteredCustomers.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 36),
+                  child: Center(
+                    child: Text(
+                      'No customers found for selected route',
+                      style: TextStyle(color: Color(0xFF64748B)),
+                    ),
+                  ),
+                )
+              else
+                ListView.separated(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: orderFilteredCustomers.length,
+                  separatorBuilder: (_, __) =>
+                      const Divider(height: 1, color: Color(0xFFE8EDF4)),
+                  itemBuilder: (context, index) {
+                    final customer = orderFilteredCustomers[index];
+                    final selected = _selectedCustomerId == customer.id;
+                    final address = customer.address?.trim().isNotEmpty == true
+                        ? customer.address!.trim()
+                        : customer.area;
+                    final code = customer.customerId?.trim().isNotEmpty == true
+                        ? customer.customerId!.trim()
+                        : customer.id;
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () =>
+                          setState(() => _selectedCustomerId = customer.id),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 13,
+                        ),
+                        decoration: BoxDecoration(
+                          color: selected
+                              ? const Color(0xFFEEF5FF)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: selected
+                                ? const Color(0xFFBFD6FF)
+                                : Colors.transparent,
+                          ),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              selected
+                                  ? Icons.radio_button_checked
+                                  : Icons.radio_button_off,
+                              color: selected
+                                  ? const Color(0xFF2563EB)
+                                  : const Color(0xFF94A3B8),
+                            ),
+                            const SizedBox(width: 10),
+                            CircleAvatar(
+                              radius: 21,
+                              backgroundColor: selected
+                                  ? const Color(0xFFDCEAFF)
+                                  : const Color(0xFFF0F4F9),
+                              child: Text(
+                                customer.name.isEmpty
+                                    ? 'C'
+                                    : customer.name[0].toUpperCase(),
+                                style: const TextStyle(
+                                  color: primaryBlue,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    customer.name,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFF0F172A),
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    address,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFF64748B),
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                  Text(
+                                    code,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFF94A3B8),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  'Credit',
+                                  style: TextStyle(
+                                    color: Color(0xFF64748B),
+                                    fontSize: 10,
+                                  ),
+                                ),
+                                Text(
+                                  '₹25,000',
+                                  style: TextStyle(
+                                    color: successGreen,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: ElevatedButton.icon(
+            onPressed: _selectedCustomerId == null
+                ? null
+                : () {
+                    FocusScope.of(context).unfocus();
+                    setState(() => _orderStep = 2);
+                  },
+            iconAlignment: IconAlignment.end,
+            icon: const Icon(Icons.arrow_forward),
+            label: const Text(
+              'Continue to Products',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2563EB),
+              foregroundColor: Colors.white,
+              disabledBackgroundColor: const Color(0xFFCBD5E1),
+              disabledForegroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildOrderDetailChip({
+    required IconData icon,
+    required String text,
+    required Color foreground,
+    required Color background,
+  }) {
+    return Container(
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: foreground, size: 19),
+          const SizedBox(width: 7),
+          Expanded(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: foreground,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
   Widget _buildCreateOrderSection() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 110),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -18237,30 +18663,13 @@ Thank you.
                   }
                 },
                 icon: const Icon(Icons.sync, size: 18),
-                label: const Text('Sync Data'),
+                label: const Text('Sync'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: successGreen,
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(
                     horizontal: 14,
-                    vertical: 12,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                onPressed: () {},
-                icon: const Icon(Icons.tune, size: 18),
-                label: const Text('Filter'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: primaryBlue,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 12,
+                    vertical: 11,
                   ),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10),
@@ -18272,7 +18681,7 @@ Thank you.
           const SizedBox(height: 16),
           _buildStepIndicator(),
           const SizedBox(height: 18),
-          if (_orderStep == 1) _buildCustomerSelectionStep(),
+          if (_orderStep == 1) _buildRedesignedCustomerSelectionStep(),
           if (_orderStep == 2) _buildProductSelectionStepWithScheme(),
           if (_orderStep == 3) _buildReviewStep(),
         ],
@@ -18282,7 +18691,7 @@ Thank you.
 
   Widget _buildStepIndicator() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 18),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
@@ -18296,7 +18705,7 @@ Thank you.
       ),
       child: Row(
         children: [
-          _buildStepCircle(1, 'Customer & Route'),
+          _buildStepCircle(1, 'Customer'),
           _buildStepLine(1),
           _buildStepCircle(2, 'Products'),
           _buildStepLine(2),
@@ -20235,6 +20644,10 @@ Thank you.
         'Order marked completed. Continue to the next stop.',
         backgroundColor: successGreen,
       );
+      final currentPosition = _salesmanPosition;
+      if (currentPosition != null) {
+        unawaited(_recalculateActiveDeliveryRoute(currentPosition));
+      }
       return true;
     } catch (error) {
       if (mounted) {
@@ -20508,7 +20921,7 @@ Thank you.
                     const SizedBox(width: 10),
                     Expanded(
                       child: ElevatedButton.icon(
-                        onPressed: () {
+                        onPressed: () async {
                           final loadNo = _loadNumberController.text.trim();
                           if (selected == null || loadNo.isEmpty) {
                             setDialogState(
@@ -20517,6 +20930,18 @@ Thank you.
                             );
                             return;
                           }
+                          setDialogState(() => validationMessage = null);
+                          final startError = await _prepareDeliveryStart(
+                            selected!,
+                            loadNo,
+                          );
+                          if (startError != null) {
+                            if (dialogContext.mounted) {
+                              setDialogState(() => validationMessage = startError);
+                            }
+                            return;
+                          }
+                          if (!mounted || !dialogContext.mounted) return;
                           setState(() {
                             _selectedLoadSeries = selected;
                             _activeLoadSeries = selected;
@@ -20561,13 +20986,15 @@ Thank you.
     final route = bills.isEmpty
         ? <Map<String, dynamic>>[]
         : _optimizedDeliveryRoute(bills);
-    var totalDistance = 0.0;
-    for (var i = 1; i < route.length; i++) {
-      totalDistance += _routeDistanceKm(route[i - 1], route[i]);
+    var totalDistance = _deliveryRoadDistanceKm ?? 0.0;
+    if (_deliveryRoadDistanceKm == null) {
+      for (var i = 1; i < route.length; i++) {
+        totalDistance += _routeDistanceKm(route[i - 1], route[i]);
+      }
     }
-    final estimatedMinutes = route.isEmpty
+    final estimatedMinutes = _deliveryRoadDurationMinutes ?? (route.isEmpty
         ? 0
-        : math.max(15, (totalDistance / 25 * 60).round());
+        : math.max(15, (totalDistance / 25 * 60).round()));
 
     return ColoredBox(
       color: const Color(0xFFF4F7FB),
@@ -20923,7 +21350,7 @@ Thank you.
       );
     }
 
-    List<LatLng> roadRoute = const [];
+    List<LatLng> roadRoute = _deliveryRoadRoute;
     for (final bill in route) {
       final encoded = _deliveryText(bill, const [
         'encodedPolyline',
@@ -21968,6 +22395,23 @@ Thank you.
     final missing = bills.where((bill) => !located.contains(bill)).toList();
     if (located.length < 2) return [...located, ...missing];
 
+    if (_salesmanPosition != null) {
+      located.sort((a, b) {
+        final aDistance = Geolocator.distanceBetween(
+          _salesmanPosition!.latitude,
+          _salesmanPosition!.longitude,
+          _getBillLatitude(a)!,
+          _getBillLongitude(a)!,
+        );
+        final bDistance = Geolocator.distanceBetween(
+          _salesmanPosition!.latitude,
+          _salesmanPosition!.longitude,
+          _getBillLatitude(b)!,
+          _getBillLongitude(b)!,
+        );
+        return aDistance.compareTo(bDistance);
+      });
+    }
     final route = <Map<String, dynamic>>[located.removeAt(0)];
     while (located.isNotEmpty) {
       located.sort(
@@ -21979,6 +22423,171 @@ Thank you.
       route.add(located.removeAt(0));
     }
     return [...route, ...missing];
+  }
+
+  bool _hasValidDeliveryLocation(Map<String, dynamic> bill) {
+    final latitude = _getBillLatitude(bill);
+    final longitude = _getBillLongitude(bill);
+    return latitude != null &&
+        longitude != null &&
+        latitude >= -90 &&
+        latitude <= 90 &&
+        longitude >= -180 &&
+        longitude <= 180 &&
+        !(latitude == 0 && longitude == 0);
+  }
+
+  Future<Position> _requestSalesmanLocation() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      throw Exception('Turn on GPS/location services before starting delivery.');
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+    if (permission == LocationPermission.denied) {
+      throw Exception('Location permission is required to start delivery.');
+    }
+    if (permission == LocationPermission.deniedForever) {
+      throw Exception(
+        'Location permission is permanently denied. Enable it from app settings.',
+      );
+    }
+
+    return Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        timeLimit: Duration(seconds: 20),
+      ),
+    );
+  }
+
+  Future<String?> _prepareDeliveryStart(String series, String loadNo) async {
+    try {
+      if (mounted) {
+        setState(() {
+          _deliveryRoadRoute = const [];
+          _deliveryRoadDistanceKm = null;
+          _deliveryRoadDurationMinutes = null;
+        });
+      }
+      final position = await _requestSalesmanLocation();
+      if (!mounted) return 'Unable to start delivery.';
+      setState(() => _salesmanPosition = position);
+
+      final selectedBills = _deliveryBills
+          .whereType<Map>()
+          .map((bill) => Map<String, dynamic>.from(bill))
+          .where(
+            (bill) =>
+                _deliveryText(bill, const ['LoadSeries']).toLowerCase() ==
+                    series.toLowerCase() &&
+                _deliveryText(bill, const ['LoadNo']) == loadNo &&
+                !_isDeliveryCompleted(bill) &&
+                _hasValidDeliveryLocation(bill),
+          )
+          .toList();
+      if (selectedBills.isEmpty) {
+        return 'No valid customer locations are available for this load.';
+      }
+
+      await _updateDeliveryRoadRoute(position, selectedBills);
+      await _startDeliveryLocationTracking();
+      return null;
+    } catch (error) {
+      return error.toString().replaceFirst('Exception: ', '');
+    }
+  }
+
+  Future<void> _updateDeliveryRoadRoute(
+    Position position,
+    List<Map<String, dynamic>> pendingBills,
+  ) async {
+    if (pendingBills.isEmpty) return;
+    final orderedBills = _optimizedDeliveryRoute(pendingBills);
+    final response = await ApiService.getDeliveryRoute(
+      originLatitude: position.latitude,
+      originLongitude: position.longitude,
+      stops: orderedBills
+          .map(
+            (bill) => LatLng(
+              _getBillLatitude(bill)!,
+              _getBillLongitude(bill)!,
+            ),
+          )
+          .toList(),
+    );
+    final encoded = response['encodedPolyline']?.toString() ?? '';
+    final distanceMeters = (response['distanceMeters'] as num?)?.toDouble();
+    final durationSeconds = (response['durationSeconds'] as num?)?.toDouble();
+    if (!mounted) return;
+    setState(() {
+      _salesmanPosition = position;
+      _lastDeliveryRouteOrigin = position;
+      _deliveryRoadRoute = decodeGooglePolyline(encoded);
+      _deliveryRoadDistanceKm = distanceMeters == null
+          ? null
+          : distanceMeters / 1000;
+      _deliveryRoadDurationMinutes = durationSeconds == null
+          ? null
+          : math.max(1, (durationSeconds / 60).ceil());
+    });
+  }
+
+  Future<void> _startDeliveryLocationTracking() async {
+    await _deliveryPositionSubscription?.cancel();
+    _deliveryPositionSubscription = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 100,
+      ),
+    ).listen(
+      _handleDeliveryPositionUpdate,
+      onError: (Object error) {
+        debugPrint('Delivery location update failed: $error');
+      },
+    );
+  }
+
+  void _handleDeliveryPositionUpdate(Position position) {
+    if (!mounted || _activeLoadSeries == null || _activeLoadNumber == null) {
+      return;
+    }
+
+    setState(() => _salesmanPosition = position);
+    final previousOrigin = _lastDeliveryRouteOrigin;
+    final movedMeters = previousOrigin == null
+        ? double.infinity
+        : Geolocator.distanceBetween(
+            previousOrigin.latitude,
+            previousOrigin.longitude,
+            position.latitude,
+            position.longitude,
+          );
+    if (movedMeters < 100 || _isRecalculatingDeliveryRoute) return;
+    unawaited(_recalculateActiveDeliveryRoute(position));
+  }
+
+  Future<void> _recalculateActiveDeliveryRoute(Position position) async {
+    if (_isRecalculatingDeliveryRoute) return;
+    _isRecalculatingDeliveryRoute = true;
+    try {
+      final pendingBills = _activeDeliveryBills()
+          .where(
+            (bill) =>
+                !_isDeliveryCompleted(bill) &&
+                _hasValidDeliveryLocation(bill),
+          )
+          .toList();
+      if (pendingBills.isEmpty) return;
+      await _updateDeliveryRoadRoute(position, pendingBills);
+    } catch (error) {
+      debugPrint('Unable to recalculate delivery route: $error');
+    } finally {
+      _isRecalculatingDeliveryRoute = false;
+    }
   }
 
   Widget _buildRoutePlanPortalHeader(BuildContext routeContext) {
@@ -22939,7 +23548,21 @@ Thank you.
     List<Map<String, dynamic>> route, {
     VoidCallback? onChanged,
   }) async {
-    final pendingRoute = route.where((bill) => !_isDeliveryCompleted(bill));
+    try {
+      _salesmanPosition ??= await _requestSalesmanLocation();
+    } catch (error) {
+      if (mounted) {
+        showSafeSnackBar(
+          context,
+          error.toString().replaceFirst('Exception: ', ''),
+          backgroundColor: errorRed,
+        );
+      }
+      return;
+    }
+    final pendingRoute = route.where(
+      (bill) => !_isDeliveryCompleted(bill) && _hasValidDeliveryLocation(bill),
+    );
     final coordinates = pendingRoute
         .map((bill) => (_getBillLatitude(bill), _getBillLongitude(bill)))
         .where((point) => point.$1 != null && point.$2 != null)
@@ -22956,6 +23579,7 @@ Thank you.
 
     final params = <String, String>{
       'api': '1',
+      'origin': '${_salesmanPosition!.latitude},${_salesmanPosition!.longitude}',
       'destination': coordinates.last,
       'travelmode': 'driving',
     };
@@ -22963,7 +23587,10 @@ Thank you.
       params['waypoints'] = coordinates.take(coordinates.length - 1).join('|');
     }
     final uri = Uri.https('www.google.com', '/maps/dir/', params);
-    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    final opened = await launchUrl(
+      uri,
+      mode: kIsWeb ? LaunchMode.platformDefault : LaunchMode.externalApplication,
+    );
     if (!opened && mounted) {
       showSafeSnackBar(
         context,
@@ -23884,6 +24511,15 @@ Thank you.
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _deliveryPositionSubscription?.cancel();
+    _outstandingSearchController.dispose();
+    _deliverySearchController.dispose();
+    _loadNumberController.dispose();
+    super.dispose();
   }
 }
 
