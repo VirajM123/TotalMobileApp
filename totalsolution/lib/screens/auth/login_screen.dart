@@ -678,6 +678,11 @@ class ApiService {
     return _remoteBaseUrl; // ✅ Now uses the correct URL
   }
 
+  static Uri uploadedFileUri(String relativePath) {
+    final api = Uri.parse(apiUrl);
+    return api.replace(path: relativePath.startsWith('/') ? relativePath : '/$relativePath', query: null);
+  }
+
   // Flutter web can decode JSON objects as LinkedMap<dynamic, dynamic>.
   // Convert at the HTTP boundary so callers always receive the declared type.
   static Map<String, dynamic> _decodeJsonObject(String body) {
@@ -910,6 +915,7 @@ class ApiService {
 
   static Future<Map<String, dynamic>> collectOutstandingPayment(
     Map<String, dynamic> paymentData,
+    {XFile? paymentPhoto}
   ) async {
     final url = Uri.parse('$apiUrl/outstanding/collect-payment');
 
@@ -918,16 +924,20 @@ class ApiService {
       print('URL: $url');
       print('Payload: ${json.encode(paymentData)}');
 
-      final response = await http
-          .post(
-            url,
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-            body: json.encode(paymentData),
-          )
-          .timeout(const Duration(seconds: 30));
+      final request = http.MultipartRequest('POST', url)
+        ..headers['Accept'] = 'application/json';
+      paymentData.forEach((key, value) {
+        if (value != null) request.fields[key] = value.toString();
+      });
+      if (paymentPhoto != null) {
+        request.files.add(
+          await http.MultipartFile.fromPath('paymentPhoto', paymentPhoto.path),
+        );
+      }
+      final streamedResponse = await request.send().timeout(
+        const Duration(seconds: 30),
+      );
+      final response = await http.Response.fromStream(streamedResponse);
 
       print('Collection status: ${response.statusCode}');
       print('Collection response: ${response.body}');
@@ -1013,11 +1023,17 @@ class ApiService {
     return data;
   }
 
-  static Future<List<dynamic>> getLoadDeliveries(String distributorId) async {
+  static Future<List<dynamic>> getLoadDeliveries(
+    String distributorId, {
+    String? salesmanId,
+  }) async {
+    final query = salesmanId == null || salesmanId.trim().isEmpty
+        ? ''
+        : '?salesmanId=${Uri.encodeQueryComponent(salesmanId.trim())}';
     final response = await http
         .get(
           Uri.parse(
-            '$apiUrl/load-delivery/${Uri.encodeComponent(distributorId)}',
+            '$apiUrl/load-delivery/${Uri.encodeComponent(distributorId)}$query',
           ),
         )
         .timeout(const Duration(seconds: 60));
@@ -1049,10 +1065,12 @@ class ApiService {
           bill['LoadNo'] ??= load['LoadNo'];
           bill['uploadType'] ??= load['uploadType'];
           bill['uploadedAt'] ??= load['uploadedAt'];
+          bill['groupingMode'] ??= load['groupingMode'] ?? 'none';
+          bill['assignedSalesmanId'] ??= load['assignedSalesmanId'];
           bill['_deliveryLoadId'] = loadId;
           bill['Amt'] ??= bill['BillAmount'] ?? 0;
           bill['Amount'] ??= bill['BillAmount'] ?? 0;
-          bill['Bamt'] ??= bill['BillAmount'] ?? 0;
+          bill['Bamt'] ??= bill['balance_amount'] ?? bill['BillAmount'] ?? 0;
           flattenedBills.add(bill);
         }
       } else {
@@ -1069,6 +1087,69 @@ class ApiService {
     }
 
     return flattenedBills;
+  }
+
+  static Future<void> assignLoad({
+    required String loadId,
+    required String distributorId,
+    required String salesmanId,
+    required String groupingMode,
+  }) async {
+    final response = await http.put(
+      Uri.parse('$apiUrl/load-delivery/${Uri.encodeComponent(loadId)}/assign'),
+      headers: const {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: json.encode({
+        'distributorId': distributorId,
+        'salesmanId': salesmanId,
+        'groupingMode': groupingMode,
+      }),
+    );
+    final data = response.body.trim().isEmpty
+        ? <String, dynamic>{}
+        : _decodeJsonObject(response.body);
+    if (response.statusCode != 200 || data['success'] == false) {
+      throw Exception(data['message'] ?? 'Unable to assign load');
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> getLoadDocuments(
+    String distributorId,
+  ) async {
+    final response = await http.get(
+      Uri.parse('$apiUrl/load-delivery/${Uri.encodeComponent(distributorId)}'),
+    );
+    final data = response.body.trim().isEmpty
+        ? <String, dynamic>{}
+        : _decodeJsonObject(response.body);
+    if (response.statusCode != 200 || data['success'] == false) {
+      throw Exception(data['message'] ?? 'Unable to load delivery records');
+    }
+    return (data['loads'] as List? ?? const [])
+        .whereType<Map>()
+        .map((value) => Map<String, dynamic>.from(value))
+        .toList();
+  }
+
+  static Future<Map<String, dynamic>> getLoadReconciliation({
+    required String loadId,
+    required String distributorId,
+  }) async {
+    final response = await http.get(
+      Uri.parse(
+        '$apiUrl/load-delivery/${Uri.encodeComponent(loadId)}/reconciliation'
+        '?distributorId=${Uri.encodeQueryComponent(distributorId)}',
+      ),
+    );
+    final data = response.body.trim().isEmpty
+        ? <String, dynamic>{}
+        : _decodeJsonObject(response.body);
+    if (response.statusCode != 200 || data['success'] == false) {
+      throw Exception(data['message'] ?? 'Unable to reconcile this load');
+    }
+    return data;
   }
 
   static Future<Map<String, dynamic>> completeLoadDelivery(
@@ -4185,6 +4266,8 @@ class _DistributorDashboardEnhancedState
   List<SalesmanModel> _salesmen = [];
   List<OrderTemplateModel> _orderTemplates = [];
   List<NotificationModel> _notifications = [];
+  List<Map<String, dynamic>> _adminDeliveryLoads = [];
+  bool _isLoadingAdminLoads = false;
   bool _isLoading = true;
   int _unreadNotificationCount = 0;
 
@@ -5699,6 +5782,380 @@ class _DistributorDashboardEnhancedState
     });
 
     _loadDashboardStats();
+  }
+
+  Future<void> _loadAdminDeliveryLoads() async {
+    final distributorId = _currentDistributor.distributorId?.trim() ?? '';
+    if (distributorId.isEmpty) return;
+    setState(() => _isLoadingAdminLoads = true);
+    try {
+      final loads = await ApiService.getLoadDocuments(distributorId);
+      if (mounted) setState(() => _adminDeliveryLoads = loads);
+    } catch (error) {
+      if (mounted) {
+        showSafeSnackBar(
+          context,
+          'Unable to load delivery assignments: $error',
+          backgroundColor: errorRed,
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingAdminLoads = false);
+    }
+  }
+
+  Future<void> _showAssignLoadDialog(Map<String, dynamic> load) async {
+    String? salesmanId = (load['assignedSalesmanId'] ?? '').toString().trim();
+    if (salesmanId.isEmpty) salesmanId = null;
+    String groupingMode = (load['groupingMode'] ?? 'none').toString();
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Assign Load ${load['LoadSeries'] ?? ''}/${load['LoadNo'] ?? ''}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              DropdownButtonFormField<String>(
+                value: salesmanId,
+                decoration: const InputDecoration(
+                  labelText: 'Salesman',
+                  border: OutlineInputBorder(),
+                ),
+                items: _salesmen
+                    .map((salesman) => DropdownMenuItem(
+                          value: salesman.salesmanId,
+                          child: Text(salesman.name),
+                        ))
+                    .toList(),
+                onChanged: (value) => setDialogState(() => salesmanId = value),
+              ),
+              const SizedBox(height: 14),
+              DropdownButtonFormField<String>(
+                value: groupingMode,
+                decoration: const InputDecoration(
+                  labelText: 'Bill grouping',
+                  border: OutlineInputBorder(),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'none', child: Text('No grouping')),
+                  DropdownMenuItem(value: 'company', child: Text('Company wise')),
+                  DropdownMenuItem(value: 'route', child: Text('Route wise')),
+                  DropdownMenuItem(value: 'company_route', child: Text('Company + Route wise')),
+                ],
+                onChanged: (value) => setDialogState(() => groupingMode = value ?? 'none'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: salesmanId == null
+                  ? null
+                  : () async {
+                      try {
+                        await ApiService.assignLoad(
+                          loadId: load['_id'].toString(),
+                          distributorId: _currentDistributor.distributorId!,
+                          salesmanId: salesmanId!,
+                          groupingMode: groupingMode,
+                        );
+                        if (dialogContext.mounted) Navigator.pop(dialogContext, true);
+                      } catch (error) {
+                        if (dialogContext.mounted) {
+                          ScaffoldMessenger.of(dialogContext).showSnackBar(
+                            SnackBar(content: Text('$error'), backgroundColor: errorRed),
+                          );
+                        }
+                      }
+                    },
+              child: const Text('Assign'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) {
+      await _loadAdminDeliveryLoads();
+      if (mounted) showSafeSnackBar(context, 'Load assigned successfully', backgroundColor: successGreen);
+    }
+  }
+
+  Future<void> _showAdminLoadPaymentDialog(Map<String, dynamic> load) async {
+    final bills = (load['bills'] as List? ?? const [])
+        .whereType<Map>()
+        .map((value) => Map<String, dynamic>.from(value))
+        .where((bill) => (bill['payment_status'] ?? '').toString() != 'paid')
+        .toList();
+    if (bills.isEmpty) {
+      showSafeSnackBar(context, 'All bills in this load are paid', backgroundColor: successGreen);
+      return;
+    }
+    Map<String, dynamic> selectedBill = bills.first;
+    final amountController = TextEditingController(
+      text: ((selectedBill['balance_amount'] ?? selectedBill['BillAmount'] ?? 0) as num).toStringAsFixed(2),
+    );
+    String paymentMode = 'Cash';
+    XFile? paymentPhoto;
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Record Payment to Admin'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DropdownButtonFormField<Map<String, dynamic>>(
+                  value: selectedBill,
+                  decoration: const InputDecoration(labelText: 'Bill', border: OutlineInputBorder()),
+                  items: bills.map((bill) => DropdownMenuItem(
+                    value: bill,
+                    child: Text('${bill['TrnSeries'] ?? ''}/${bill['TrnNo'] ?? ''} - ${bill['AcName'] ?? bill['SysAcCode'] ?? ''}'),
+                  )).toList(),
+                  onChanged: (bill) {
+                    if (bill == null) return;
+                    setDialogState(() {
+                      selectedBill = bill;
+                      amountController.text = ((bill['balance_amount'] ?? bill['BillAmount'] ?? 0) as num).toStringAsFixed(2);
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: amountController,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(labelText: 'Amount received', prefixText: '₹ ', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  value: paymentMode,
+                  decoration: const InputDecoration(labelText: 'Payment mode', border: OutlineInputBorder()),
+                  items: const ['Cash', 'UPI', 'Cheque', 'Bank Transfer']
+                      .map((mode) => DropdownMenuItem(value: mode, child: Text(mode)))
+                      .toList(),
+                  onChanged: (value) => setDialogState(() => paymentMode = value ?? 'Cash'),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final picked = await ImagePicker().pickImage(source: ImageSource.camera, imageQuality: 75);
+                    if (picked != null) setDialogState(() => paymentPhoto = picked);
+                  },
+                  icon: const Icon(Icons.add_a_photo_outlined),
+                  label: Text(paymentPhoto == null ? 'Attach payment proof' : 'Proof attached'),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () async {
+                final amount = double.tryParse(amountController.text.trim()) ?? 0;
+                final balance = ((selectedBill['balance_amount'] ?? selectedBill['BillAmount'] ?? 0) as num).toDouble();
+                if (amount <= 0 || amount > balance) return;
+                try {
+                  await ApiService.collectOutstandingPayment({
+                    'distributorId': _currentDistributor.distributorId,
+                    'collectedByType': 'admin',
+                    'collectedById': _currentDistributor.distributorId,
+                    'billSeries': selectedBill['TrnSeries'] ?? '',
+                    'billNo': selectedBill['TrnNo'] ?? '',
+                    'sysAcCode': selectedBill['SysAcCode'] ?? '',
+                    'customerName': selectedBill['AcName'] ?? '',
+                    'billAmount': selectedBill['BillAmount'] ?? balance,
+                    'oldBalance': balance,
+                    'amountCollected': amount,
+                    'paymentMode': paymentMode,
+                    'cashAmount': paymentMode == 'Cash' ? amount : 0,
+                  }, paymentPhoto: paymentPhoto);
+                  if (dialogContext.mounted) Navigator.pop(dialogContext, true);
+                } catch (error) {
+                  if (dialogContext.mounted) {
+                    ScaffoldMessenger.of(dialogContext).showSnackBar(
+                      SnackBar(content: Text('$error'), backgroundColor: errorRed),
+                    );
+                  }
+                }
+              },
+              child: const Text('Save Payment'),
+            ),
+          ],
+        ),
+      ),
+    );
+    amountController.dispose();
+    if (saved == true) {
+      await _loadAdminDeliveryLoads();
+      if (mounted) showSafeSnackBar(context, 'Payment recorded and outstanding updated', backgroundColor: successGreen);
+    }
+  }
+
+  Future<void> _showLoadReconciliationDialog(
+    Map<String, dynamic> load,
+  ) async {
+    showDialog<void>(
+      context: context,
+      builder: (context) => const Center(child: CircularProgressIndicator()),
+    );
+    try {
+      final report = await ApiService.getLoadReconciliation(
+        loadId: load['_id'].toString(),
+        distributorId: _currentDistributor.distributorId!,
+      );
+      if (!mounted) return;
+      Navigator.pop(context);
+      final summary = Map<String, dynamic>.from(report['summary'] as Map? ?? {});
+      final bills = (report['bills'] as List? ?? const [])
+          .whereType<Map>()
+          .map((value) => Map<String, dynamic>.from(value))
+          .toList();
+      double number(String key) => (summary[key] as num?)?.toDouble() ?? 0;
+      Widget metric(String label, double value, Color color) => Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withOpacity(0.2)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: const TextStyle(fontSize: 11)),
+            const SizedBox(height: 3),
+            Text(
+              '₹${value.toStringAsFixed(2)}',
+              style: TextStyle(fontWeight: FontWeight.w900, color: color),
+            ),
+          ],
+        ),
+      );
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => Dialog(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 720, maxHeight: 720),
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 14, 8, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Load ${load['LoadSeries'] ?? ''}/${load['LoadNo'] ?? ''} Reconciliation',
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(dialogContext),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      GridView.count(
+                        crossAxisCount: 3,
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        childAspectRatio: 1.55,
+                        mainAxisSpacing: 8,
+                        crossAxisSpacing: 8,
+                        children: [
+                          metric('Load Value', number('totalLoadAmount'), primaryBlue),
+                          metric('Received', number('totalReceived'), successGreen),
+                          metric('Remaining', number('totalRemaining'), errorRed),
+                          metric('Cash', number('cashReceived'), const Color(0xFF059669)),
+                          metric('Cheque', number('chequeReceived'), const Color(0xFF7C3AED)),
+                          metric('UPI', number('upiReceived'), const Color(0xFF2563EB)),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Text(
+                        'Bills: ${summary['totalBills'] ?? 0}  •  Paid: ${summary['paidBills'] ?? 0}  •  Partial: ${summary['partialBills'] ?? 0}  •  Unpaid: ${summary['unpaidBills'] ?? 0}',
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      const Divider(height: 28),
+                      ...bills.map((bill) {
+                        final status = (bill['paymentStatus'] ?? 'unpaid').toString();
+                        final color = status == 'paid'
+                            ? successGreen
+                            : status == 'partial'
+                            ? warningOrange
+                            : errorRed;
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          child: ExpansionTile(
+                            title: Text('${bill['TrnSeries'] ?? ''}/${bill['TrnNo'] ?? ''} • ${bill['AcName'] ?? bill['SysAcCode'] ?? ''}'),
+                            subtitle: Text(
+                              'Received ₹${((bill['received'] ?? 0) as num).toStringAsFixed(2)} • Remaining ₹${((bill['remaining'] ?? 0) as num).toStringAsFixed(2)}',
+                            ),
+                            trailing: Text(
+                              status.toUpperCase(),
+                              style: TextStyle(color: color, fontWeight: FontWeight.w900),
+                            ),
+                            children: (bill['payments'] as List? ?? const [])
+                                .whereType<Map>()
+                                .map((payment) {
+                                  final details = payment['payment_details'] is Map
+                                      ? Map<String, dynamic>.from(payment['payment_details'] as Map)
+                                      : <String, dynamic>{};
+                                  final collector = payment['collected_by'] is Map
+                                      ? Map<String, dynamic>.from(payment['collected_by'] as Map)
+                                      : <String, dynamic>{};
+                                  final proof = (
+                                    details['payment_photo_path'] ??
+                                    details['photo_path'] ??
+                                    payment['photo_path'] ??
+                                    ''
+                                  ).toString();
+                                  return ListTile(
+                                    dense: true,
+                                    leading: const Icon(Icons.payments_outlined),
+                                    title: Text(
+                                      '₹${((payment['amount_collected'] ?? 0) as num).toStringAsFixed(2)} • ${payment['payment_mode'] ?? ''}',
+                                    ),
+                                    subtitle: Text(
+                                      '${collector['name'] ?? collector['id'] ?? ''} • ${payment['collection_date'] ?? ''}',
+                                    ),
+                                    trailing: proof.isEmpty
+                                        ? null
+                                        : IconButton(
+                                            tooltip: 'View payment proof',
+                                            onPressed: () => launchUrl(
+                                              ApiService.uploadedFileUri(proof),
+                                              mode: LaunchMode.externalApplication,
+                                            ),
+                                            icon: const Icon(Icons.image_outlined),
+                                          ),
+                                  );
+                                })
+                                .toList(),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      Navigator.pop(context);
+      showSafeSnackBar(
+        context,
+        'Unable to reconcile load: $error',
+        backgroundColor: errorRed,
+      );
+    }
   }
 
   Future<void> _logout() async {
@@ -7763,6 +8220,11 @@ class _DistributorDashboardEnhancedState
                                 12,
                               ),
                               _buildSidebarItem(
+                                Icons.local_shipping_outlined,
+                                'Load Assignment',
+                                13,
+                              ),
+                              _buildSidebarItem(
                                 Icons.download,
                                 'Download Order',
                                 10,
@@ -7842,6 +8304,7 @@ class _DistributorDashboardEnhancedState
             _selectedIndex = index;
             _isSidebarOpen = false;
           });
+          if (index == 13) unawaited(_loadAdminDeliveryLoads());
         }
       },
     );
@@ -8608,6 +9071,8 @@ class _DistributorDashboardEnhancedState
         return _buildPaymentCollectionSection();
       case 10:
         return _buildDownloadOrderSection();
+      case 13:
+        return _buildAdminLoadAssignmentSection();
       default:
         return _buildDashboard();
     }
@@ -10151,6 +10616,93 @@ class _DistributorDashboardEnhancedState
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildAdminLoadAssignmentSection() {
+    return RefreshIndicator(
+      onRefresh: _loadAdminDeliveryLoads,
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            color: Colors.white,
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Load Assignment',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: primaryBlue),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Refresh loads',
+                  onPressed: _isLoadingAdminLoads ? null : _loadAdminDeliveryLoads,
+                  icon: const Icon(Icons.refresh, color: accentTeal),
+                ),
+              ],
+            ),
+          ),
+          if (_isLoadingAdminLoads) const LinearProgressIndicator(minHeight: 2),
+          Expanded(
+            child: _adminDeliveryLoads.isEmpty && !_isLoadingAdminLoads
+                ? ListView(
+                    physics: AlwaysScrollableScrollPhysics(),
+                    children: [
+                      SizedBox(height: 140),
+                      Icon(Icons.local_shipping_outlined, size: 58, color: Colors.grey),
+                      SizedBox(height: 12),
+                      Center(child: Text('No uploaded loads available')),
+                    ],
+                  )
+                : ListView.builder(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _adminDeliveryLoads.length,
+                    itemBuilder: (context, index) {
+                      final load = _adminDeliveryLoads[index];
+                      final bills = load['bills'] is List ? load['bills'] as List : const [];
+                      final assignedName = (load['assignedSalesmanName'] ?? '').toString().trim();
+                      final grouping = (load['groupingMode'] ?? 'none').toString().replaceAll('_', ' + ');
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        child: ListTile(
+                          leading: const CircleAvatar(child: Icon(Icons.local_shipping_outlined)),
+                          title: Text('Load ${load['LoadSeries'] ?? ''}/${load['LoadNo'] ?? ''}'),
+                          subtitle: Text(
+                            '${bills.length} bills\n${assignedName.isEmpty ? 'Unassigned' : 'Assigned to $assignedName'} • Grouping: $grouping',
+                          ),
+                          isThreeLine: true,
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (action) {
+                              if (action == 'assign') _showAssignLoadDialog(load);
+                              if (action == 'payment') _showAdminLoadPaymentDialog(load);
+                              if (action == 'reconcile') {
+                                _showLoadReconciliationDialog(load);
+                              }
+                            },
+                            itemBuilder: (context) => [
+                              PopupMenuItem(
+                                value: 'assign',
+                                child: Text(assignedName.isEmpty ? 'Assign salesman' : 'Reassign salesman'),
+                              ),
+                              const PopupMenuItem(
+                                value: 'payment',
+                                child: Text('Record bill payment'),
+                              ),
+                              const PopupMenuItem(
+                                value: 'reconcile',
+                                child: Text('Payment reconciliation'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
       ),
     );
   }
@@ -13070,6 +13622,84 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
 
                         const SizedBox(height: 18),
                         const Text(
+                          'Payment Proof (Optional)',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF0B1F3A),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                paymentPhoto == null
+                                    ? 'No proof attached'
+                                    : 'Attached: ${paymentPhoto!.name}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: paymentPhoto == null
+                                      ? Colors.grey.shade600
+                                      : const Color(0xFF059669),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 9),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: [
+                                  OutlinedButton.icon(
+                                    onPressed: () async {
+                                      final image = await ImagePicker().pickImage(
+                                        source: ImageSource.camera,
+                                        imageQuality: 75,
+                                      );
+                                      if (image != null) {
+                                        setDialogState(() => paymentPhoto = image);
+                                      }
+                                    },
+                                    icon: const Icon(Icons.photo_camera_outlined),
+                                    label: const Text('Take Photo'),
+                                  ),
+                                  OutlinedButton.icon(
+                                    onPressed: () async {
+                                      final image = await ImagePicker().pickImage(
+                                        source: ImageSource.gallery,
+                                        imageQuality: 75,
+                                      );
+                                      if (image != null) {
+                                        setDialogState(() => paymentPhoto = image);
+                                      }
+                                    },
+                                    icon: const Icon(Icons.photo_library_outlined),
+                                    label: const Text('Gallery'),
+                                  ),
+                                  if (paymentPhoto != null)
+                                    TextButton.icon(
+                                      onPressed: () => setDialogState(
+                                        () => paymentPhoto = null,
+                                      ),
+                                      icon: const Icon(Icons.delete_outline),
+                                      label: const Text('Remove'),
+                                    ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 18),
+                        const Text(
                           'Remark (Optional)',
                           style: TextStyle(
                             fontWeight: FontWeight.w900,
@@ -13219,9 +13849,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                       'transactionNumber': transactionController
                                           .text
                                           .trim(),
-                                      'paymentPhotoPath': paymentPhoto?.path,
                                       'remark': remarkController.text.trim(),
-                                    });
+                                    }, paymentPhoto: paymentPhoto);
 
                                     final newBalance = balance - amount;
 
@@ -13387,6 +14016,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     try {
       final bills = await ApiService.getLoadDeliveries(
         normalizedDistributorId,
+        salesmanId: _currentSalesman.salesmanId ?? _currentSalesman.id,
       );
       if (mounted && generation == _deliveryLoadGeneration) {
         setState(() {
@@ -20732,7 +21362,7 @@ Thank you.
 
   List<Map<String, dynamic>> _activeDeliveryBills() {
     final query = _deliverySearchQuery.trim().toLowerCase();
-    return _deliveryBills
+    final bills = _deliveryBills
         .whereType<Map>()
         .map((bill) => Map<String, dynamic>.from(bill))
         .where((bill) {
@@ -20756,6 +21386,20 @@ Thank you.
           ].join(' ').toLowerCase().contains(query);
         })
         .toList();
+    if (bills.isEmpty) return bills;
+    final mode = (bills.first['groupingMode'] ?? 'none').toString();
+    String groupingValue(Map<String, dynamic> bill) {
+      final company = (bill['CompanyName'] ?? bill['CompanyId'] ?? '').toString();
+      final route = (bill['RouteName'] ?? bill['RouteId'] ?? '').toString();
+      if (mode == 'company') return company;
+      if (mode == 'route') return route;
+      if (mode == 'company_route') return '$company|$route';
+      return '';
+    }
+    if (mode != 'none') {
+      bills.sort((a, b) => groupingValue(a).toLowerCase().compareTo(groupingValue(b).toLowerCase()));
+    }
+    return bills;
   }
 
   List<String> _availableLoadSeries() {
@@ -22219,6 +22863,8 @@ Thank you.
     ]);
     final hasLocation =
         _getBillLatitude(bill) != null && _getBillLongitude(bill) != null;
+    final paymentStatus = (bill['payment_status'] ?? 'unpaid').toString();
+    final paidToAdmin = bill['payment_collected_by_type'] == 'distributor';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 11),
@@ -22306,9 +22952,11 @@ Thank you.
                     ),
                   ),
                   Text(
-                    'Due ₹${balance.toStringAsFixed(0)}',
-                    style: const TextStyle(
-                      color: errorRed,
+                    paymentStatus == 'paid'
+                        ? (paidToAdmin ? 'Paid to Admin' : 'Paid')
+                        : 'Due ₹${balance.toStringAsFixed(0)}',
+                    style: TextStyle(
+                      color: paymentStatus == 'paid' ? successGreen : errorRed,
                       fontSize: 10,
                       fontWeight: FontWeight.w700,
                     ),
@@ -24585,6 +25233,10 @@ class DeliveryGoogleRouteMap extends StatefulWidget {
 }
 
 class _DeliveryGoogleRouteMapState extends State<DeliveryGoogleRouteMap> {
+  static const String _webMapId = String.fromEnvironment(
+    'GOOGLE_MAPS_MAP_ID',
+    defaultValue: 'DEMO_MAP_ID',
+  );
   static final Map<String, BitmapDescriptor> _markerCache = {};
   GoogleMapController? _controller;
   Set<Marker> _markers = const {};
@@ -24816,6 +25468,14 @@ class _DeliveryGoogleRouteMapState extends State<DeliveryGoogleRouteMap> {
       children: [
         Positioned.fill(
           child: GoogleMap(
+            // The JavaScript Maps API deprecated legacy markers. Keep native
+            // Android/iOS behavior unchanged and opt the web renderer into
+            // AdvancedMarkerElement. A cloud map ID can be supplied with
+            // --dart-define=GOOGLE_MAPS_MAP_ID=... for production builds.
+            mapId: kIsWeb ? _webMapId : null,
+            markerType: kIsWeb
+                ? GoogleMapMarkerType.advancedMarker
+                : GoogleMapMarkerType.marker,
             initialCameraPosition: CameraPosition(target: first, zoom: 13),
             mapType: MapType.normal,
             markers: _markers,
