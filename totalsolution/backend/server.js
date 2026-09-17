@@ -45,6 +45,10 @@ const excelUpload = multer({ storage: excelStorage });
 
 // Serve static files for logo
 app.use('/isset', express.static(path.join(__dirname, 'isset')));
+// Payment proofs are stored by multer in this directory. Exposing the files
+// here keeps existing uploads working while allowing the mobile app/admin to
+// display the proof URL returned by the payment APIs.
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Middleware
 app.use(cors({
@@ -148,6 +152,12 @@ await collections.outstanding.createIndex(
   { distributor_id: 1, TrnSeries: 1, TrnNo: 1, SysAcCode: 1 },
   { unique: true }
 );
+await db.collection('Mas_Delivery').createIndex({
+  distributorId: 1,
+  assignedSalesmanId: 1,
+  LoadSeries: 1,
+  LoadNo: 1
+});
         console.log('Indexes created successfully');
     } catch (error) {
         console.error('MongoDB connection error:', error);
@@ -5669,7 +5679,7 @@ app.put('/api/outstanding/delivery-status', async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 });
-app.post('/api/outstanding/collect-payment', async (req, res) => {
+app.post('/api/outstanding/collect-payment', upload.single('paymentPhoto'), async (req, res) => {
   try {
     console.log(
       'COLLECTION PAYMENT REQUEST:',
@@ -5682,6 +5692,14 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
 
     const salesmanId = String(
       req.body.salesmanId || ''
+    ).trim();
+
+    const collectedByType = String(
+      req.body.collectedByType || 'salesman'
+    ).trim().toLowerCase();
+
+    const collectedById = String(
+      req.body.collectedById || salesmanId || distributorId
     ).trim();
 
     const salesmanNameFromRequest = String(
@@ -5734,7 +5752,7 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
       });
     }
 
-    if (!salesmanId) {
+    if (collectedByType === 'salesman' && !salesmanId) {
       return res.status(400).json({
         success: false,
         field: 'salesmanId',
@@ -5839,8 +5857,12 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
       $and: [
         {
           $or: billNoConditions
-        },
-        {
+        }
+      ]
+    };
+
+    if (salesmanId) {
+      outstandingFilter.$and.push({
           $or: [
             {
               salesman_id: salesmanId
@@ -5857,9 +5879,8 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
               salesman_id: null
             }
           ]
-        }
-      ]
-    };
+        });
+    }
 
     if (billSeries) {
       outstandingFilter.TrnSeries = billSeries;
@@ -5993,6 +6014,20 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
     const collectionId = generateCollectionId();
     const now = new Date().toISOString();
 
+    // Resolve the load on the server from the stable bill identity. This keeps
+    // reconciliation correct even when payment is started from Outstanding
+    // rather than from the Load Delivery screen.
+    const matchingLoad = await db.collection('Mas_Delivery').findOne({
+      distributorId,
+      bills: {
+        $elemMatch: {
+          TrnNo: { $in: Number.isFinite(numericBillNo) ? [billNo, numericBillNo] : [billNo] },
+          SysAcCode: sysAcCode,
+          ...(billSeries ? { TrnSeries: billSeries } : {})
+        }
+      }
+    }, { projection: { LoadSeries: 1, LoadNo: 1 } });
+
     // ============================================================
     // PAYMENT DOCUMENT
     // ============================================================
@@ -6004,15 +6039,19 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
       distributor_id: distributorId,
       distributor_name: distributorName,
 
-      salesman_details: {
+      salesman_details: salesmanId ? {
         id: salesmanId,
         name: salesmanName || salesmanId
-      },
+      } : null,
 
       collected_by: {
-        type: 'salesman',
-        id: salesmanId,
-        name: salesmanName || salesmanId,
+        type: collectedByType === 'distributor' || collectedByType === 'admin'
+          ? 'distributor'
+          : 'salesman',
+        id: collectedById,
+        name: collectedByType === 'distributor' || collectedByType === 'admin'
+          ? (distributorName || collectedById)
+          : (salesmanName || salesmanId),
         time: now
       },
 
@@ -6043,11 +6082,18 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
           finalNewBalance
       },
 
+      load_details: matchingLoad ? {
+        load_id: matchingLoad._id.toString(),
+        load_series: matchingLoad.LoadSeries ?? '',
+        load_no: matchingLoad.LoadNo
+      } : null,
+
       payment_mode: paymentMode,
 
       payment_details: {
         cash_amount: cashAmount,
         cheque_amount: chequeAmount,
+        upi_amount: paymentMode.toLowerCase() === 'upi' ? amountCollected : 0,
 
         cheque_number:
           String(
@@ -6074,10 +6120,9 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
             req.body.transactionNumber || ''
           ).trim() || null,
 
-        payment_photo_path:
-          String(
-            req.body.paymentPhotoPath || ''
-          ).trim() || null
+        payment_photo_path: req.file
+          ? `/uploads/${path.basename(req.file.path)}`
+          : (String(req.body.paymentPhotoPath || '').trim() || null)
       },
 
       amount_collected: amountCollected,
@@ -6146,6 +6191,41 @@ app.post('/api/outstanding/collect-payment', async (req, res) => {
         await collections.payment.insertOne(
           paymentDoc
         );
+
+      // Keep the load-delivery copy of this bill in sync with the canonical
+      // outstanding balance. Delivery and payment are deliberately separate
+      // states, so receiving payment never changes delivery_status.
+      try {
+        await db.collection('Mas_Delivery').updateOne(
+        {
+          distributorId,
+          bills: {
+            $elemMatch: {
+              TrnNo: { $in: Number.isFinite(numericBillNo) ? [billNo, numericBillNo] : [billNo] },
+              SysAcCode: sysAcCode,
+              ...(billSeries ? { TrnSeries: billSeries } : {})
+            }
+          }
+        },
+        {
+          $set: {
+            'bills.$.paid_amount': Number(
+              (Number(outstandingBill.Amt ?? databaseBalance) - finalNewBalance).toFixed(2)
+            ),
+            'bills.$.balance_amount': finalNewBalance,
+            'bills.$.payment_status': finalNewBalance <= 0 ? 'paid' : 'partial',
+            'bills.$.last_payment_date': now,
+            'bills.$.last_payment_id': paymentResult.insertedId,
+            'bills.$.last_payment_proof': paymentDoc.payment_details.payment_photo_path,
+            'bills.$.payment_collected_by_type': paymentDoc.collected_by.type
+          }
+        }
+        );
+      } catch (deliverySyncError) {
+        // Payment/outstanding are already saved; returning a failure here
+        // would encourage a duplicate collection retry.
+        console.error('Load payment status sync failed:', deliverySyncError);
+      }
 
       return res.status(201).json({
         success: true,
@@ -6311,6 +6391,10 @@ app.post('/api/load-delivery/upload', async (req, res) => {
                 SysAcCode: sysAcCode,
                 AcName: String(bill?.AcName ?? '').trim(),
                 BillAmount: billAmount,
+                CompanyId: String(bill?.CompanyId ?? bill?.companyId ?? '').trim(),
+                CompanyName: String(bill?.CompanyName ?? bill?.companyName ?? bill?.Company ?? '').trim(),
+                RouteId: String(bill?.RouteId ?? bill?.routeId ?? '').trim(),
+                RouteName: String(bill?.RouteName ?? bill?.routeName ?? bill?.Route ?? '').trim(),
                 GeoLatitude:
                     bill?.GeoLatitude === null || bill?.GeoLatitude === undefined
                         ? ''
@@ -6350,11 +6434,46 @@ app.post('/api/load-delivery/upload', async (req, res) => {
             LoadNo: requestLoadNo,
             bills: deliveryBills,
             uploadType: 'LOAD_DELIVERY',
-            uploadedAt
+            uploadedAt,
+            assignedSalesmanId: null,
+            assignedSalesmanName: null,
+            assignmentStatus: 'unassigned',
+            groupingMode: 'none'
         };
         let loadDocumentId;
 
         if (existingLoad) {
+            // Preserve assignment and delivery/payment progress when a desktop
+            // client uploads the same load again.
+            const previousLoad = await deliveryCollection.findOne({ _id: existingLoad._id });
+            const previousBills = Array.isArray(previousLoad?.bills) ? previousLoad.bills : [];
+            deliveryDocument.bills = deliveryBills.map((bill) => {
+                const previous = previousBills.find((value) =>
+                    String(value.TrnSeries ?? '') === String(bill.TrnSeries ?? '') &&
+                    String(value.TrnNo ?? '') === String(bill.TrnNo ?? '') &&
+                    String(value.SysAcCode ?? '') === String(bill.SysAcCode ?? '')
+                );
+                return previous ? {
+                    ...bill,
+                    delivery_status: previous.delivery_status ?? bill.delivery_status,
+                    delivered_at: previous.delivered_at,
+                    payment_status: previous.payment_status,
+                    paid_amount: previous.paid_amount,
+                    balance_amount: previous.balance_amount,
+                    last_payment_date: previous.last_payment_date,
+                    last_payment_id: previous.last_payment_id,
+                    last_payment_proof: previous.last_payment_proof,
+                    payment_collected_by_type: previous.payment_collected_by_type
+                } : bill;
+            });
+            Object.assign(deliveryDocument, {
+                assignedSalesmanId: previousLoad?.assignedSalesmanId ?? null,
+                assignedSalesmanName: previousLoad?.assignedSalesmanName ?? null,
+                assignedBy: previousLoad?.assignedBy ?? null,
+                assignedAt: previousLoad?.assignedAt ?? null,
+                assignmentStatus: previousLoad?.assignmentStatus ?? 'unassigned',
+                groupingMode: previousLoad?.groupingMode ?? 'none'
+            });
             await deliveryCollection.replaceOne(
                 { _id: existingLoad._id },
                 deliveryDocument
@@ -6408,9 +6527,13 @@ app.get('/api/load-delivery/:distributorId', async (req, res) => {
             });
         }
 
+        const salesmanId = String(req.query.salesmanId ?? '').trim();
+        const filter = { distributorId };
+        if (salesmanId) filter.assignedSalesmanId = salesmanId;
+
         const loads = await db
             .collection('Mas_Delivery')
-            .find({ distributorId })
+            .find(filter)
             .sort({ uploadedAt: -1, LoadNo: -1 })
             .toArray();
 
@@ -6422,6 +6545,156 @@ app.get('/api/load-delivery/:distributorId', async (req, res) => {
             message: error.message || 'Unable to load delivery records',
             loads: []
         });
+    }
+});
+
+// Distributor/admin-only UI calls this endpoint. The salesman is validated
+// against the distributor before the assignment is stored.
+app.put('/api/load-delivery/:loadId/assign', async (req, res) => {
+    try {
+        const loadId = String(req.params.loadId ?? '').trim();
+        const distributorId = String(req.body?.distributorId ?? '').trim();
+        const salesmanId = String(req.body?.salesmanId ?? '').trim();
+        const groupingMode = String(req.body?.groupingMode ?? 'none').trim();
+        const allowedModes = new Set(['none', 'company', 'route', 'company_route']);
+        if (!ObjectId.isValid(loadId) || !distributorId || !salesmanId || !allowedModes.has(groupingMode)) {
+            return res.status(400).json({ success: false, message: 'Valid load, distributor, salesman and grouping mode are required' });
+        }
+        const salesman = await collections.salesman.findOne({
+            salesman_id: salesmanId,
+            distributor_id: distributorId,
+            status: { $ne: 'inactive' }
+        });
+        if (!salesman) {
+            return res.status(404).json({ success: false, message: 'Salesman does not belong to this distributor' });
+        }
+        const assignedAt = new Date();
+        const result = await db.collection('Mas_Delivery').updateOne(
+            { _id: new ObjectId(loadId), distributorId },
+            { $set: {
+                assignedSalesmanId: salesmanId,
+                assignedSalesmanName: salesman.name ?? salesman.salesman_name ?? salesmanId,
+                assignedBy: distributorId,
+                assignedAt,
+                assignmentStatus: 'assigned',
+                groupingMode
+            } }
+        );
+        if (!result.matchedCount) return res.status(404).json({ success: false, message: 'Load not found' });
+        return res.json({ success: true, message: 'Load assigned successfully', assignedAt });
+    } catch (error) {
+        console.error('Load assignment error:', error);
+        return res.status(500).json({ success: false, message: error.message || 'Unable to assign load' });
+    }
+});
+
+app.get('/api/load-delivery/:loadId/reconciliation', async (req, res) => {
+    try {
+        const loadId = String(req.params.loadId ?? '').trim();
+        const distributorId = String(req.query.distributorId ?? '').trim();
+        if (!ObjectId.isValid(loadId) || !distributorId) {
+            return res.status(400).json({ success: false, message: 'Valid load and distributor are required' });
+        }
+
+        const load = await db.collection('Mas_Delivery').findOne({
+            _id: new ObjectId(loadId),
+            distributorId
+        });
+        if (!load) return res.status(404).json({ success: false, message: 'Load not found' });
+
+        const bills = Array.isArray(load.bills) ? load.bills : [];
+        const billQueries = bills.map((bill) => ({
+            'bill_details.bill_series': String(bill.TrnSeries ?? ''),
+            'bill_details.bill_no': String(bill.TrnNo ?? ''),
+            'bill_details.sys_ac_code': String(bill.SysAcCode ?? '')
+        }));
+        const paymentQuery = {
+            distributor_id: distributorId,
+            status: { $nin: ['cancelled', 'reversed', 'bounced'] },
+            $or: [
+                { 'load_details.load_id': loadId },
+                ...billQueries
+            ]
+        };
+        const payments = billQueries.length === 0
+            ? []
+            : await collections.payment.find(paymentQuery).sort({ collection_date: -1 }).toArray();
+
+        const amount = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+        const normalizedMode = (payment) => String(payment.payment_mode ?? '').trim().toLowerCase();
+        let cashReceived = 0;
+        let chequeReceived = 0;
+        let upiReceived = 0;
+        let bankTransferReceived = 0;
+        for (const payment of payments) {
+            const total = amount(payment.amount_collected);
+            const details = payment.payment_details ?? payment.payment_modes_details ?? {};
+            const mode = normalizedMode(payment);
+            const cash = amount(details.cash_amount);
+            const cheque = amount(details.cheque_amount);
+            const upi = amount(details.upi_amount);
+            cashReceived += cash || (mode === 'cash' ? total : 0);
+            chequeReceived += cheque || (mode === 'cheque' ? total : 0);
+            upiReceived += upi || (mode === 'upi' ? total : 0);
+            bankTransferReceived += mode === 'bank transfer' || mode === 'banktransfer' ? total : 0;
+        }
+
+        const billRows = bills.map((bill) => {
+            const matchingPayments = payments.filter((payment) =>
+                String(payment.bill_details?.bill_series ?? '') === String(bill.TrnSeries ?? '') &&
+                String(payment.bill_details?.bill_no ?? '') === String(bill.TrnNo ?? '') &&
+                String(payment.bill_details?.sys_ac_code ?? '') === String(bill.SysAcCode ?? '')
+            );
+            const billAmount = amount(bill.BillAmount);
+            const received = matchingPayments.reduce((sum, payment) => sum + amount(payment.amount_collected), 0);
+            const remaining = Math.max(0, amount(
+                bill.balance_amount ?? (billAmount - received)
+            ));
+            return {
+                TrnSeries: bill.TrnSeries,
+                TrnNo: bill.TrnNo,
+                SysAcCode: bill.SysAcCode,
+                AcName: bill.AcName,
+                billAmount,
+                received,
+                remaining,
+                deliveryStatus: bill.delivery_status ?? 'pending',
+                paymentStatus: remaining <= 0 ? 'paid' : (received > 0 ? 'partial' : 'unpaid'),
+                payments: matchingPayments
+            };
+        });
+        const totalLoadAmount = billRows.reduce((sum, bill) => sum + bill.billAmount, 0);
+        const totalReceived = payments.reduce((sum, payment) => sum + amount(payment.amount_collected), 0);
+        const totalRemaining = billRows.reduce((sum, bill) => sum + bill.remaining, 0);
+
+        return res.json({
+            success: true,
+            load: {
+                id: loadId,
+                loadSeries: load.LoadSeries,
+                loadNo: load.LoadNo,
+                assignedSalesmanId: load.assignedSalesmanId,
+                assignedSalesmanName: load.assignedSalesmanName
+            },
+            summary: {
+                totalLoadAmount,
+                totalReceived,
+                totalRemaining,
+                cashReceived,
+                chequeReceived,
+                upiReceived,
+                bankTransferReceived,
+                totalBills: billRows.length,
+                paidBills: billRows.filter((bill) => bill.paymentStatus === 'paid').length,
+                partialBills: billRows.filter((bill) => bill.paymentStatus === 'partial').length,
+                unpaidBills: billRows.filter((bill) => bill.paymentStatus === 'unpaid').length
+            },
+            bills: billRows,
+            payments
+        });
+    } catch (error) {
+        console.error('Load reconciliation error:', error);
+        return res.status(500).json({ success: false, message: error.message || 'Unable to reconcile load' });
     }
 });
 
