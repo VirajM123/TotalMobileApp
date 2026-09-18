@@ -505,36 +505,106 @@ app.get('/api/collection-history/distributor/:distributorId', async (req, res) =
                 if (pId && !existingIds.has(pId)) {
                     existingIds.add(pId);
                     collectionRecords.push({
-                        _id: p._id,
-                        collection_id: pId,
-                        order_id: p.order_id || p.bill_no || (p.bill_details && p.bill_details.bill_no) || '',
-                        order_amount: p.order_amount || p.amount_collected || p.payment_amount || 0,
-                        order_amount: p.order_amount || (p.bill_details && p.bill_details.bill_amount) || p.amount_collected || p.payment_amount || 0,
-                        amount_collected: p.amount_collected || p.payment_amount || 0,
-                        payment_mode: p.payment_mode || 'Cash',
-                        customer_id: p.customer_id || '',
-                        customer_name: p.customer_name || '',
-                        customer_id: p.customer_id || (p.bill_details && p.bill_details.sys_ac_code) || '',
-                        customer_name: p.customer_name || (p.bill_details && p.bill_details.customer_name) || '',
-                        distributor_id: p.distributor_id || distributorId,
-                        collected_by: p.collected_by || { type: 'salesman', id: p.salesman_id, name: p.salesman_name },
-                        salesman_details: p.salesman_details || (p.salesman_id ? { id: p.salesman_id, name: p.salesman_name } : null),
-                        bill_no: p.bill_no || p.order_id || '',
-                        bill_no: p.bill_no || (p.bill_details && p.bill_details.bill_no) || p.order_id || '',
-                        collection_date: p.collection_date || p.created_at || new Date().toISOString(),
-                        created_at: p.created_at || p.collection_date || new Date().toISOString(),
-                        status: p.status || 'completed',
-                        cheque_number: p.cheque_number || p.reference_number,
-                        bank_name: p.bank_name,
-                        cheque_date: p.cheque_date,
-                        upi_type: p.upi_type,
-                        transaction_number: p.transaction_number || p.reference_number
-                        cheque_number: p.cheque_number || (p.payment_details && p.payment_details.cheque_number) || p.reference_number,
-                        bank_name: p.bank_name || (p.payment_details && p.payment_details.bank_name),
-                        cheque_date: p.cheque_date || (p.payment_details && p.payment_details.cheque_date),
-                        upi_type: p.upi_type || (p.payment_details && p.payment_details.upi_app),
-                        transaction_number: p.transaction_number || (p.payment_details && p.payment_details.transaction_number) || p.reference_number
-                    });
+    _id: p._id,
+    collection_id: pId,
+
+    order_id:
+        p.order_id ||
+        p.bill_no ||
+        (p.bill_details && p.bill_details.bill_no) ||
+        '',
+
+    order_amount:
+        p.order_amount ||
+        (p.bill_details && p.bill_details.bill_amount) ||
+        p.amount_collected ||
+        p.payment_amount ||
+        0,
+
+    amount_collected:
+        p.amount_collected ||
+        p.payment_amount ||
+        0,
+
+    payment_mode:
+        p.payment_mode ||
+        'Cash',
+
+    customer_id:
+        p.customer_id ||
+        (p.bill_details && p.bill_details.sys_ac_code) ||
+        '',
+
+    customer_name:
+        p.customer_name ||
+        (p.bill_details && p.bill_details.customer_name) ||
+        '',
+
+    distributor_id:
+        p.distributor_id ||
+        distributorId,
+
+    collected_by:
+        p.collected_by ||
+        {
+            type: 'salesman',
+            id: p.salesman_id,
+            name: p.salesman_name
+        },
+
+    salesman_details:
+        p.salesman_details ||
+        (
+            p.salesman_id
+                ? {
+                    id: p.salesman_id,
+                    name: p.salesman_name
+                }
+                : null
+        ),
+
+    bill_no:
+        p.bill_no ||
+        (p.bill_details && p.bill_details.bill_no) ||
+        p.order_id ||
+        '',
+
+    collection_date:
+        p.collection_date ||
+        p.created_at ||
+        new Date().toISOString(),
+
+    created_at:
+        p.created_at ||
+        p.collection_date ||
+        new Date().toISOString(),
+
+    status:
+        p.status ||
+        'completed',
+
+    cheque_number:
+        p.cheque_number ||
+        (p.payment_details && p.payment_details.cheque_number) ||
+        p.reference_number,
+
+    bank_name:
+        p.bank_name ||
+        (p.payment_details && p.payment_details.bank_name),
+
+    cheque_date:
+        p.cheque_date ||
+        (p.payment_details && p.payment_details.cheque_date),
+
+    upi_type:
+        p.upi_type ||
+        (p.payment_details && p.payment_details.upi_app),
+
+    transaction_number:
+        p.transaction_number ||
+        (p.payment_details && p.payment_details.transaction_number) ||
+        p.reference_number
+});
                 }
             }
         } catch (paymentErr) {
@@ -699,37 +769,107 @@ app.get('/api/collection-history/salesman/:salesmanId', async (req, res) => {
                 const pId = p.collection_id || (p._id && p._id.toString());
                 if (pId && !existingIds.has(pId)) {
                     existingIds.add(pId);
-                    collectionRecords.push({
-                        _id: p._id,
-                        collection_id: pId,
-                        order_id: p.order_id || p.bill_no || (p.bill_details && p.bill_details.bill_no) || '',
-                        order_amount: p.order_amount || p.amount_collected || p.payment_amount || 0,
-                        order_amount: p.order_amount || (p.bill_details && p.bill_details.bill_amount) || p.amount_collected || p.payment_amount || 0,
-                        amount_collected: p.amount_collected || p.payment_amount || 0,
-                        payment_mode: p.payment_mode || 'Cash',
-                        customer_id: p.customer_id || '',
-                        customer_name: p.customer_name || '',
-                        customer_id: p.customer_id || (p.bill_details && p.bill_details.sys_ac_code) || '',
-                        customer_name: p.customer_name || (p.bill_details && p.bill_details.customer_name) || '',
-                        distributor_id: p.distributor_id || '',
-                        collected_by: p.collected_by || { type: 'salesman', id: p.salesman_id, name: p.salesman_name },
-                        salesman_details: p.salesman_details || (p.salesman_id ? { id: p.salesman_id, name: p.salesman_name } : null),
-                        bill_no: p.bill_no || p.order_id || '',
-                        bill_no: p.bill_no || (p.bill_details && p.bill_details.bill_no) || p.order_id || '',
-                        collection_date: p.collection_date || p.created_at || new Date().toISOString(),
-                        created_at: p.created_at || p.collection_date || new Date().toISOString(),
-                        status: p.status || 'completed',
-                        cheque_number: p.cheque_number || p.reference_number,
-                        bank_name: p.bank_name,
-                        cheque_date: p.cheque_date,
-                        upi_type: p.upi_type,
-                        transaction_number: p.transaction_number || p.reference_number
-                        cheque_number: p.cheque_number || (p.payment_details && p.payment_details.cheque_number) || p.reference_number,
-                        bank_name: p.bank_name || (p.payment_details && p.payment_details.bank_name),
-                        cheque_date: p.cheque_date || (p.payment_details && p.payment_details.cheque_date),
-                        upi_type: p.upi_type || (p.payment_details && p.payment_details.upi_app),
-                        transaction_number: p.transaction_number || (p.payment_details && p.payment_details.transaction_number) || p.reference_number
-                    });
+                   collectionRecords.push({
+    _id: p._id,
+    collection_id: pId,
+
+    order_id:
+        p.order_id ||
+        p.bill_no ||
+        (p.bill_details && p.bill_details.bill_no) ||
+        '',
+
+    order_amount:
+        p.order_amount ||
+        (p.bill_details && p.bill_details.bill_amount) ||
+        p.amount_collected ||
+        p.payment_amount ||
+        0,
+
+    amount_collected:
+        p.amount_collected ||
+        p.payment_amount ||
+        0,
+
+    payment_mode:
+        p.payment_mode ||
+        'Cash',
+
+    customer_id:
+        p.customer_id ||
+        (p.bill_details && p.bill_details.sys_ac_code) ||
+        '',
+
+    customer_name:
+        p.customer_name ||
+        (p.bill_details && p.bill_details.customer_name) ||
+        '',
+
+    distributor_id:
+        p.distributor_id ||
+        '',
+
+    collected_by:
+        p.collected_by ||
+        {
+            type: 'salesman',
+            id: p.salesman_id,
+            name: p.salesman_name
+        },
+
+    salesman_details:
+        p.salesman_details ||
+        (
+            p.salesman_id
+                ? {
+                    id: p.salesman_id,
+                    name: p.salesman_name
+                }
+                : null
+        ),
+
+    bill_no:
+        p.bill_no ||
+        (p.bill_details && p.bill_details.bill_no) ||
+        p.order_id ||
+        '',
+
+    collection_date:
+        p.collection_date ||
+        p.created_at ||
+        new Date().toISOString(),
+
+    created_at:
+        p.created_at ||
+        p.collection_date ||
+        new Date().toISOString(),
+
+    status:
+        p.status ||
+        'completed',
+
+    cheque_number:
+        p.cheque_number ||
+        (p.payment_details && p.payment_details.cheque_number) ||
+        p.reference_number,
+
+    bank_name:
+        p.bank_name ||
+        (p.payment_details && p.payment_details.bank_name),
+
+    cheque_date:
+        p.cheque_date ||
+        (p.payment_details && p.payment_details.cheque_date),
+
+    upi_type:
+        p.upi_type ||
+        (p.payment_details && p.payment_details.upi_app),
+
+    transaction_number:
+        p.transaction_number ||
+        (p.payment_details && p.payment_details.transaction_number) ||
+        p.reference_number
+});
                 }
             }
         } catch (pErr) {
