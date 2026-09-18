@@ -383,7 +383,7 @@ class CollectionHistoryModel {
     required this.paymentMode,
     required this.customerId,
     required this.customerName,
-    required this.distributorId,
+    this.distributorId = '',
     required this.collectedBy,
     this.salesmanDetails,
     required this.billNo,
@@ -398,35 +398,54 @@ class CollectionHistoryModel {
   });
 
   factory CollectionHistoryModel.fromMap(Map<String, dynamic> map, String id) {
+    DateTime parseDate(dynamic val) {
+      if (val == null) return DateTime.now();
+      if (val is DateTime) return val;
+      return DateTime.tryParse(val.toString()) ?? DateTime.now();
+    }
+
+    double parseDouble(dynamic val) {
+      if (val == null) return 0.0;
+      if (val is num) return val.toDouble();
+      return double.tryParse(val.toString()) ?? 0.0;
+    }
+
+    Map<String, dynamic>? parseSalesmanDetails() {
+      if (map['salesman_details'] is Map) {
+        return Map<String, dynamic>.from(map['salesman_details'] as Map);
+      }
+      if (map['salesman_id'] != null) {
+        return {
+          'id': map['salesman_id'].toString(),
+          'name': (map['salesman_name'] ?? 'Salesman').toString(),
+        };
+      }
+      return null;
+    }
+
     return CollectionHistoryModel(
       id: id,
-      collectionId: map['collection_id'] ?? '',
-      orderId: map['order_id'] ?? '',
-      orderAmount: (map['order_amount'] ?? 0).toDouble(),
-      amountCollected: (map['amount_collected'] ?? 0).toDouble(),
-      paymentMode: map['payment_mode'] ?? '',
-      customerId: map['customer_id'] ?? '',
-      customerName: map['customer_name'] ?? '',
-      distributorId: map['distributor_id'] ?? '',
+      collectionId: map['collection_id']?.toString() ?? '',
+      orderId: map['order_id']?.toString() ?? '',
+      orderAmount: parseDouble(map['order_amount'] ?? map['order_total']),
+      amountCollected: parseDouble(map['amount_collected'] ?? map['payment_amount']),
+      paymentMode: map['payment_mode']?.toString() ?? 'Cash',
+      customerId: map['customer_id']?.toString() ?? '',
+      customerName: map['customer_name']?.toString() ?? '',
+      distributorId: map['distributor_id']?.toString() ?? '',
       collectedBy: map['collected_by'] is Map
           ? Map<String, dynamic>.from(map['collected_by'] as Map)
           : <String, dynamic>{},
-      salesmanDetails: map['salesman_details'] is Map
-          ? Map<String, dynamic>.from(map['salesman_details'] as Map)
-          : null,
-      billNo: map['bill_no'] ?? '',
-      collectionDate: map['collection_date'] != null
-          ? DateTime.parse(map['collection_date'])
-          : DateTime.now(),
-      createdAt: map['created_at'] != null
-          ? DateTime.parse(map['created_at'])
-          : DateTime.now(),
-      status: map['status'] ?? 'completed',
-      chequeNumber: map['cheque_number'],
-      bankName: map['bank_name'],
-      chequeDate: map['cheque_date'],
-      upiType: map['upi_type'],
-      transactionNumber: map['transaction_number'],
+      salesmanDetails: parseSalesmanDetails(),
+      billNo: (map['bill_no'] ?? map['order_id'] ?? '').toString(),
+      collectionDate: parseDate(map['collection_date'] ?? map['created_at']),
+      createdAt: parseDate(map['created_at'] ?? map['collection_date']),
+      status: map['status']?.toString() ?? 'completed',
+      chequeNumber: map['cheque_number']?.toString() ?? map['reference_number']?.toString(),
+      bankName: map['bank_name']?.toString(),
+      chequeDate: map['cheque_date']?.toString(),
+      upiType: map['upi_type']?.toString(),
+      transactionNumber: map['transaction_number']?.toString() ?? map['reference_number']?.toString(),
     );
   }
 }
@@ -3012,8 +3031,11 @@ class CollectionHistoryService {
 
   List<CollectionHistoryModel> get collections => _collections;
   Map<String, dynamic> get summary => _summary;
-  double get totalCollected => _summary['total_collected'] ?? 0.0;
-  int get totalTransactions => _summary['total_transactions'] ?? 0;
+  double get totalCollected => (_summary['total_collected'] ?? 0.0).toDouble();
+  int get totalTransactions => (_summary['total_transactions'] ?? 0).toInt();
+  double get cashCollected => (_summary['cash_collected'] ?? 0.0).toDouble();
+  double get chequeCollected => (_summary['cheque_collected'] ?? 0.0).toDouble();
+  double get upiCollected => (_summary['upi_collected'] ?? 0.0).toDouble();
   List<dynamic> get salesmanWise => _summary['salesman_wise'] ?? [];
 }
 
@@ -3655,36 +3677,66 @@ class _ImportMasterDataDialogState extends State<ImportMasterDataDialog> {
   }
 }
 
-// ==================== COLLECTION HISTORY DIALOG ====================
-class CollectionHistoryDialog extends StatefulWidget {
+// ==================== COLLECTION HISTORY VIEW & DIALOG ====================
+
+class _SalesmanSummaryItem {
+  final String id;
+  final String name;
+  final String route;
+  final String code;
+  final double totalCollected;
+  final double cashCollected;
+  final double chequeCollected;
+  final double upiCollected;
+  final int transactionCount;
+  final DateTime? lastCollectionDate;
+  final List<CollectionHistoryModel> collections;
+
+  _SalesmanSummaryItem({
+    required this.id,
+    required this.name,
+    required this.route,
+    required this.code,
+    required this.totalCollected,
+    required this.cashCollected,
+    required this.chequeCollected,
+    required this.upiCollected,
+    required this.transactionCount,
+    this.lastCollectionDate,
+    required this.collections,
+  });
+}
+
+class CollectionHistoryView extends StatefulWidget {
   final CollectionHistoryService collectionHistoryService;
   final List<SalesmanModel> salesmen;
   final bool isDistributor;
+  final UserModel? currentDistributor;
+  final UserModel? currentSalesman;
+  final VoidCallback? onClose;
 
-  const CollectionHistoryDialog({
+  const CollectionHistoryView({
     super.key,
     required this.collectionHistoryService,
     required this.salesmen,
     required this.isDistributor,
+    this.currentDistributor,
+    this.currentSalesman,
+    this.onClose,
   });
 
   @override
-  State<CollectionHistoryDialog> createState() =>
-      _CollectionHistoryDialogState();
+  State<CollectionHistoryView> createState() => _CollectionHistoryViewState();
 }
 
-class _CollectionHistoryDialogState extends State<CollectionHistoryDialog> {
+class _CollectionHistoryViewState extends State<CollectionHistoryView> {
   DateTime? _startDate;
   DateTime? _endDate;
   String? _selectedSalesmanId;
+  String _selectedPaymentMode = 'All'; // 'All', 'Cash', 'Cheque', 'UPI'
   bool _isLoading = false;
   List<CollectionHistoryModel> _collections = [];
-  Map<String, dynamic> _summary = {};
-  String? _reconciliationMessage;
-  bool _showReconcile = false;
-  final TextEditingController _expectedAmountController =
-      TextEditingController();
-
+  String? _expandedSalesmanId;
   @override
   void initState() {
     super.initState();
@@ -3692,289 +3744,379 @@ class _CollectionHistoryDialogState extends State<CollectionHistoryDialog> {
   }
 
   Future<void> _loadCollections() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     try {
-      final data = await widget.collectionHistoryService.getCollectionHistory(
+      final sId = widget.isDistributor
+          ? _selectedSalesmanId
+          : (widget.currentSalesman?.salesmanId ?? widget.currentSalesman?.id);
+
+      await widget.collectionHistoryService.getCollectionHistory(
         startDate: _startDate,
         endDate: _endDate,
-        salesmanId: _selectedSalesmanId,
+        salesmanId: sId,
       );
-      setState(() {
-        _collections = widget.collectionHistoryService.collections;
-        _summary = widget.collectionHistoryService.summary;
-        _isLoading = false;
-      });
+
+      if (mounted) {
+        setState(() {
+          _collections = widget.collectionHistoryService.collections;
+          _isLoading = false;
+        });
+      }
     } catch (e) {
-      setState(() => _isLoading = false);
-      showSafeSnackBar(
-        context,
-        'Error loading collections: $e',
-        backgroundColor: Colors.red,
-      );
+      if (mounted) {
+        setState(() {
+          _collections = [];
+          _isLoading = false;
+        });
+      }
     }
   }
 
-  Future<void> _reconcileCollections() async {
-    if (_expectedAmountController.text.isEmpty) {
-      showSafeSnackBar(
-        context,
-        'Please enter expected amount',
-        backgroundColor: Colors.red,
+  String _formatCurrency(double amount) {
+    final int rounded = amount.round();
+    final bool isNegative = rounded < 0;
+    final String absStr = rounded.abs().toString();
+    if (absStr.length <= 3) {
+      return '${isNegative ? '-' : ''}₹ $absStr';
+    }
+    final String last3 = absStr.substring(absStr.length - 3);
+    final String remaining = absStr.substring(0, absStr.length - 3);
+    final StringBuffer buffer = StringBuffer();
+    for (int i = 0; i < remaining.length; i++) {
+      if (i > 0 && (remaining.length - i) % 2 == 0) {
+        buffer.write(',');
+      }
+      buffer.write(remaining[i]);
+    }
+    return '${isNegative ? '-' : ''}₹ ${buffer.toString()},$last3';
+  }
+
+  String _formatDate(DateTime? dt) {
+    if (dt == null) return 'All Dates';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final day = dt.day.toString().padLeft(2, '0');
+    final month = months[dt.month - 1];
+    return '$day $month ${dt.year}';
+  }
+
+  String _formatTime(DateTime? dt) {
+    if (dt == null) return '';
+    final hour = dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final period = dt.hour >= 12 ? 'PM' : 'AM';
+    return '${hour.toString().padLeft(2, '0')}:$minute $period';
+  }
+
+  String _formatDateTime(DateTime? dt) {
+    if (dt == null) return 'N/A';
+    return '${_formatDate(dt)}, ${_formatTime(dt)}';
+  }
+
+  Color _getAvatarBg(int index) {
+    const bgs = [
+      Color(0xFFE0F2FE),
+      Color(0xFFDCFCE7),
+      Color(0xFFFFE4E6),
+      Color(0xFFF3E8FF),
+      Color(0xFFFFEDD5),
+      Color(0xFFCCFBF1),
+    ];
+    return bgs[index % bgs.length];
+  }
+
+  Color _getAvatarFg(int index) {
+    const fgs = [
+      Color(0xFF0284C7),
+      Color(0xFF16A34A),
+      Color(0xFFE11D48),
+      Color(0xFF7C3AED),
+      Color(0xFFEA580C),
+      Color(0xFF0D9488),
+    ];
+    return fgs[index % fgs.length];
+  }
+
+  Future<void> _pickStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _startDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+    );
+    if (picked != null) {
+      setState(() => _startDate = picked);
+      _loadCollections();
+    }
+  }
+
+  Future<void> _pickEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+    );
+    if (picked != null) {
+      setState(() => _endDate = picked);
+      _loadCollections();
+    }
+  }
+
+  List<CollectionHistoryModel> _getFilteredCollections() {
+    return _collections.where((c) {
+      // 1. Salesman filter (Distributor only)
+      if (widget.isDistributor && _selectedSalesmanId != null && _selectedSalesmanId != 'all') {
+        final sId = c.salesmanDetails?['id']?.toString() ?? c.collectedBy['id']?.toString();
+        final sCode = c.salesmanDetails?['code']?.toString();
+        final sName = c.salesmanDetails?['name']?.toString();
+        if (sId != _selectedSalesmanId && sCode != _selectedSalesmanId && sName != _selectedSalesmanId) {
+          return false;
+        }
+      }
+
+      // 2. Date filter
+      if (_startDate != null) {
+        final start = DateTime(_startDate!.year, _startDate!.month, _startDate!.day);
+        if (c.collectionDate.isBefore(start)) return false;
+      }
+      if (_endDate != null) {
+        final end = DateTime(_endDate!.year, _endDate!.month, _endDate!.day, 23, 59, 59, 999);
+        if (c.collectionDate.isAfter(end)) return false;
+      }
+
+      // 3. Payment Mode filter
+      final mode = c.paymentMode.toLowerCase();
+      if (_selectedPaymentMode == 'Cash') {
+        return mode.contains('cash');
+      } else if (_selectedPaymentMode == 'Cheque') {
+        return mode.contains('cheque');
+      } else if (_selectedPaymentMode == 'UPI') {
+        return mode.contains('upi') || mode.contains('gpay') || mode.contains('phonepe') || mode.contains('paytm');
+      }
+
+      return true;
+    }).toList();
+  }
+
+  List<_SalesmanSummaryItem> _getSalesmanSummaries(List<CollectionHistoryModel> filteredList) {
+    final Map<String, _SalesmanSummaryItem> summaryMap = {};
+
+    for (var c in filteredList) {
+      final sId = c.salesmanDetails?['id']?.toString() ?? c.collectedBy['id']?.toString() ?? 'unknown';
+      var sName = c.salesmanDetails?['name']?.toString() ?? c.collectedBy['name']?.toString() ?? 'Salesman';
+      var sRoute = c.salesmanDetails?['route']?.toString() ?? 'Route A';
+      var sCode = c.salesmanDetails?['code']?.toString() ?? (sId.length > 4 ? sId.substring(0, 4) : sId);
+
+      // Match with widget.salesmen for richer details if available
+      if (widget.salesmen.isNotEmpty) {
+        for (var sm in widget.salesmen) {
+          if (sm.salesmanId == sId || sm.id == sId) {
+            if (sName == 'Salesman' || sName.isEmpty) sName = sm.name;
+            if (sm.areaAssigned.isNotEmpty && (sRoute == 'Route A' || sRoute.isEmpty)) sRoute = sm.areaAssigned;
+            if (sm.salesmanId.isNotEmpty) sCode = sm.salesmanId;
+            break;
+          }
+        }
+      }
+
+      final amount = c.amountCollected;
+      final mode = c.paymentMode.toLowerCase();
+
+      String targetKey = sId;
+      if (!widget.isDistributor && summaryMap.isNotEmpty) {
+        targetKey = summaryMap.keys.first;
+      }
+
+      var existing = summaryMap[targetKey];
+      if (existing == null) {
+        existing = _SalesmanSummaryItem(
+          id: targetKey,
+          name: sName,
+          route: sRoute,
+          code: sCode,
+          totalCollected: 0,
+          cashCollected: 0,
+          chequeCollected: 0,
+          upiCollected: 0,
+          transactionCount: 0,
+          lastCollectionDate: null,
+          collections: [],
+        );
+        summaryMap[targetKey] = existing;
+      }
+
+      final isCash = mode.contains('cash');
+      final isCheque = mode.contains('cheque');
+      final isUpi = mode.contains('upi') || mode.contains('gpay') || mode.contains('phonepe') || mode.contains('paytm');
+
+      final newTotal = existing.totalCollected + amount;
+      final newCash = existing.cashCollected + (isCash ? amount : 0);
+      final newCheque = existing.chequeCollected + (isCheque ? amount : 0);
+      final newUpi = existing.upiCollected + (isUpi ? amount : 0);
+      final newCount = existing.transactionCount + 1;
+      final newLast = (existing.lastCollectionDate == null || c.collectionDate.isAfter(existing.lastCollectionDate!))
+          ? c.collectionDate
+          : existing.lastCollectionDate;
+      final newCollections = List<CollectionHistoryModel>.from(existing.collections)..add(c);
+
+      summaryMap[targetKey] = _SalesmanSummaryItem(
+        id: existing.id,
+        name: existing.name.isNotEmpty && existing.name != 'Salesman' ? existing.name : sName,
+        route: existing.route.isNotEmpty && existing.route != 'Route A' ? existing.route : sRoute,
+        code: existing.code.isNotEmpty ? existing.code : sCode,
+        totalCollected: newTotal,
+        cashCollected: newCash,
+        chequeCollected: newCheque,
+        upiCollected: newUpi,
+        transactionCount: newCount,
+        lastCollectionDate: newLast,
+        collections: newCollections,
       );
-      return;
     }
 
-    final expectedAmount = double.tryParse(_expectedAmountController.text);
-    if (expectedAmount == null) {
-      showSafeSnackBar(
-        context,
-        'Please enter a valid amount',
-        backgroundColor: Colors.red,
-      );
-      return;
+    var result = summaryMap.values.toList();
+    if (widget.isDistributor && _selectedSalesmanId != null && _selectedSalesmanId != 'all') {
+      result = result.where((s) => s.id == _selectedSalesmanId || s.code == _selectedSalesmanId || s.name == _selectedSalesmanId).toList();
     }
 
-    setState(() => _isLoading = true);
-    try {
-      final result = await widget.collectionHistoryService.reconcileCollections(
-        expectedAmount: expectedAmount,
-        date: DateTime.now(),
-      );
-      setState(() {
-        _reconciliationMessage = result['message'];
-        _isLoading = false;
-      });
-
-      showSafeSnackBar(
-        context,
-        result['message'],
-        backgroundColor: result['is_matching'] == true
-            ? Colors.green
-            : Colors.orange,
-      );
-    } catch (e) {
-      setState(() => _isLoading = false);
-      showSafeSnackBar(
-        context,
-        'Error reconciling: $e',
-        backgroundColor: Colors.red,
-      );
-    }
+    result.sort((a, b) => b.totalCollected.compareTo(a.totalCollected));
+    return result;
   }
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Container(
-        width: double.maxFinite,
-        constraints: BoxConstraints(
-          maxWidth: 500,
-          maxHeight: MediaQuery.of(context).size.height * 0.85,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: const BoxDecoration(
-                color: Color(0xFF1A3B70),
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(16),
-                  topRight: Radius.circular(16),
-                ),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.history, color: Colors.white),
-                  const SizedBox(width: 12),
-                  const Text(
-                    'Collection History',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-            ),
+    final filteredCollections = _getFilteredCollections();
+    final salesmanSummaries = _getSalesmanSummaries(filteredCollections);
 
-            Container(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.green[50],
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.green[200]!),
-                      ),
-                      child: Column(
-                        children: [
-                          const Icon(
-                            Icons.account_balance_wallet,
-                            color: Colors.green,
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '₹${widget.collectionHistoryService.totalCollected.toStringAsFixed(0)}',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.green,
-                            ),
-                          ),
-                          const Text(
-                            'Total Collected',
-                            style: TextStyle(fontSize: 11),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.blue[50],
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: Colors.blue[200]!),
-                      ),
-                      child: Column(
-                        children: [
-                          const Icon(Icons.receipt_long, color: Colors.blue),
-                          const SizedBox(height: 4),
-                          Text(
-                            '${widget.collectionHistoryService.totalTransactions}',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.blue,
-                            ),
-                          ),
-                          const Text(
-                            'Transactions',
-                            style: TextStyle(fontSize: 11),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+    // Summing up totals
+    double totalCollected = 0;
+    double cashCollected = 0;
+    double chequeCollected = 0;
+    double upiCollected = 0;
+    int totalTransactions = 0;
 
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Column(
+    for (var s in salesmanSummaries) {
+      totalCollected += s.totalCollected;
+      cashCollected += s.cashCollected;
+      chequeCollected += s.chequeCollected;
+      upiCollected += s.upiCollected;
+      totalTransactions += s.transactionCount;
+    }
+
+    final now = DateTime.now();
+
+    // Prepare dropdown options for distributor (real salesmen only)
+    final dropdownOptions = <Map<String, String>>[];
+    final seenIds = <String>{};
+
+    for (var s in widget.salesmen) {
+      final sId = s.salesmanId.isNotEmpty ? s.salesmanId : s.id;
+      if (!seenIds.contains(sId)) {
+        seenIds.add(sId);
+        dropdownOptions.add({'id': sId, 'name': s.name});
+      }
+    }
+    for (var s in salesmanSummaries) {
+      if (!seenIds.contains(s.id)) {
+        seenIds.add(s.id);
+        dropdownOptions.add({'id': s.id, 'name': s.name});
+      }
+    }
+
+    return Container(
+      color: const Color(0xFFF8FAFC),
+      child: RefreshIndicator(
+        onRefresh: _loadCollections,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // ==================== 1. PAGE TITLE & TIME ====================
+              Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (widget.isDistributor)
-                    DropdownButtonFormField<String>(
-                      value: _selectedSalesmanId,
-                      decoration: const InputDecoration(
-                        labelText: 'Filter by Salesman',
-                        border: OutlineInputBorder(),
-                        contentPadding: EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 8,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Collection History',
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: Color(0xFF0F172A),
+                            letterSpacing: -0.5,
+                          ),
                         ),
-                      ),
-                      items: [
-                        const DropdownMenuItem(
-                          value: null,
-                          child: Text('All Salesmen'),
-                        ),
-                        ...widget.salesmen.map(
-                          (s) => DropdownMenuItem(
-                            value: s.id,
-                            child: Text(s.name),
+                        const SizedBox(height: 3),
+                        Text(
+                          widget.isDistributor
+                              ? 'Track and analyze payment collections by salesman'
+                              : 'Track and analyze payment collections',
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFF64748B),
+                            fontWeight: FontWeight.w400,
                           ),
                         ),
                       ],
-                      onChanged: (value) {
-                        setState(() => _selectedSalesmanId = value);
-                        _loadCollections();
-                      },
                     ),
-                  const SizedBox(height: 8),
+                  ),
                   Row(
                     children: [
-                      Expanded(
-                        child: GestureDetector(
-                          onTap: () async {
-                            final date = await showDatePicker(
-                              context: context,
-                              initialDate: _startDate ?? DateTime.now(),
-                              firstDate: DateTime(2020),
-                              lastDate: DateTime.now(),
-                            );
-                            if (date != null) {
-                              setState(() => _startDate = date);
-                              _loadCollections();
-                            }
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey[300]!),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.calendar_today, size: 16),
-                                const SizedBox(width: 8),
-                                Text(
-                                  _startDate != null
-                                      ? '${_startDate!.day}/${_startDate!.month}/${_startDate!.year}'
-                                      : 'Start Date',
-                                ),
-                              ],
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            _formatDate(now),
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF0F172A),
                             ),
                           ),
-                        ),
+                          Text(
+                            _formatTime(now),
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF64748B),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(width: 8),
-                      Expanded(
-                        child: GestureDetector(
-                          onTap: () async {
-                            final date = await showDatePicker(
-                              context: context,
-                              initialDate: _endDate ?? DateTime.now(),
-                              firstDate: DateTime(2020),
-                              lastDate: DateTime.now(),
-                            );
-                            if (date != null) {
-                              setState(() => _endDate = date);
-                              _loadCollections();
-                            }
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey[300]!),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.calendar_today, size: 16),
-                                const SizedBox(width: 8),
-                                Text(
-                                  _endDate != null
-                                      ? '${_endDate!.day}/${_endDate!.month}/${_endDate!.year}'
-                                      : 'End Date',
-                                ),
-                              ],
-                            ),
+                      InkWell(
+                        onTap: () {
+                          setState(() {
+                            _startDate = null;
+                            _endDate = null;
+                            _selectedPaymentMode = 'All';
+                            if (widget.isDistributor) _selectedSalesmanId = null;
+                          });
+                          _loadCollections();
+                        },
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.03),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: const Icon(
+                            Icons.calendar_today_outlined,
+                            size: 20,
+                            color: Color(0xFF334155),
                           ),
                         ),
                       ),
@@ -3982,241 +4124,1275 @@ class _CollectionHistoryDialogState extends State<CollectionHistoryDialog> {
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 16),
 
-            if (widget.isDistributor)
+              // ==================== 2. TOP SUMMARY CARDS (ROW 1) ====================
+              Row(
+                children: [
+                  // Total Collected Card
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF0FDF4),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFFDCFCE7)),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 42,
+                            height: 42,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFDCFCE7),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            alignment: Alignment.center,
+                            child: Container(
+                              width: 26,
+                              height: 26,
+                              decoration: const BoxDecoration(
+                                color: Color(0xFF22C55E),
+                                shape: BoxShape.circle,
+                              ),
+                              alignment: Alignment.center,
+                              child: const Icon(
+                                Icons.currency_rupee,
+                                color: Colors.white,
+                                size: 16,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    _formatCurrency(totalCollected),
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF0F172A),
+                                      letterSpacing: -0.3,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                const FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'Total Collected',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                      color: Color(0xFF64748B),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  // Total Transactions Card
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEFF6FF),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFFDBEAFE)),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 42,
+                            height: 42,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFDBEAFE),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            alignment: Alignment.center,
+                            child: Container(
+                              width: 26,
+                              height: 26,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF3B82F6),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              alignment: Alignment.center,
+                              child: const Icon(
+                                Icons.receipt_long,
+                                color: Colors.white,
+                                size: 16,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    '$totalTransactions',
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF2563EB),
+                                      letterSpacing: -0.3,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                const FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'Total Transactions',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                      color: Color(0xFF64748B),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+
+              // ==================== 3. PAYMENT BREAKDOWN CARDS (ROW 2) ====================
+              Row(
+                children: [
+                  // Cash Collected
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF0FDF4),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFDCFCE7)),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 26,
+                            height: 26,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFDCFCE7),
+                              borderRadius: BorderRadius.circular(7),
+                            ),
+                            alignment: Alignment.center,
+                            child: const Icon(
+                              Icons.payments_outlined,
+                              color: Color(0xFF16A34A),
+                              size: 15,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    _formatCurrency(cashCollected),
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 1),
+                                const FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'Cash Collected',
+                                    style: TextStyle(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w500,
+                                      color: Color(0xFF64748B),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  // Cheque Collected
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFFBEB),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFFEF3C7)),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 26,
+                            height: 26,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFFEF3C7),
+                              borderRadius: BorderRadius.circular(7),
+                            ),
+                            alignment: Alignment.center,
+                            child: const Icon(
+                              Icons.credit_card,
+                              color: Color(0xFFD97706),
+                              size: 15,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    _formatCurrency(chequeCollected),
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 1),
+                                const FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'Cheque Collected',
+                                    style: TextStyle(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w500,
+                                      color: Color(0xFF64748B),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  // UPI Collected
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFAF5FF),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFF3E8FF)),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 26,
+                            height: 26,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF3E8FF),
+                              borderRadius: BorderRadius.circular(7),
+                            ),
+                            alignment: Alignment.center,
+                            child: const Icon(
+                              Icons.near_me,
+                              color: Color(0xFF9333EA),
+                              size: 15,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    _formatCurrency(upiCollected),
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w800,
+                                      color: Color(0xFF0F172A),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 1),
+                                const FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    'UPI Collected',
+                                    style: TextStyle(
+                                      fontSize: 9.5,
+                                      fontWeight: FontWeight.w500,
+                                      color: Color(0xFF64748B),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+
+              // ==================== 4. FILTER CARD ====================
               Container(
-                margin: const EdgeInsets.all(12),
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
-                  color: Colors.orange[50],
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.orange[200]!),
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.02),
+                      blurRadius: 6,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Salesman Filter Dropdown (Distributor only)
+                    if (widget.isDistributor) ...[
+                      const Text(
+                        'Salesman',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF64748B),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Container(
+                        height: 42,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFFCBD5E1)),
+                          color: Colors.white,
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String?>(
+                            isExpanded: true,
+                            icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF64748B)),
+                            value: _selectedSalesmanId,
+                            hint: const Text(
+                              'All Salesmen',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Color(0xFF0F172A),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            items: [
+                              const DropdownMenuItem<String?>(
+                                value: null,
+                                child: Text(
+                                  'All Salesmen',
+                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                                ),
+                              ),
+                              ...dropdownOptions.map(
+                                (opt) => DropdownMenuItem<String?>(
+                                  value: opt['id'],
+                                  child: Text(
+                                    opt['name'] ?? '',
+                                    style: const TextStyle(fontSize: 13),
+                                  ),
+                                ),
+                              ),
+                            ],
+                            onChanged: (val) {
+                              setState(() => _selectedSalesmanId = val);
+                              _loadCollections();
+                            },
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+
+                    // Date Range Row
                     Row(
                       children: [
-                        const Icon(Icons.compare_arrows, color: Colors.orange),
-                        const SizedBox(width: 8),
-                        const Text(
-                          'Cash Reconciliation',
-                          style: TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        const Spacer(),
-                        IconButton(
-                          icon: Icon(
-                            _showReconcile
-                                ? Icons.expand_less
-                                : Icons.expand_more,
-                            size: 20,
-                          ),
-                          onPressed: () =>
-                              setState(() => _showReconcile = !_showReconcile),
-                        ),
-                      ],
-                    ),
-                    if (_showReconcile) ...[
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: _expectedAmountController,
-                        decoration: const InputDecoration(
-                          labelText: 'Expected Cash Amount',
-                          border: OutlineInputBorder(),
-                          prefixText: '₹ ',
-                        ),
-                        keyboardType: TextInputType.number,
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: _reconcileCollections,
-                              icon: const Icon(Icons.calculate, size: 16),
-                              label: const Text('Reconcile'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.orange,
+                        // Start Date
+                        Expanded(
+                          child: InkWell(
+                            onTap: _pickStartDate,
+                            borderRadius: BorderRadius.circular(10),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: const Color(0xFFE2E8F0)),
+                                color: const Color(0xFFF8FAFC),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(
+                                    Icons.calendar_today_outlined,
+                                    size: 16,
+                                    color: Color(0xFF64748B),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          'Start Date',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: Color(0xFF64748B),
+                                          ),
+                                        ),
+                                        Text(
+                                          _formatDate(_startDate),
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFF0F172A),
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
-                        ],
-                      ),
-                      if (_reconciliationMessage != null) ...[
-                        const SizedBox(height: 8),
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: _reconciliationMessage!.contains('match')
-                                ? Colors.green[100]
-                                : Colors.red[100],
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Text(
-                            _reconciliationMessage!,
-                            style: TextStyle(
-                              color: _reconciliationMessage!.contains('match')
-                                  ? Colors.green[800]
-                                  : Colors.red[800],
-                              fontSize: 12,
+                        ),
+                        const SizedBox(width: 10),
+                        // End Date
+                        Expanded(
+                          child: InkWell(
+                            onTap: _pickEndDate,
+                            borderRadius: BorderRadius.circular(10),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: const Color(0xFFE2E8F0)),
+                                color: const Color(0xFFF8FAFC),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(
+                                    Icons.calendar_today_outlined,
+                                    size: 16,
+                                    color: Color(0xFF64748B),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        const Text(
+                                          'End Date',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            color: Color(0xFF64748B),
+                                          ),
+                                        ),
+                                        Text(
+                                          _formatDate(_endDate),
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFF0F172A),
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ),
                         ),
                       ],
-                    ],
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Payment Mode Filter Chips
+                    Row(
+                      children: [
+                        const FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            'Payment Mode',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF0F172A),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Row(
+                            children: ['All', 'Cash', 'Cheque', 'UPI'].map((mode) {
+                              final isSelected = _selectedPaymentMode == mode;
+                              return Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                                  child: InkWell(
+                                    onTap: () {
+                                      setState(() => _selectedPaymentMode = mode);
+                                    },
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(vertical: 7),
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: isSelected
+                                            ? const Color(0xFF1E40AF)
+                                            : Colors.white,
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(
+                                          color: isSelected
+                                              ? const Color(0xFF1E40AF)
+                                              : const Color(0xFFE2E8F0),
+                                        ),
+                                      ),
+                                      child: FittedBox(
+                                        fit: BoxFit.scaleDown,
+                                        child: Text(
+                                          mode,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                                            color: isSelected ? Colors.white : const Color(0xFF334155),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
+              const SizedBox(height: 16),
 
-            Expanded(
-              child: _isLoading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _collections.isEmpty
-                  ? const Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.history, size: 50, color: Colors.grey),
-                          SizedBox(height: 10),
-                          Text(
-                            'No collection records found',
-                            style: TextStyle(color: Colors.grey),
-                          ),
-                        ],
-                      ),
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(12),
-                      itemCount: _collections.length,
-                      itemBuilder: (context, index) {
-                        final collection = _collections[index];
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 8),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: Colors.grey[200]!),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    collection.billNo,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14,
-                                    ),
-                                  ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 8,
-                                      vertical: 4,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: Colors.blue[50],
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Text(
-                                      collection.paymentMode,
-                                      style: const TextStyle(
-                                        fontSize: 10,
-                                        color: Colors.blue,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                collection.customerName,
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Order Amount: ₹${collection.orderAmount.toStringAsFixed(0)}',
-                                        style: const TextStyle(fontSize: 11),
-                                      ),
-                                      Text(
-                                        'Collected: ₹${collection.amountCollected.toStringAsFixed(0)}',
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.bold,
-                                          color: Colors.green,
+              // ==================== 5. SALESMAN SUMMARY HEADER ====================
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Salesman Summary',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFF0F172A),
+                      letterSpacing: -0.3,
+                    ),
+                  ),
+                  Text(
+                    '${salesmanSummaries.length} Salesm${salesmanSummaries.length == 1 ? 'an' : 'en'}',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF64748B),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // ==================== 6. SALESMAN SUMMARY LIST ====================
+              if (_isLoading)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 40),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else if (salesmanSummaries.isEmpty)
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 40),
+                    child: Column(
+                      children: [
+                        Icon(Icons.people_outline, size: 50, color: Colors.grey[400]),
+                        const SizedBox(height: 10),
+                        Text(
+                          'No salesman records found',
+                          style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                ...salesmanSummaries.asMap().entries.map((entry) {
+                  final index = entry.key;
+                  final item = entry.value;
+                  final isExpanded = _expandedSalesmanId == item.id;
+                  final initial = item.name.isNotEmpty ? item.name[0].toUpperCase() : 'S';
+
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.02),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        // Card Header
+                        InkWell(
+                          onTap: () {
+                            setState(() {
+                              _expandedSalesmanId = isExpanded ? null : item.id;
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(16),
+                          child: Padding(
+                            padding: const EdgeInsets.all(14),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Top row: Avatar + Name + Amount + Chevron
+                                Row(
+                                  children: [
+                                    CircleAvatar(
+                                      radius: 19,
+                                      backgroundColor: _getAvatarBg(index),
+                                      child: Text(
+                                        initial,
+                                        style: TextStyle(
+                                          color: _getAvatarFg(index),
+                                          fontWeight: FontWeight.w800,
+                                          fontSize: 15,
                                         ),
                                       ),
-                                    ],
-                                  ),
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      if (collection.salesmanDetails != null)
-                                        Text(
-                                          'By: ${collection.salesmanDetails!['name']}',
-                                          style: const TextStyle(
-                                            fontSize: 11,
-                                            color: Colors.grey,
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            item.name,
+                                            style: const TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w800,
+                                              color: Color(0xFF0F172A),
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '${item.route} • Code: ${item.code}',
+                                            style: const TextStyle(
+                                              fontSize: 11.5,
+                                              color: Color(0xFF64748B),
+                                              fontWeight: FontWeight.w400,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.end,
+                                      children: [
+                                        FittedBox(
+                                          fit: BoxFit.scaleDown,
+                                          alignment: Alignment.centerRight,
+                                          child: Text(
+                                            _formatCurrency(item.totalCollected),
+                                            style: const TextStyle(
+                                              fontSize: 15.5,
+                                              fontWeight: FontWeight.w800,
+                                              color: Color(0xFF15803D),
+                                            ),
                                           ),
                                         ),
-                                      Text(
-                                        'Date: ${collection.collectionDate.day}/${collection.collectionDate.month}/${collection.collectionDate.year}',
-                                        style: const TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.grey,
+                                        const FittedBox(
+                                          fit: BoxFit.scaleDown,
+                                          alignment: Alignment.centerRight,
+                                          child: Text(
+                                            'Total Collected',
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              color: Color(0xFF64748B),
+                                              fontWeight: FontWeight.w400,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      isExpanded ? Icons.expand_less : Icons.chevron_right,
+                                      color: const Color(0xFF94A3B8),
+                                      size: 18,
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+
+                                // 3 Breakdown Pills
+                                Row(
+                                  children: [
+                                    // Cash Pill
+                                    Expanded(
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFF8FAFC),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Container(
+                                              width: 22,
+                                              height: 22,
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFDCFCE7),
+                                                borderRadius: BorderRadius.circular(6),
+                                              ),
+                                              alignment: Alignment.center,
+                                              child: const Icon(
+                                                Icons.payments_outlined,
+                                                size: 13,
+                                                color: Color(0xFF16A34A),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 5),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    alignment: Alignment.centerLeft,
+                                                    child: Text(
+                                                      _formatCurrency(item.cashCollected),
+                                                      style: const TextStyle(
+                                                        fontWeight: FontWeight.w800,
+                                                        fontSize: 11,
+                                                        color: Color(0xFF0F172A),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    alignment: Alignment.centerLeft,
+                                                    child: Text(
+                                                      'Cash',
+                                                      style: TextStyle(
+                                                        fontSize: 9,
+                                                        color: Color(0xFF64748B),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
                                         ),
                                       ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    // Cheque Pill
+                                    Expanded(
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFF8FAFC),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Container(
+                                              width: 22,
+                                              height: 22,
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFFEF3C7),
+                                                borderRadius: BorderRadius.circular(6),
+                                              ),
+                                              alignment: Alignment.center,
+                                              child: const Icon(
+                                                Icons.credit_card,
+                                                size: 13,
+                                                color: Color(0xFFD97706),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 5),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    alignment: Alignment.centerLeft,
+                                                    child: Text(
+                                                      _formatCurrency(item.chequeCollected),
+                                                      style: const TextStyle(
+                                                        fontWeight: FontWeight.w800,
+                                                        fontSize: 11,
+                                                        color: Color(0xFF0F172A),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    alignment: Alignment.centerLeft,
+                                                    child: Text(
+                                                      'Cheque',
+                                                      style: TextStyle(
+                                                        fontSize: 9,
+                                                        color: Color(0xFF64748B),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 6),
+                                    // UPI Pill
+                                    Expanded(
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xFFF8FAFC),
+                                          borderRadius: BorderRadius.circular(8),
+                                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Container(
+                                              width: 22,
+                                              height: 22,
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFF3E8FF),
+                                                borderRadius: BorderRadius.circular(6),
+                                              ),
+                                              alignment: Alignment.center,
+                                              child: const Icon(
+                                                Icons.near_me,
+                                                size: 13,
+                                                color: Color(0xFF9333EA),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 5),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    alignment: Alignment.centerLeft,
+                                                    child: Text(
+                                                      _formatCurrency(item.upiCollected),
+                                                      style: const TextStyle(
+                                                        fontWeight: FontWeight.w800,
+                                                        fontSize: 11,
+                                                        color: Color(0xFF0F172A),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const FittedBox(
+                                                    fit: BoxFit.scaleDown,
+                                                    alignment: Alignment.centerLeft,
+                                                    child: Text(
+                                                      'UPI',
+                                                      style: TextStyle(
+                                                        fontSize: 9,
+                                                        color: Color(0xFF64748B),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+
+                                // Bottom line: Transactions + Last Collection Time
+                                Row(
+                                  children: [
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(
+                                          Icons.format_list_bulleted,
+                                          size: 13,
+                                          color: Color(0xFF64748B),
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          '${item.transactionCount} Transactions',
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            color: Color(0xFF64748B),
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.end,
+                                        children: [
+                                          const Icon(
+                                            Icons.access_time,
+                                            size: 13,
+                                            color: Color(0xFF64748B),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Flexible(
+                                            child: Text(
+                                              item.lastCollectionDate != null
+                                                  ? 'Last: ${_formatDateTime(item.lastCollectionDate)}'
+                                                  : 'Last: None',
+                                              style: const TextStyle(
+                                                fontSize: 11,
+                                                color: Color(0xFF64748B),
+                                                fontWeight: FontWeight.w500,
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                        // Expanded Transaction History
+                        if (isExpanded) ...[
+                          const Divider(height: 1, color: Color(0xFFE2E8F0)),
+                          Container(
+                            color: const Color(0xFFF8FAFC),
+                            padding: const EdgeInsets.all(12),
+                            child: item.collections.isEmpty
+                                ? const Padding(
+                                    padding: EdgeInsets.all(12),
+                                    child: Center(
+                                      child: Text(
+                                        'No collection records found for this salesman',
+                                        style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                                      ),
+                                    ),
+                                  )
+                                : Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Padding(
+                                        padding: const EdgeInsets.only(bottom: 8),
+                                        child: Text(
+                                          'Transactions (${item.collections.length})',
+                                          style: const TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFF334155),
+                                          ),
+                                        ),
+                                      ),
+                                      ...item.collections.map((coll) {
+                                        final modeLower = coll.paymentMode.toLowerCase();
+                                        Color badgeBg = const Color(0xFFF0FDF4);
+                                        Color badgeFg = const Color(0xFF16A34A);
+                                        if (modeLower.contains('cheque')) {
+                                          badgeBg = const Color(0xFFFFFBEB);
+                                          badgeFg = const Color(0xFFD97706);
+                                        } else if (modeLower.contains('upi')) {
+                                          badgeBg = const Color(0xFFFAF5FF);
+                                          badgeFg = const Color(0xFF9333EA);
+                                        }
+
+                                        return Container(
+                                          margin: const EdgeInsets.only(bottom: 8),
+                                          padding: const EdgeInsets.all(10),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            borderRadius: BorderRadius.circular(10),
+                                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                                          ),
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  Expanded(
+                                                    child: Text(
+                                                      coll.billNo.isNotEmpty ? 'Bill #${coll.billNo}' : 'Payment #${coll.collectionId}',
+                                                      style: const TextStyle(
+                                                        fontWeight: FontWeight.w700,
+                                                        fontSize: 13,
+                                                        color: Color(0xFF0F172A),
+                                                      ),
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                                    decoration: BoxDecoration(
+                                                      color: badgeBg,
+                                                      borderRadius: BorderRadius.circular(12),
+                                                    ),
+                                                    child: Text(
+                                                      coll.paymentMode.toUpperCase(),
+                                                      style: TextStyle(
+                                                        fontSize: 10,
+                                                        color: badgeFg,
+                                                        fontWeight: FontWeight.w800,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 4),
+                                              Text(
+                                                coll.customerName.isNotEmpty ? coll.customerName : 'Customer: ${coll.customerId}',
+                                                style: const TextStyle(
+                                                  fontSize: 12,
+                                                  color: Color(0xFF475569),
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                              const SizedBox(height: 6),
+                                              Row(
+                                                children: [
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      children: [
+                                                        FittedBox(
+                                                          fit: BoxFit.scaleDown,
+                                                          alignment: Alignment.centerLeft,
+                                                          child: Text(
+                                                            'Collected: ${_formatCurrency(coll.amountCollected)}',
+                                                            style: const TextStyle(
+                                                              fontSize: 12,
+                                                              fontWeight: FontWeight.w800,
+                                                              color: Color(0xFF16A34A),
+                                                            ),
+                                                          ),
+                                                        ),
+                                                        if (coll.orderAmount > 0)
+                                                          FittedBox(
+                                                            fit: BoxFit.scaleDown,
+                                                            alignment: Alignment.centerLeft,
+                                                            child: Text(
+                                                              'Order Amount: ${_formatCurrency(coll.orderAmount)}',
+                                                              style: const TextStyle(
+                                                                fontSize: 10,
+                                                                color: Color(0xFF64748B),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 8),
+                                                  Flexible(
+                                                    child: Text(
+                                                      _formatDateTime(coll.collectionDate),
+                                                      style: const TextStyle(
+                                                        fontSize: 10,
+                                                        color: Color(0xFF64748B),
+                                                      ),
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              if (coll.chequeNumber != null && coll.chequeNumber!.isNotEmpty)
+                                                Padding(
+                                                  padding: const EdgeInsets.only(top: 4),
+                                                  child: Text(
+                                                    'Cheque: ${coll.chequeNumber} (${coll.bankName ?? ''})',
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Color(0xFFD97706),
+                                                      fontWeight: FontWeight.w500,
+                                                    ),
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                              if (coll.transactionNumber != null && coll.transactionNumber!.isNotEmpty)
+                                                Padding(
+                                                  padding: const EdgeInsets.only(top: 4),
+                                                  child: Text(
+                                                    'UPI Ref: ${coll.transactionNumber} (${coll.upiType ?? ''})',
+                                                    style: const TextStyle(
+                                                      fontSize: 10,
+                                                      color: Color(0xFF9333EA),
+                                                      fontWeight: FontWeight.w500,
+                                                    ),
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                        );
+                                      }).toList(),
                                     ],
                                   ),
-                                ],
-                              ),
-                              if (collection.chequeNumber != null &&
-                                  collection.chequeNumber!.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 4),
-                                  child: Text(
-                                    'Cheque: ${collection.chequeNumber} (${collection.bankName ?? ''})',
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.orange,
-                                    ),
-                                  ),
-                                ),
-                              if (collection.transactionNumber != null &&
-                                  collection.transactionNumber!.isNotEmpty)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 4),
-                                  child: Text(
-                                    'UPI Transaction: ${collection.transactionNumber} (${collection.upiType ?? ''})',
-                                    style: const TextStyle(
-                                      fontSize: 10,
-                                      color: Colors.purple,
-                                    ),
-                                  ),
-                                ),
-                            ],
                           ),
-                        );
-                      },
+                        ],
+                      ],
                     ),
-            ),
-          ],
+                  );
+                }),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ==================== COLLECTION HISTORY DIALOG ====================
+class CollectionHistoryDialog extends StatelessWidget {
+  final CollectionHistoryService collectionHistoryService;
+  final List<SalesmanModel> salesmen;
+  final bool isDistributor;
+  final UserModel? currentUser;
+
+  const CollectionHistoryDialog({
+    super.key,
+    required this.collectionHistoryService,
+    required this.salesmen,
+    required this.isDistributor,
+    this.currentUser,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog.fullscreen(
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        body: SafeArea(
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                color: const Color(0xFF1A3B70),
+                child: Row(
+                  children: [
+                    const Icon(Icons.history, color: Colors.white, size: 24),
+                    const SizedBox(width: 10),
+                    Text(
+                      isDistributor ? 'Collection History' : 'My Collection History',
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: CollectionHistoryView(
+                  collectionHistoryService: collectionHistoryService,
+                  salesmen: salesmen,
+                  isDistributor: isDistributor,
+                  currentDistributor: isDistributor ? currentUser : null,
+                  currentSalesman: !isDistributor ? currentUser : null,
+                  onClose: () => Navigator.pop(context),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -4904,7 +6080,20 @@ class _DistributorDashboardEnhancedState
         collectionHistoryService: _collectionHistoryService,
         salesmen: _salesmen,
         isDistributor: true,
+        currentUser: _currentDistributor,
       ),
+    );
+  }
+
+  Widget _buildCollectionHistorySection() {
+    _collectionHistoryService.setDistributorId(
+      _currentDistributor.distributorId!,
+    );
+    return CollectionHistoryView(
+      collectionHistoryService: _collectionHistoryService,
+      salesmen: _salesmen,
+      isDistributor: true,
+      currentDistributor: _currentDistributor,
     );
   }
 
@@ -8297,8 +9486,10 @@ class _DistributorDashboardEnhancedState
           setState(() => _isSidebarOpen = false);
           _showImportMasterDataDialog();
         } else if (index == 12) {
-          setState(() => _isSidebarOpen = false);
-          _showCollectionHistoryDialog();
+          setState(() {
+            _selectedIndex = 12;
+            _isSidebarOpen = false;
+          });
         } else {
           setState(() {
             _selectedIndex = index;
@@ -9071,6 +10262,8 @@ class _DistributorDashboardEnhancedState
         return _buildPaymentCollectionSection();
       case 10:
         return _buildDownloadOrderSection();
+      case 12:
+        return _buildCollectionHistorySection();
       case 13:
         return _buildAdminLoadAssignmentSection();
       default:
@@ -12816,6 +14009,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   static const Color warningOrange = Color(0xFFFF9800);
 
   int _selectedIndex = 0;
+  int _paymentsSubTab = 0;
   bool _isSidebarOpen = false;
   bool _isLoading = true;
 
@@ -14427,6 +15621,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         collectionHistoryService: _collectionHistoryService,
         salesmen: [],
         isDistributor: false,
+        currentUser: _currentSalesman,
       ),
     );
   }
@@ -16291,9 +17486,18 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         } else if (index == -2) {
           setState(() => _isSidebarOpen = false);
           _showChangePasswordDialog();
+        } else if (index == 3) {
+          setState(() {
+            _selectedIndex = 3;
+            _paymentsSubTab = 1;
+            _isSidebarOpen = false;
+          });
         } else if (index == 6) {
-          setState(() => _isSidebarOpen = false);
-          _showCollectionHistoryDialog();
+          setState(() {
+            _selectedIndex = 3;
+            _paymentsSubTab = 0;
+            _isSidebarOpen = false;
+          });
         } else if (index == 7) {
           _openLoadDelivery();
         } else {
@@ -16318,7 +17522,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         return _buildCreateOrderSection();
 
       case 3:
-        return _buildCollectPaymentFromOutstanding();
+        return _buildPaymentsTab();
 
       case 4:
         return _buildProductsSection();
@@ -16974,6 +18178,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         onTap: () {
           setState(() {
             _selectedIndex = index;
+            if (index == 3) {
+              _paymentsSubTab = 0;
+            }
           });
         },
         child: SizedBox(
@@ -24802,181 +26009,53 @@ Thank you.
     );
   }
 
-  Widget _buildCollectionHistorySection() {
-    final totalCollected = _collectionHistory.fold<double>(
-      0,
-      (sum, c) => sum + c.amountCollected,
-    );
-
-    return Column(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(16),
-          color: Colors.white,
-          child: Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'My Collection History',
+  Widget _buildPaymentsTab() {
+    if (_paymentsSubTab == 1) {
+      return Column(
+        children: [
+          Container(
+            color: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.arrow_back, color: primaryBlue),
+                  onPressed: () => setState(() => _paymentsSubTab = 0),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'Collect Payment',
                   style: TextStyle(
-                    fontSize: 20,
+                    fontSize: 18,
                     fontWeight: FontWeight.bold,
                     color: primaryBlue,
                   ),
                 ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: () => setState(() => _paymentsSubTab = 0),
+                  icon: const Icon(Icons.history, size: 18, color: primaryBlue),
+                  label: const Text('History', style: TextStyle(color: primaryBlue)),
                 ),
-                decoration: BoxDecoration(
-                  color: successGreen.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  'Total: ₹${totalCollected.toStringAsFixed(0)}',
-                  style: const TextStyle(
-                    color: successGreen,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-        Expanded(
-          child: _collectionHistory.isEmpty
-              ? const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.history, size: 60, color: Colors.grey),
-                      SizedBox(height: 10),
-                      Text(
-                        'No collection records yet',
-                        style: TextStyle(color: Colors.grey, fontSize: 16),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _collectionHistory.length,
-                  itemBuilder: (context, index) {
-                    final collection = _collectionHistory[index];
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                collection.billNo,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Colors.blue[50],
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Text(
-                                  collection.paymentMode,
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: Colors.blue,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                collection.customerName,
-                                style: const TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              Text(
-                                'Date: ${collection.collectionDate.day}/${collection.collectionDate.month}/${collection.collectionDate.year}',
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.grey,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(
-                                'Order Amount: ₹${collection.orderAmount.toStringAsFixed(0)}',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey,
-                                ),
-                              ),
-                              Text(
-                                'Collected: ₹${collection.amountCollected.toStringAsFixed(0)}',
-                                style: const TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: successGreen,
-                                ),
-                              ),
-                            ],
-                          ),
-                          if (collection.chequeNumber != null &&
-                              collection.chequeNumber!.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(
-                                'Cheque: ${collection.chequeNumber} (${collection.bankName ?? ''})',
-                                style: const TextStyle(
-                                  fontSize: 10,
-                                  color: Colors.orange,
-                                ),
-                              ),
-                            ),
-                          if (collection.transactionNumber != null &&
-                              collection.transactionNumber!.isNotEmpty)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(
-                                'UPI Transaction: ${collection.transactionNumber} (${collection.upiType ?? ''})',
-                                style: const TextStyle(
-                                  fontSize: 10,
-                                  color: Colors.purple,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-        ),
-      ],
+          Expanded(child: _buildCollectPaymentFromOutstanding()),
+        ],
+      );
+    }
+    return _buildCollectionHistorySection();
+  }
+
+  Widget _buildCollectionHistorySection() {
+    _collectionHistoryService.setSalesmanId(
+      _currentSalesman.salesmanId ?? _currentSalesman.id,
+    );
+    return CollectionHistoryView(
+      collectionHistoryService: _collectionHistoryService,
+      salesmen: [],
+      isDistributor: false,
+      currentSalesman: _currentSalesman,
     );
   }
 
