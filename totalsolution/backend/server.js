@@ -2110,14 +2110,106 @@ app.delete('/api/products/:id', async (req, res) => {
 
 app.post('/api/salesmen', async (req, res) => {
     try {
-        const salesmanData = req.body;
-        
-        if (!validateAlphabetOnly(salesmanData.name)) {
-            return res.status(400).json({ error: 'Name should contain only alphabets and spaces' });
+                const salesmanData = {
+            ...req.body
+        };
+
+        // ====================================================
+        // NORMALIZE INPUT
+        // ====================================================
+
+        salesmanData.name = String(
+            salesmanData.name ?? ''
+        )
+            .trim()
+            .replace(/\s+/g, ' ');
+
+        salesmanData.email = normalizeEmail(
+            salesmanData.email
+        );
+
+        let normalizedPhone = String(
+            salesmanData.phone ?? ''
+        ).replace(/\D/g, '');
+
+        // Allow Indian +91 format also.
+        if (
+            normalizedPhone.length === 12 &&
+            normalizedPhone.startsWith('91')
+        ) {
+            normalizedPhone =
+                normalizedPhone.substring(2);
         }
-        
-        if (!validateMobileNumber(salesmanData.phone)) {
-            return res.status(400).json({ error: 'Phone number must be exactly 10 digits' });
+
+        salesmanData.phone =
+            normalizedPhone;
+
+        salesmanData.distributor_id = String(
+            salesmanData.distributor_id ?? ''
+        ).trim();
+
+        // ====================================================
+        // VALIDATION
+        // ====================================================
+
+        if (!salesmanData.distributor_id) {
+            return res.status(400).json({
+                success: false,
+                field: 'distributor_id',
+                error: 'Distributor ID is required'
+            });
+        }
+
+        if (!salesmanData.name) {
+            return res.status(400).json({
+                success: false,
+                field: 'name',
+                error: 'Salesman name is required'
+            });
+        }
+
+        // Allows normal names such as:
+        // Krishna Patil
+        // K. Patil
+        // D'Souza
+        // Ram-Kumar
+        const salesmanNameRegex =
+            /^[a-zA-Z][a-zA-Z .'-]*$/;
+
+        if (!salesmanNameRegex.test(
+            salesmanData.name
+        )) {
+            return res.status(400).json({
+                success: false,
+                field: 'name',
+                error:
+                    'Enter a valid salesman name'
+            });
+        }
+
+        if (
+            !salesmanData.email ||
+            !validateEmail(salesmanData.email)
+        ) {
+            return res.status(400).json({
+                success: false,
+                field: 'email',
+                error:
+                    'Enter a valid email address'
+            });
+        }
+
+        if (
+            !validateMobileNumber(
+                salesmanData.phone
+            )
+        ) {
+            return res.status(400).json({
+                success: false,
+                field: 'phone',
+                error:
+                    'Phone number must be exactly 10 digits'
+            });
         }
         
         if (!salesmanData.salesman_id) {
@@ -2143,7 +2235,11 @@ app.post('/api/salesmen', async (req, res) => {
             return res.status(400).json({ error: 'A salesman with this email already exists' });
         }
         
-        const defaultPassword = `${salesmanData.name.substring(0, 3).toLowerCase()}${salesmanData.phone.substring(6)}`;
+        const safeName = String(salesmanData.name || '').trim();
+        const safePhone = String(salesmanData.phone || '').trim();
+        const namePrefix = safeName.length >= 3 ? safeName.substring(0, 3).toLowerCase() : safeName.toLowerCase();
+        const phoneSuffix = safePhone.length >= 4 ? safePhone.substring(safePhone.length - 4) : safePhone;
+        const defaultPassword = `${namePrefix}${phoneSuffix}`;
         
         const saltRounds = 10;
         const hashedPassword = await bcrypt.hash(defaultPassword, saltRounds);
@@ -6093,640 +6189,3135 @@ app.put('/api/outstanding/delivery-status', async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 });
-app.post('/api/outstanding/collect-payment', upload.single('paymentPhoto'), async (req, res) => {
-  try {
-    console.log(
-      'COLLECTION PAYMENT REQUEST:',
-      JSON.stringify(req.body, null, 2)
-    );
+app.post(
+  '/api/outstanding/collect-payment',
+  upload.single('paymentPhoto'),
+  async (req, res) => {
+    try {
+      console.log(
+        'COLLECTION PAYMENT REQUEST:',
+        JSON.stringify(req.body, null, 2)
+      );
 
-    const distributorId = String(
-      req.body.distributorId || ''
-    ).trim();
+      // ============================================================
+      // BASIC REQUEST VALUES
+      // ============================================================
 
-    const salesmanId = String(
-      req.body.salesmanId || ''
-    ).trim();
+      const distributorId = String(
+        req.body.distributorId || ''
+      ).trim();
 
-    const collectedByType = String(
-      req.body.collectedByType || 'salesman'
-    ).trim().toLowerCase();
+      const salesmanId = String(
+        req.body.salesmanId || ''
+      ).trim();
 
-    const collectedById = String(
-      req.body.collectedById || salesmanId || distributorId
-    ).trim();
-
-    const salesmanNameFromRequest = String(
-      req.body.salesmanName || ''
-    ).trim();
-
-    // Bill series is allowed to be blank.
-    const billSeries = String(
-      req.body.billSeries ?? ''
-    ).trim();
-
-    // Keep bill number as String because it may be alphanumeric.
-    const billNo = String(
-      req.body.billNo ?? ''
-    ).trim();
-
-    const sysAcCode = String(
-      req.body.sysAcCode || ''
-    ).trim();
-
-    const oldBalance = Number(
-      req.body.oldBalance ??
-      req.body.balance ??
-      0
-    );
-
-    const amountCollected = Number(
-      req.body.amountCollected ??
-      req.body.amount ??
-      0
-    );
-
-    const cashAmount = Number(
-      req.body.cashAmount ?? 0
-    );
-
-    const chequeAmount = Number(
-      req.body.chequeAmount ?? 0
-    );
-
-    // ============================================================
-    // VALIDATION
-    // ============================================================
-
-    if (!distributorId) {
-      return res.status(400).json({
-        success: false,
-        field: 'distributorId',
-        message: 'Distributor ID is missing'
-      });
-    }
-
-    if (collectedByType === 'salesman' && !salesmanId) {
-      return res.status(400).json({
-        success: false,
-        field: 'salesmanId',
-        message: 'Salesman ID is missing'
-      });
-    }
-
-    if (!billNo) {
-      return res.status(400).json({
-        success: false,
-        field: 'billNo',
-        message: 'Bill number is missing'
-      });
-    }
-
-    if (!sysAcCode) {
-      return res.status(400).json({
-        success: false,
-        field: 'sysAcCode',
-        message: 'Customer account code is missing'
-      });
-    }
-
-    if (!Number.isFinite(oldBalance) || oldBalance <= 0) {
-      return res.status(400).json({
-        success: false,
-        field: 'oldBalance',
-        message: `Invalid pending balance: ${req.body.oldBalance}`
-      });
-    }
-
-    if (
-      !Number.isFinite(amountCollected) ||
-      amountCollected <= 0
-    ) {
-      return res.status(400).json({
-        success: false,
-        field: 'amountCollected',
-        message:
-          `Invalid collection amount: ${req.body.amountCollected}`
-      });
-    }
-
-    if (amountCollected > oldBalance) {
-      return res.status(400).json({
-        success: false,
-        field: 'amountCollected',
-        message:
-          `Collection amount ₹${amountCollected} cannot exceed pending balance ₹${oldBalance}`
-      });
-    }
-
-    const newBalance = Math.max(
-      0,
-      Number(
-        (oldBalance - amountCollected).toFixed(2)
+      const collectedByType = String(
+        req.body.collectedByType || 'salesman'
       )
-    );
+        .trim()
+        .toLowerCase();
 
-    // ============================================================
-    // PAYMENT MODE
-    // ============================================================
+      const collectedById = String(
+        req.body.collectedById ||
+          salesmanId ||
+          distributorId
+      ).trim();
 
-    let paymentMode = String(
-      req.body.paymentMode || 'Cash'
-    ).trim();
+      const salesmanNameFromRequest = String(
+        req.body.salesmanName || ''
+      ).trim();
 
-    if (cashAmount > 0 && chequeAmount > 0) {
-      paymentMode = 'Cash+Cheque';
-    } else if (chequeAmount > 0) {
-      paymentMode = 'Cheque';
-    } else if (cashAmount > 0) {
-      paymentMode = 'Cash';
-    } else if (
-      String(req.body.upiApp || '').trim()
-    ) {
-      paymentMode = 'UPI';
-    }
+      // Bill series may be blank.
+      const billSeries = String(
+        req.body.billSeries ?? ''
+      ).trim();
 
-    // ============================================================
-    // FIND OUTSTANDING BILL
-    // ============================================================
+      // Bill number may also be alphanumeric.
+      const billNo = String(
+        req.body.billNo ?? ''
+      ).trim();
 
-    const billNoConditions = [
-      {
-        TrnNo: billNo
+      // ============================================================
+      // OPTIONAL EXACT OUTSTANDING ID
+      // ============================================================
+      //
+      // Flutter can send the actual Mas_Outstanding MongoDB _id.
+      // If available, this is the safest possible bill lookup.
+      //
+      // The API still works without it.
+      // ============================================================
+
+      const outstandingId = String(
+        req.body.outstandingId ??
+          req.body.outstanding_id ??
+          ''
+      ).trim();
+
+      // ============================================================
+      // OPTIONAL LOAD DETAILS
+      // ============================================================
+
+      // ============================================================
+// OPTIONAL LOAD DETAILS
+// ============================================================
+
+const requestSource = String(
+  req.body.source ??
+    req.body.paymentSource ??
+    ''
+)
+  .trim()
+  .toLowerCase();
+
+const loadDocumentId = String(
+  req.body.loadDocumentId ??
+    req.body.loadId ??
+    req.body.load_id ??
+    ''
+).trim();
+
+const requestedLoadSeries = String(
+  req.body.loadSeries ??
+    req.body.LoadSeries ??
+    req.body.load_series ??
+    ''
+).trim();
+
+const requestedLoadNo = String(
+  req.body.loadNo ??
+    req.body.LoadNo ??
+    req.body.load_no ??
+    ''
+).trim();
+
+// IMPORTANT:
+// Identify Load Delivery using more than only LoadNo.
+// The exact Mas_Delivery _id is the safest identifier.
+const isLoadDeliveryRequest =
+  requestSource === 'load_delivery' ||
+  Boolean(loadDocumentId) ||
+  Boolean(requestedLoadNo);
+
+console.log('PAYMENT SOURCE CHECK:', {
+  requestSource,
+  isLoadDeliveryRequest,
+  loadDocumentId,
+  requestedLoadSeries,
+  requestedLoadNo
+});
+
+      // ============================================================
+      // CUSTOMER / PAYMENT VALUES
+      // ============================================================
+
+      const sysAcCode = String(
+        req.body.sysAcCode || ''
+      ).trim();
+
+      const oldBalance = Number(
+        req.body.oldBalance ??
+          req.body.balance ??
+          0
+      );
+
+      const amountCollected = Number(
+        req.body.amountCollected ??
+          req.body.amount ??
+          0
+      );
+
+      const cashAmount = Number(
+        req.body.cashAmount ?? 0
+      );
+
+      const chequeAmount = Number(
+        req.body.chequeAmount ?? 0
+      );
+
+      // ============================================================
+      // VALIDATION
+      // ============================================================
+
+      if (!distributorId) {
+        return res.status(400).json({
+          success: false,
+          field: 'distributorId',
+          message: 'Distributor ID is missing'
+        });
       }
+
+      if (
+        collectedByType === 'salesman' &&
+        !salesmanId
+      ) {
+        return res.status(400).json({
+          success: false,
+          field: 'salesmanId',
+          message: 'Salesman ID is missing'
+        });
+      }
+
+      if (!billNo) {
+        return res.status(400).json({
+          success: false,
+          field: 'billNo',
+          message: 'Bill number is missing'
+        });
+      }
+
+      if (!sysAcCode) {
+        return res.status(400).json({
+          success: false,
+          field: 'sysAcCode',
+          message:
+            'Customer account code is missing'
+        });
+      }
+
+      // For normal outstanding collection, oldBalance is required.
+      // For Load Delivery, Mas_Delivery is the source of truth and
+      // the current balance will be validated from the load bill.
+      if (
+  !isLoadDeliveryRequest &&
+  (
+    !Number.isFinite(oldBalance) ||
+    oldBalance <= 0
+  )
+) {
+  return res.status(400).json({
+    success: false,
+    field: 'oldBalance',
+    message:
+      `Invalid pending balance: ${req.body.oldBalance}`
+  });
+}
+
+      if (
+        !Number.isFinite(amountCollected) ||
+        amountCollected <= 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          field: 'amountCollected',
+          message:
+            `Invalid collection amount: ${req.body.amountCollected}`
+        });
+      }
+
+      // Keep the existing outstanding validation unchanged.
+      // Load Delivery is validated against the actual Mas_Delivery
+      // balance in the dedicated branch below.
+      if (
+  !isLoadDeliveryRequest &&
+  amountCollected > oldBalance
+) {
+        return res.status(400).json({
+          success: false,
+          field: 'amountCollected',
+          message:
+            `Collection amount ₹${amountCollected} ` +
+            `cannot exceed pending balance ₹${oldBalance}`
+        });
+      }
+
+      // ============================================================
+      // PAYMENT MODE
+      // ============================================================
+
+      let paymentMode = String(
+        req.body.paymentMode || 'Cash'
+      ).trim();
+
+      if (
+        cashAmount > 0 &&
+        chequeAmount > 0
+      ) {
+        paymentMode = 'Cash+Cheque';
+      } else if (chequeAmount > 0) {
+        paymentMode = 'Cheque';
+      } else if (cashAmount > 0) {
+        paymentMode = 'Cash';
+      } else if (
+        String(req.body.upiApp || '').trim()
+      ) {
+        paymentMode = 'UPI';
+      }
+
+      // ============================================================
+      // PREPARE BILL NUMBER CONDITIONS
+      // ============================================================
+      //
+      // MongoDB imported ERP data can contain:
+      //
+      // TrnNo: "4017"
+      //
+      // OR
+      //
+      // TrnNo: 4017
+      //
+      // Therefore search using both.
+      // ============================================================
+
+      const billNoConditions = [
+        {
+          TrnNo: billNo
+        }
+      ];
+
+      const numericBillNo = Number(
+        billNo
+      );
+
+      if (
+        Number.isFinite(
+          numericBillNo
+        )
+      ) {
+        billNoConditions.push({
+          TrnNo: numericBillNo
+        });
+      }
+
+      // ============================================================
+      // PREPARE ACCOUNT CODE CONDITIONS
+      // ============================================================
+
+      const sysAcCodeConditions = [
+        {
+          SysAcCode: sysAcCode
+        }
+      ];
+
+      const numericSysAcCode = Number(
+        sysAcCode
+      );
+
+      if (
+        Number.isFinite(
+          numericSysAcCode
+        )
+      ) {
+        sysAcCodeConditions.push({
+          SysAcCode:
+            numericSysAcCode
+        });
+      }
+
+      // ============================================================
+      // LOAD DELIVERY DIRECT COLLECTION
+      // ============================================================
+      //
+      // IMPORTANT:
+      // When loadNo is supplied, this request is coming from
+      // Load Delivery. Do NOT require Mas_Outstanding.
+      //
+      // Flow:
+      // 1. Verify the exact bill inside Mas_Delivery
+      // 2. Use Mas_Delivery bill balance as source of truth
+      // 3. Save payment directly to mas_payment
+      // 4. Update only payment fields inside Mas_Delivery
+      // 5. Return immediately
+      //
+      // The normal Mas_Outstanding logic below is untouched and
+      // is used only when loadNo is NOT supplied.
+      // ============================================================
+
+      if (isLoadDeliveryRequest) {
+        console.log(
+          'LOAD DELIVERY DIRECT PAYMENT REQUEST:',
+          {
+            distributorId,
+            salesmanId,
+            requestedLoadSeries,
+            requestedLoadNo,
+            billSeries,
+            billNo,
+            sysAcCode,
+            amountCollected,
+            paymentMode
+          }
+        );
+
+        // ----------------------------------------------------------
+        // SUPPORT STRING / NUMBER LOAD, BILL AND ACCOUNT VALUES
+        // ----------------------------------------------------------
+
+        const numericRequestedLoadNo =
+          Number(requestedLoadNo);
+
+        const loadNoValues = [
+          requestedLoadNo
+        ];
+
+        if (
+          Number.isFinite(
+            numericRequestedLoadNo
+          )
+        ) {
+          loadNoValues.push(
+            numericRequestedLoadNo
+          );
+        }
+
+        const billNoValues =
+          billNoConditions.map(
+            (condition) =>
+              condition.TrnNo
+          );
+
+        const sysAcCodeValues =
+          sysAcCodeConditions.map(
+            (condition) =>
+              condition.SysAcCode
+          );
+
+        // ----------------------------------------------------------
+        // FIND EXACT BILL INSIDE THE REQUESTED LOAD
+        // ----------------------------------------------------------
+
+        const loadBillMatch = {
+          TrnNo: {
+            $in:
+              billNoValues
+          },
+
+          SysAcCode: {
+            $in:
+              sysAcCodeValues
+          }
+        };
+
+        // Bill series belongs to the BILL, not necessarily to the
+        // root load. Only require it when the app supplied it.
+        if (billSeries) {
+          loadBillMatch.TrnSeries =
+            billSeries;
+        }
+
+        const loadFilter = {
+          distributorId:
+            distributorId,
+
+          LoadNo: {
+            $in:
+              loadNoValues
+          },
+
+          bills: {
+            $elemMatch:
+              loadBillMatch
+          }
+        };
+
+        // Root LoadSeries may legitimately be blank. Therefore only
+        // filter by it when the request actually supplied a value.
+        if (requestedLoadSeries) {
+          loadFilter.LoadSeries =
+            requestedLoadSeries;
+        }
+
+        console.log(
+          'LOAD DELIVERY SEARCH FILTER:',
+          JSON.stringify(
+            loadFilter,
+            null,
+            2
+          )
+        );
+
+        const matchingLoad =
+          await db
+            .collection(
+              'Mas_Delivery'
+            )
+            .findOne(
+              loadFilter
+            );
+
+        if (!matchingLoad) {
+          console.log(
+            'LOAD DELIVERY BILL NOT FOUND:',
+            {
+              distributorId,
+              requestedLoadSeries,
+              requestedLoadNo,
+              billSeries,
+              billNo,
+              sysAcCode
+            }
+          );
+
+          return res
+            .status(404)
+            .json({
+              success: false,
+              message:
+                `Load delivery bill not found. ` +
+                `Load: ${requestedLoadNo}, ` +
+                `Series: ${billSeries || 'blank'}, ` +
+                `Bill No: ${billNo}, ` +
+                `Account: ${sysAcCode}`
+            });
+        }
+
+        // ----------------------------------------------------------
+        // RESOLVE EXACT BILL FROM Mas_Delivery.bills[]
+        // ----------------------------------------------------------
+
+        const deliveryBill =
+          (
+            matchingLoad.bills ||
+            []
+          ).find(
+            (bill) => {
+              const sameBillNo =
+                String(
+                  bill.TrnNo ?? ''
+                ).trim() ===
+                billNo;
+
+              const sameAccount =
+                String(
+                  bill.SysAcCode ?? ''
+                ).trim() ===
+                sysAcCode;
+
+              const sameSeries =
+                !billSeries ||
+                String(
+                  bill.TrnSeries ?? ''
+                ).trim() ===
+                  billSeries;
+
+              return (
+                sameBillNo &&
+                sameAccount &&
+                sameSeries
+              );
+            }
+          );
+
+        if (!deliveryBill) {
+          return res
+            .status(404)
+            .json({
+              success: false,
+              message:
+                'The requested bill could not be resolved inside Mas_Delivery'
+            });
+        }
+
+        // ----------------------------------------------------------
+        // MAS_DELIVERY BALANCE IS THE SOURCE OF TRUTH
+        // ----------------------------------------------------------
+
+        const originalBillAmount =
+          Number(
+            deliveryBill.BillAmount ??
+              req.body.billAmount ??
+              oldBalance ??
+              0
+          );
+
+        const hasStoredBalance =
+          deliveryBill.balance_amount !==
+            undefined &&
+          deliveryBill.balance_amount !==
+            null;
+
+        const deliveryBalance =
+          Number(
+            hasStoredBalance
+              ? deliveryBill
+                  .balance_amount
+              : (
+                  deliveryBill.Bamt ??
+                  deliveryBill.BillAmount ??
+                  oldBalance ??
+                  0
+                )
+          );
+
+        if (
+          !Number.isFinite(
+            deliveryBalance
+          ) ||
+          deliveryBalance <= 0
+        ) {
+          return res
+            .status(400)
+            .json({
+              success: false,
+              field: 'oldBalance',
+              message:
+                'This load delivery bill does not have any pending balance'
+            });
+        }
+
+        if (
+          amountCollected >
+          deliveryBalance
+        ) {
+          return res
+            .status(400)
+            .json({
+              success: false,
+              field:
+                'amountCollected',
+              message:
+                `Collection amount ₹${amountCollected} ` +
+                `cannot exceed current load balance ` +
+                `₹${deliveryBalance}`
+            });
+        }
+
+        const finalNewBalance =
+          Math.max(
+            0,
+            Number(
+              (
+                deliveryBalance -
+                amountCollected
+              ).toFixed(2)
+            )
+          );
+
+        // ----------------------------------------------------------
+        // SALESMAN DETAILS
+        // ----------------------------------------------------------
+
+        let loadSalesmanName =
+          salesmanNameFromRequest;
+
+        if (
+          !loadSalesmanName &&
+          salesmanId
+        ) {
+          const salesman =
+            await collections
+              .salesman
+              .findOne({
+                salesman_id:
+                  salesmanId
+              });
+
+          if (salesman) {
+            loadSalesmanName =
+              salesman.name ||
+              salesman.salesman_name ||
+              '';
+          } else {
+            const registerUser =
+              await collections
+                .register
+                .findOne({
+                  salesman_id:
+                    salesmanId
+                });
+
+            if (registerUser) {
+              loadSalesmanName =
+                registerUser.fullName ||
+                registerUser.name ||
+                '';
+            }
+          }
+        }
+
+        // ----------------------------------------------------------
+        // DISTRIBUTOR DETAILS
+        // ----------------------------------------------------------
+
+        let loadDistributorName =
+          '';
+
+        const loadDistributor =
+          await collections
+            .distributor
+            .findOne({
+              distributor_id:
+                distributorId
+            });
+
+        if (loadDistributor) {
+          loadDistributorName =
+            loadDistributor.name ||
+            loadDistributor
+              .distributor_name ||
+            loadDistributor.firmName ||
+            '';
+        }
+
+        // ----------------------------------------------------------
+        // CREATE PAYMENT DOCUMENT
+        // ----------------------------------------------------------
+
+        const collectionId =
+          generateCollectionId();
+
+        const now =
+          new Date()
+            .toISOString();
+
+        const paymentPhotoPath =
+          req.file
+            ? `/uploads/${path.basename(
+                req.file.path
+              )}`
+            : (
+                String(
+                  req.body
+                    .paymentPhotoPath ||
+                    ''
+                ).trim() ||
+                null
+              );
+
+        const paymentDoc = {
+          collection_id:
+            collectionId,
+
+          collection_date:
+            now,
+
+          distributor_id:
+            distributorId,
+
+          distributor_name:
+            loadDistributorName,
+
+          // Makes it explicit that this payment did not originate
+          // from Mas_Outstanding.
+          source:
+            'load_delivery',
+
+          outstanding_id:
+            null,
+
+          salesman_details:
+            salesmanId
+              ? {
+                  id:
+                    salesmanId,
+
+                  name:
+                    loadSalesmanName ||
+                    salesmanId
+                }
+              : null,
+
+          collected_by: {
+            type:
+              collectedByType ===
+                'distributor' ||
+              collectedByType ===
+                'admin'
+                ? 'distributor'
+                : 'salesman',
+
+            id:
+              collectedById,
+
+            name:
+              collectedByType ===
+                'distributor' ||
+              collectedByType ===
+                'admin'
+                ? (
+                    loadDistributorName ||
+                    collectedById
+                  )
+                : (
+                    loadSalesmanName ||
+                    salesmanId
+                  ),
+
+            time:
+              now
+          },
+
+          customer_id:
+            sysAcCode,
+
+          customer_name:
+            String(
+              req.body.customerName ||
+                deliveryBill.AcName ||
+                ''
+            ).trim(),
+
+          // Keep these top-level fields for report compatibility.
+          bill_no:
+            billNo,
+
+          bill_series:
+            billSeries,
+
+          bill_details: {
+            outstanding_id:
+              null,
+
+            bill_series:
+              billSeries,
+
+            bill_no:
+              billNo,
+
+            sys_ac_code:
+              sysAcCode,
+
+            customer_name:
+              String(
+                req.body.customerName ||
+                  deliveryBill.AcName ||
+                  ''
+              ).trim(),
+
+            bill_amount:
+              originalBillAmount,
+
+            old_balance:
+              deliveryBalance,
+
+            amount_collected:
+              amountCollected,
+
+            balance_after_payment:
+              finalNewBalance
+          },
+
+          load_id:
+            matchingLoad
+              ._id
+              .toString(),
+
+          load_series:
+            String(
+              matchingLoad.LoadSeries ??
+                requestedLoadSeries ??
+                ''
+            ),
+
+          load_no:
+            matchingLoad.LoadNo ??
+            requestedLoadNo,
+
+          load_details: {
+            load_id:
+              matchingLoad
+                ._id
+                .toString(),
+
+            load_series:
+              String(
+                matchingLoad.LoadSeries ??
+                  requestedLoadSeries ??
+                  ''
+              ),
+
+            load_no:
+              matchingLoad.LoadNo ??
+              requestedLoadNo
+          },
+
+          payment_mode:
+            paymentMode,
+
+          payment_details: {
+            cash_amount:
+              cashAmount,
+
+            cheque_amount:
+              chequeAmount,
+
+            upi_amount:
+              paymentMode
+                  .toLowerCase() ===
+                'upi'
+                ? amountCollected
+                : 0,
+
+            cheque_number:
+              String(
+                req.body.chequeNumber ||
+                  ''
+              ).trim() ||
+              null,
+
+            cheque_date:
+              String(
+                req.body.chequeDate ||
+                  ''
+              ).trim() ||
+              null,
+
+            bank_name:
+              String(
+                req.body.bankName ||
+                  ''
+              ).trim() ||
+              null,
+
+            upi_app:
+              String(
+                req.body.upiApp ||
+                  ''
+              ).trim() ||
+              null,
+
+            transaction_number:
+              String(
+                req.body
+                  .transactionNumber ||
+                  ''
+              ).trim() ||
+              null,
+
+            payment_photo_path:
+              paymentPhotoPath
+          },
+
+          amount_collected:
+            amountCollected,
+
+          remark:
+            String(
+              req.body.remark ||
+                ''
+            ).trim(),
+
+          status:
+            'completed',
+
+          created_at:
+            now,
+
+          updated_at:
+            now
+        };
+
+        // ----------------------------------------------------------
+        // SAVE TO mas_payment FIRST
+        // ----------------------------------------------------------
+
+        let paymentResult =
+          null;
+
+        try {
+          paymentResult =
+            await collections
+              .payment
+              .insertOne(
+                paymentDoc
+              );
+
+          // --------------------------------------------------------
+          // UPDATE ONLY PAYMENT FIELDS IN Mas_Delivery
+          //
+          // DO NOT change delivery_status.
+          // --------------------------------------------------------
+
+          const guardedBillMatch = {
+            ...loadBillMatch
+          };
+
+          // Protect against simultaneous collection on the same bill.
+          if (hasStoredBalance) {
+            guardedBillMatch
+              .balance_amount =
+                deliveryBill
+                  .balance_amount;
+          } else {
+            guardedBillMatch
+              .balance_amount = {
+                $exists:
+                  false
+              };
+          }
+
+          const existingPaidAmount =
+            Number(
+              deliveryBill
+                .paid_amount ??
+                0
+            );
+
+          const deliveryUpdateResult =
+            await db
+              .collection(
+                'Mas_Delivery'
+              )
+              .updateOne(
+                {
+                  _id:
+                    matchingLoad._id,
+
+                  bills: {
+                    $elemMatch:
+                      guardedBillMatch
+                  }
+                },
+                {
+                  $set: {
+                    'bills.$.paid_amount':
+                      Number(
+                        (
+                          existingPaidAmount +
+                          amountCollected
+                        ).toFixed(2)
+                      ),
+
+                    'bills.$.balance_amount':
+                      finalNewBalance,
+
+                    'bills.$.payment_status':
+                      finalNewBalance <= 0
+                        ? 'paid'
+                        : 'partial',
+
+                    'bills.$.last_payment_date':
+                      now,
+
+                    'bills.$.last_payment_id':
+                      paymentResult
+                        .insertedId,
+
+                    'bills.$.last_payment_proof':
+                      paymentPhotoPath,
+
+                    'bills.$.payment_collected_by_type':
+                      paymentDoc
+                        .collected_by
+                        .type
+                  }
+                }
+              );
+
+          // If the balance changed between read and update, remove
+          // the just-created payment so the user can safely retry.
+          if (
+            deliveryUpdateResult
+              .matchedCount === 0
+          ) {
+            await collections
+              .payment
+              .deleteOne({
+                _id:
+                  paymentResult
+                    .insertedId
+              });
+
+            return res
+              .status(409)
+              .json({
+                success:
+                  false,
+
+                message:
+                  'Load bill balance changed. Refresh the load and try again.'
+              });
+          }
+
+          console.log(
+            'LOAD DELIVERY PAYMENT SUCCESS:',
+            {
+              collectionId,
+
+              paymentId:
+                paymentResult
+                  .insertedId
+                  .toString(),
+
+              loadId:
+                matchingLoad
+                  ._id
+                  .toString(),
+
+              loadNo:
+                matchingLoad.LoadNo,
+
+              billSeries,
+              billNo,
+              sysAcCode,
+
+              oldBalance:
+                deliveryBalance,
+
+              amountCollected,
+
+              newBalance:
+                finalNewBalance
+            }
+          );
+
+          return res
+            .status(201)
+            .json({
+              success:
+                true,
+
+              message:
+                'Load delivery payment saved successfully',
+
+              payment_id:
+                paymentResult
+                  .insertedId,
+
+              collection_id:
+                collectionId,
+
+              outstanding_id:
+                null,
+
+              load_id:
+                matchingLoad
+                  ._id
+                  .toString(),
+
+              load_series:
+                String(
+                  matchingLoad
+                    .LoadSeries ??
+                    ''
+                ),
+
+              load_no:
+                matchingLoad
+                  .LoadNo,
+
+              old_balance:
+                deliveryBalance,
+
+              amount_collected:
+                amountCollected,
+
+              new_balance:
+                finalNewBalance,
+
+              payment_status:
+                finalNewBalance <= 0
+                  ? 'paid'
+                  : 'partial'
+            });
+        } catch (
+          loadPaymentError
+        ) {
+          // If insert succeeded but a later operation threw,
+          // remove the payment to avoid a duplicate on retry.
+          if (
+            paymentResult
+              ?.insertedId
+          ) {
+            try {
+              await collections
+                .payment
+                .deleteOne({
+                  _id:
+                    paymentResult
+                      .insertedId
+                });
+            } catch (
+              rollbackError
+            ) {
+              console.error(
+                'LOAD PAYMENT ROLLBACK FAILED:',
+                rollbackError
+              );
+            }
+          }
+
+          throw loadPaymentError;
+        }
+      }
+
+      // ============================================================
+      // FIND OUTSTANDING BILL
+      // ============================================================
+      //
+      // IMPORTANT FIX:
+      //
+      // DO NOT FILTER BY salesman_id HERE.
+      //
+      // The salesman currently delivering/collecting a bill can be
+      // different from salesman_id stored in Mas_Outstanding.
+      //
+      // salesmanId represents WHO collected the payment.
+      //
+      // It must NOT be used to decide WHICH outstanding bill exists.
+      // ============================================================
+
+      let outstandingBill = null;
+
+      // ============================================================
+      // SEARCH METHOD 1
+      // EXACT Mas_Outstanding MongoDB _id
+      // ============================================================
+
+      if (
+        outstandingId &&
+        ObjectId.isValid(
+          outstandingId
+        )
+      ) {
+        outstandingBill =
+          await collections.outstanding.findOne({
+            _id:
+              new ObjectId(
+                outstandingId
+              ),
+
+            $or: [
+              {
+                distributor_id:
+                  distributorId
+              },
+              {
+                distributorId:
+                  distributorId
+              }
+            ]
+          });
+
+        if (outstandingBill) {
+          console.log(
+            'OUTSTANDING FOUND BY _id:',
+            outstandingBill._id.toString()
+          );
+        }
+      }
+
+      // ============================================================
+      // SEARCH METHOD 2
+      // DISTRIBUTOR + BILL + ACCOUNT + SERIES
+      // ============================================================
+
+      if (!outstandingBill) {
+        const outstandingFilter = {
+          $and: [
+            {
+              $or: [
+                {
+                  distributor_id:
+                    distributorId
+                },
+                {
+                  distributorId:
+                    distributorId
+                }
+              ]
+            },
+
+            {
+              $or:
+                billNoConditions
+            },
+
+            {
+              $or:
+                sysAcCodeConditions
+            }
+          ]
+        };
+
+        // ----------------------------------------------------------
+        // Use Bill Series only when it was actually supplied.
+        //
+        // DO NOT force empty TrnSeries when frontend sends blank.
+        // Imported ERP records may contain a series even when the
+        // current screen does not supply one.
+        // ----------------------------------------------------------
+
+        if (billSeries) {
+          outstandingFilter.$and.push({
+            TrnSeries:
+              billSeries
+          });
+        }
+
+        console.log(
+          'OUTSTANDING SEARCH FILTER:',
+          JSON.stringify(
+            outstandingFilter,
+            null,
+            2
+          )
+        );
+
+        outstandingBill =
+          await collections.outstanding.findOne(
+            outstandingFilter
+          );
+      }
+
+      // ============================================================
+      // OUTSTANDING NOT FOUND
+      // ============================================================
+
+     if (!outstandingBill) {
+  console.log(
+    'OUTSTANDING BILL NOT FOUND - CHECKING LOAD DELIVERY FALLBACK:',
+    {
+      distributorId,
+      salesmanId,
+      billSeries,
+      billNo,
+      sysAcCode,
+      outstandingId
+    }
+  );
+
+  // ============================================================
+  // FALLBACK:
+  // Bill may come directly from Mas_Delivery and may not exist
+  // in Mas_Outstanding.
+  //
+  // IMPORTANT:
+  // Normal Collect Payment logic above is NOT changed.
+  // This runs ONLY when Mas_Outstanding could not find the bill.
+  // ============================================================
+
+  try {
+    const fallbackBillNoValues = [
+      billNo
     ];
 
-    const numericBillNo = Number(billNo);
+    const fallbackNumericBillNo =
+      Number(billNo);
 
-    if (Number.isFinite(numericBillNo)) {
-      billNoConditions.push({
-        TrnNo: numericBillNo
-      });
+    if (
+      Number.isFinite(
+        fallbackNumericBillNo
+      )
+    ) {
+      fallbackBillNoValues.push(
+        fallbackNumericBillNo
+      );
     }
 
-    const outstandingFilter = {
-      distributor_id: distributorId,
-      SysAcCode: sysAcCode,
+    const fallbackSysAcCodeValues = [
+      sysAcCode
+    ];
 
-      $and: [
-        {
-          $or: billNoConditions
-        }
-      ]
+    const fallbackNumericSysAcCode =
+      Number(sysAcCode);
+
+    if (
+      Number.isFinite(
+        fallbackNumericSysAcCode
+      )
+    ) {
+      fallbackSysAcCodeValues.push(
+        fallbackNumericSysAcCode
+      );
+    }
+
+    // ----------------------------------------------------------
+    // Search bill inside Mas_Delivery
+    // ----------------------------------------------------------
+
+    const fallbackLoadBillMatch = {
+      TrnNo: {
+        $in:
+          fallbackBillNoValues
+      },
+
+      SysAcCode: {
+        $in:
+          fallbackSysAcCodeValues
+      }
     };
 
-    if (salesmanId) {
-      outstandingFilter.$and.push({
-          $or: [
+    // Do not make Series compulsory here.
+    // Some imported load bills may contain blank/different formatting.
+    // We verify it manually below.
+    const fallbackLoad =
+      await db
+        .collection(
+          'Mas_Delivery'
+        )
+        .findOne({
+          $and: [
             {
-              salesman_id: salesmanId
+              $or: [
+                {
+                  distributorId:
+                    distributorId
+                },
+                {
+                  distributor_id:
+                    distributorId
+                }
+              ]
             },
+
             {
-              salesman_id: {
-                $exists: false
+              bills: {
+                $elemMatch:
+                  fallbackLoadBillMatch
               }
-            },
-            {
-              salesman_id: ''
-            },
-            {
-              salesman_id: null
             }
           ]
         });
-    }
 
-    if (billSeries) {
-      outstandingFilter.TrnSeries = billSeries;
-    } else {
-      outstandingFilter.$and.push({
-        $or: [
-          {
-            TrnSeries: ''
-          },
-          {
-            TrnSeries: null
-          },
-          {
-            TrnSeries: {
-              $exists: false
-            }
-          }
-        ]
-      });
-    }
+    // ----------------------------------------------------------
+    // If found in Mas_Delivery, resolve exact bill
+    // ----------------------------------------------------------
 
-    console.log(
-      'OUTSTANDING SEARCH FILTER:',
-      JSON.stringify(outstandingFilter, null, 2)
-    );
-
-    const outstandingBill =
-      await collections.outstanding.findOne(
-        outstandingFilter
-      );
-
-    if (!outstandingBill) {
-      return res.status(404).json({
-        success: false,
-        message:
-          `Outstanding bill not found. ` +
-          `Series: ${billSeries || 'blank'}, ` +
-          `Bill No: ${billNo}, ` +
-          `Account: ${sysAcCode}`
-      });
-    }
-
-    // Use database balance as the final balance source.
-    const databaseBalance = Number(
-      outstandingBill.Bamt ??
-      outstandingBill.balance ??
-      oldBalance
-    );
-
-    if (
-      !Number.isFinite(databaseBalance) ||
-      databaseBalance <= 0
-    ) {
-      return res.status(400).json({
-        success: false,
-        field: 'oldBalance',
-        message:
-          'This bill does not have any pending balance'
-      });
-    }
-
-    if (amountCollected > databaseBalance) {
-      return res.status(400).json({
-        success: false,
-        field: 'amountCollected',
-        message:
-          `Collection amount ₹${amountCollected} cannot exceed current pending balance ₹${databaseBalance}`
-      });
-    }
-
-    const finalNewBalance = Math.max(
-      0,
-      Number(
+    if (fallbackLoad) {
+      const fallbackDeliveryBill =
         (
-          databaseBalance - amountCollected
-        ).toFixed(2)
-      )
-    );
+          fallbackLoad.bills ||
+          []
+        ).find(
+          (bill) => {
+            const storedBillNo =
+              String(
+                bill.TrnNo ?? ''
+              ).trim();
 
-    // ============================================================
-    // SALESMAN DETAILS
-    // ============================================================
+            const storedAccount =
+              String(
+                bill.SysAcCode ?? ''
+              ).trim();
 
-    let salesmanName = salesmanNameFromRequest;
+            const storedSeries =
+              String(
+                bill.TrnSeries ?? ''
+              )
+                .trim()
+                .toUpperCase();
 
-    if (!salesmanName) {
-      const salesman =
-        await collections.salesman.findOne({
-          salesman_id: salesmanId
-        });
+            const requestedSeries =
+              String(
+                billSeries ?? ''
+              )
+                .trim()
+                .toUpperCase();
 
-      if (salesman) {
-        salesmanName =
-          salesman.name ||
-          salesman.salesman_name ||
+            const sameBillNo =
+              storedBillNo ===
+              String(
+                billNo
+              ).trim();
+
+            const sameAccount =
+              storedAccount ===
+              String(
+                sysAcCode
+              ).trim();
+
+            // Series is checked only when both sides contain it.
+            const sameSeries =
+              !requestedSeries ||
+              !storedSeries ||
+              storedSeries ===
+                requestedSeries;
+
+            return (
+              sameBillNo &&
+              sameAccount &&
+              sameSeries
+            );
+          }
+        );
+
+      if (fallbackDeliveryBill) {
+        console.log(
+          'LOAD DELIVERY FALLBACK BILL FOUND:',
+          {
+            loadId:
+              fallbackLoad
+                ._id
+                .toString(),
+
+            loadSeries:
+              fallbackLoad.LoadSeries,
+
+            loadNo:
+              fallbackLoad.LoadNo,
+
+            billSeries:
+              fallbackDeliveryBill
+                .TrnSeries,
+
+            billNo:
+              fallbackDeliveryBill
+                .TrnNo,
+
+            sysAcCode:
+              fallbackDeliveryBill
+                .SysAcCode
+          }
+        );
+
+        // ======================================================
+        // CURRENT LOAD BALANCE
+        // ======================================================
+
+        const fallbackHasStoredBalance =
+          fallbackDeliveryBill
+            .balance_amount !==
+            undefined &&
+          fallbackDeliveryBill
+            .balance_amount !==
+            null;
+
+        const fallbackOldBalance =
+          Number(
+            fallbackHasStoredBalance
+              ? fallbackDeliveryBill
+                  .balance_amount
+              : (
+                  fallbackDeliveryBill
+                    .Bamt ??
+                  fallbackDeliveryBill
+                    .BillAmount ??
+                  oldBalance ??
+                  0
+                )
+          );
+
+        if (
+          !Number.isFinite(
+            fallbackOldBalance
+          ) ||
+          fallbackOldBalance <= 0
+        ) {
+          return res
+            .status(400)
+            .json({
+              success:
+                false,
+
+              message:
+                'This load delivery bill does not have any pending balance'
+            });
+        }
+
+        if (
+          amountCollected >
+          fallbackOldBalance
+        ) {
+          return res
+            .status(400)
+            .json({
+              success:
+                false,
+
+              message:
+                `Collection amount ₹${amountCollected} ` +
+                `cannot exceed load pending balance ₹${fallbackOldBalance}`
+            });
+        }
+
+        const fallbackNewBalance =
+          Math.max(
+            0,
+            Number(
+              (
+                fallbackOldBalance -
+                amountCollected
+              ).toFixed(2)
+            )
+          );
+
+        // ======================================================
+        // SALESMAN NAME
+        // ======================================================
+
+        let fallbackSalesmanName =
+          salesmanNameFromRequest ||
           '';
-      } else {
-        const registerUser =
-          await collections.register.findOne({
-            salesman_id: salesmanId
-          });
 
-        if (registerUser) {
-          salesmanName =
-            registerUser.fullName ||
-            registerUser.name ||
+        if (
+          !fallbackSalesmanName &&
+          salesmanId
+        ) {
+          const fallbackSalesman =
+            await collections
+              .salesman
+              .findOne({
+                salesman_id:
+                  salesmanId
+              });
+
+          if (fallbackSalesman) {
+            fallbackSalesmanName =
+              fallbackSalesman.name ||
+              fallbackSalesman
+                .salesman_name ||
+              salesmanId;
+          }
+        }
+
+        // ======================================================
+        // DISTRIBUTOR NAME
+        // ======================================================
+
+        let fallbackDistributorName =
+          '';
+
+        const fallbackDistributor =
+          await collections
+            .distributor
+            .findOne({
+              distributor_id:
+                distributorId
+            });
+
+        if (fallbackDistributor) {
+          fallbackDistributorName =
+            fallbackDistributor.name ||
+            fallbackDistributor
+              .distributor_name ||
+            fallbackDistributor
+              .firmName ||
             '';
         }
-      }
-    }
 
-    // ============================================================
-    // DISTRIBUTOR DETAILS
-    // ============================================================
+        // ======================================================
+        // PAYMENT DETAILS
+        // ======================================================
 
-    let distributorName = '';
+        const fallbackCollectionId =
+          generateCollectionId();
 
-    const distributor =
-      await collections.distributor.findOne({
-        distributor_id: distributorId
-      });
+        const fallbackNow =
+          new Date()
+            .toISOString();
 
-    if (distributor) {
-      distributorName =
-        distributor.name ||
-        distributor.distributor_name ||
-        distributor.firmName ||
-        '';
-    }
+        const fallbackPaymentPhotoPath =
+          req.file
+            ? `/uploads/${path.basename(
+                req.file.path
+              )}`
+            : (
+                String(
+                  req.body
+                    .paymentPhotoPath ||
+                  ''
+                ).trim() ||
+                null
+              );
 
-    const collectionId = generateCollectionId();
-    const now = new Date().toISOString();
+        const fallbackBillAmount =
+          Number(
+            fallbackDeliveryBill
+              .BillAmount ??
+            req.body.billAmount ??
+            fallbackOldBalance
+          );
 
-    // Resolve the load on the server from the stable bill identity. This keeps
-    // reconciliation correct even when payment is started from Outstanding
-    // rather than from the Load Delivery screen.
-    const matchingLoad = await db.collection('Mas_Delivery').findOne({
-      distributorId,
-      bills: {
-        $elemMatch: {
-          TrnNo: { $in: Number.isFinite(numericBillNo) ? [billNo, numericBillNo] : [billNo] },
-          SysAcCode: sysAcCode,
-          ...(billSeries ? { TrnSeries: billSeries } : {})
-        }
-      }
-    }, { projection: { LoadSeries: 1, LoadNo: 1 } });
+        const fallbackPaymentDoc = {
+          collection_id:
+            fallbackCollectionId,
 
-    // ============================================================
-    // PAYMENT DOCUMENT
-    // ============================================================
+          collection_date:
+            fallbackNow,
 
-    const paymentDoc = {
-      collection_id: collectionId,
-      collection_date: now,
+          distributor_id:
+            distributorId,
 
-      distributor_id: distributorId,
-      distributor_name: distributorName,
+          distributor_name:
+            fallbackDistributorName,
 
-      salesman_details: salesmanId ? {
-        id: salesmanId,
-        name: salesmanName || salesmanId
-      } : null,
+          // IMPORTANT
+          source:
+            'load_delivery',
 
-      collected_by: {
-        type: collectedByType === 'distributor' || collectedByType === 'admin'
-          ? 'distributor'
-          : 'salesman',
-        id: collectedById,
-        name: collectedByType === 'distributor' || collectedByType === 'admin'
-          ? (distributorName || collectedById)
-          : (salesmanName || salesmanId),
-        time: now
-      },
+          outstanding_id:
+            null,
 
-      customer_id: sysAcCode,
+          salesman_id:
+            salesmanId,
 
-      customer_name: String(
-        req.body.customerName || ''
-      ).trim(),
+          salesman_name:
+            fallbackSalesmanName,
 
-      bill_details: {
-        bill_series: billSeries,
-        bill_no: billNo,
-        sys_ac_code: sysAcCode,
+          salesman_details:
+            salesmanId
+              ? {
+                  id:
+                    salesmanId,
 
-        customer_name: String(
-          req.body.customerName || ''
-        ).trim(),
+                  name:
+                    fallbackSalesmanName ||
+                    salesmanId
+                }
+              : null,
 
-        bill_amount: Number(
-          req.body.billAmount ??
-          outstandingBill.Amt ??
-          databaseBalance
-        ),
+          collected_by: {
+            type:
+              collectedByType ===
+                'distributor' ||
+              collectedByType ===
+                'admin'
+                ? 'distributor'
+                : 'salesman',
 
-        old_balance: databaseBalance,
-        amount_collected: amountCollected,
-        balance_after_payment:
-          finalNewBalance
-      },
+            id:
+              collectedById,
 
-      load_details: matchingLoad ? {
-        load_id: matchingLoad._id.toString(),
-        load_series: matchingLoad.LoadSeries ?? '',
-        load_no: matchingLoad.LoadNo
-      } : null,
+            name:
+              collectedByType ===
+                'distributor' ||
+              collectedByType ===
+                'admin'
+                ? (
+                    fallbackDistributorName ||
+                    collectedById
+                  )
+                : (
+                    fallbackSalesmanName ||
+                    salesmanId
+                  ),
 
-      payment_mode: paymentMode,
-
-      payment_details: {
-        cash_amount: cashAmount,
-        cheque_amount: chequeAmount,
-        upi_amount: paymentMode.toLowerCase() === 'upi' ? amountCollected : 0,
-
-        cheque_number:
-          String(
-            req.body.chequeNumber || ''
-          ).trim() || null,
-
-        cheque_date:
-          String(
-            req.body.chequeDate || ''
-          ).trim() || null,
-
-        bank_name:
-          String(
-            req.body.bankName || ''
-          ).trim() || null,
-
-        upi_app:
-          String(
-            req.body.upiApp || ''
-          ).trim() || null,
-
-        transaction_number:
-          String(
-            req.body.transactionNumber || ''
-          ).trim() || null,
-
-        payment_photo_path: req.file
-          ? `/uploads/${path.basename(req.file.path)}`
-          : (String(req.body.paymentPhotoPath || '').trim() || null)
-      },
-
-      amount_collected: amountCollected,
-
-      remark: String(
-        req.body.remark || ''
-      ).trim(),
-
-      status: 'completed',
-      created_at: now,
-      updated_at: now
-    };
-
-    // ============================================================
-    // UPDATE OUTSTANDING FIRST
-    // ============================================================
-
-    const outstandingUpdateResult =
-      await collections.outstanding.updateOne(
-        {
-          _id: outstandingBill._id,
-
-          // Prevent simultaneous duplicate adjustment.
-          Bamt: outstandingBill.Bamt
-        },
-        {
-          $set: {
-            Bamt: finalNewBalance,
-
-            payment_status:
-              finalNewBalance <= 0
-                ? 'paid'
-                : 'partial',
-
-            status:
-              finalNewBalance <= 0
-                ? 'paid'
-                : 'pending',
-
-            last_payment_date: now,
-            updated_at: now
+            time:
+              fallbackNow
           },
 
-          $inc: {
-            collected_amount: amountCollected
+          customer_id:
+            sysAcCode,
+
+          customer_name:
+            String(
+              req.body
+                .customerName ||
+              fallbackDeliveryBill
+                .AcName ||
+              ''
+            ).trim(),
+
+          bill_no:
+            billNo,
+
+          bill_series:
+            billSeries ||
+            String(
+              fallbackDeliveryBill
+                .TrnSeries ??
+              ''
+            ),
+
+          bill_details: {
+            outstanding_id:
+              null,
+
+            bill_series:
+              billSeries ||
+              String(
+                fallbackDeliveryBill
+                  .TrnSeries ??
+                ''
+              ),
+
+            bill_no:
+              billNo,
+
+            sys_ac_code:
+              sysAcCode,
+
+            customer_name:
+              String(
+                req.body
+                  .customerName ||
+                fallbackDeliveryBill
+                  .AcName ||
+                ''
+              ).trim(),
+
+            bill_amount:
+              fallbackBillAmount,
+
+            old_balance:
+              fallbackOldBalance,
+
+            amount_collected:
+              amountCollected,
+
+            balance_after_payment:
+              fallbackNewBalance
+          },
+
+          load_id:
+            fallbackLoad
+              ._id
+              .toString(),
+
+          load_series:
+            String(
+              fallbackLoad
+                .LoadSeries ??
+              ''
+            ),
+
+          load_no:
+            fallbackLoad.LoadNo,
+
+          load_details: {
+            load_id:
+              fallbackLoad
+                ._id
+                .toString(),
+
+            load_series:
+              String(
+                fallbackLoad
+                  .LoadSeries ??
+                ''
+              ),
+
+            load_no:
+              fallbackLoad.LoadNo
+          },
+
+          payment_mode:
+            paymentMode,
+
+          payment_details: {
+            cash_amount:
+              cashAmount,
+
+            cheque_amount:
+              chequeAmount,
+
+            upi_amount:
+              paymentMode
+                  .toLowerCase() ===
+                'upi'
+                ? amountCollected
+                : 0,
+
+            cheque_number:
+              String(
+                req.body
+                  .chequeNumber ||
+                ''
+              ).trim() ||
+              null,
+
+            cheque_date:
+              String(
+                req.body
+                  .chequeDate ||
+                ''
+              ).trim() ||
+              null,
+
+            bank_name:
+              String(
+                req.body
+                  .bankName ||
+                ''
+              ).trim() ||
+              null,
+
+            upi_app:
+              String(
+                req.body
+                  .upiApp ||
+                ''
+              ).trim() ||
+              null,
+
+            transaction_number:
+              String(
+                req.body
+                  .transactionNumber ||
+                ''
+              ).trim() ||
+              null,
+
+            payment_photo_path:
+              fallbackPaymentPhotoPath
+          },
+
+          amount_collected:
+            amountCollected,
+
+          remark:
+            String(
+              req.body.remark ||
+              ''
+            ).trim(),
+
+          status:
+            'completed',
+
+          created_at:
+            fallbackNow,
+
+          updated_at:
+            fallbackNow
+        };
+
+        // ======================================================
+        // SAVE PAYMENT
+        // ======================================================
+
+        let fallbackPaymentResult =
+          null;
+
+        try {
+          fallbackPaymentResult =
+            await collections
+              .payment
+              .insertOne(
+                fallbackPaymentDoc
+              );
+
+          // ====================================================
+          // SAFE UPDATE OF EXACT BILL INSIDE Mas_Delivery
+          // ====================================================
+
+          const fallbackGuardMatch = {
+            TrnNo: {
+              $in:
+                fallbackBillNoValues
+            },
+
+            SysAcCode: {
+              $in:
+                fallbackSysAcCodeValues
+            }
+          };
+
+          // Use actual stored series.
+          if (
+            fallbackDeliveryBill
+              .TrnSeries !==
+              undefined &&
+            fallbackDeliveryBill
+              .TrnSeries !==
+              null &&
+            String(
+              fallbackDeliveryBill
+                .TrnSeries
+            ).trim() !== ''
+          ) {
+            fallbackGuardMatch
+              .TrnSeries =
+              fallbackDeliveryBill
+                .TrnSeries;
           }
+
+          // Protect against duplicate/simultaneous collection.
+          if (
+            fallbackHasStoredBalance
+          ) {
+            fallbackGuardMatch
+              .balance_amount =
+              fallbackDeliveryBill
+                .balance_amount;
+          }
+
+          const fallbackExistingPaid =
+            Number(
+              fallbackDeliveryBill
+                .paid_amount ??
+              0
+            );
+
+          const fallbackUpdateResult =
+            await db
+              .collection(
+                'Mas_Delivery'
+              )
+              .updateOne(
+                {
+                  _id:
+                    fallbackLoad._id,
+
+                  bills: {
+                    $elemMatch:
+                      fallbackGuardMatch
+                  }
+                },
+
+                {
+                  $set: {
+                    'bills.$.paid_amount':
+                      Number(
+                        (
+                          fallbackExistingPaid +
+                          amountCollected
+                        ).toFixed(2)
+                      ),
+
+                    'bills.$.balance_amount':
+                      fallbackNewBalance,
+
+                    'bills.$.payment_status':
+                      fallbackNewBalance <= 0
+                        ? 'paid'
+                        : 'partial',
+
+                    'bills.$.last_payment_date':
+                      fallbackNow,
+
+                    'bills.$.last_payment_id':
+                      fallbackPaymentResult
+                        .insertedId,
+
+                    'bills.$.last_payment_proof':
+                      fallbackPaymentPhotoPath,
+
+                    'bills.$.payment_collected_by_type':
+                      fallbackPaymentDoc
+                        .collected_by
+                        .type
+                  }
+                }
+              );
+
+          if (
+            fallbackUpdateResult
+              .matchedCount === 0
+          ) {
+            // Remove payment if load update failed.
+            await collections
+              .payment
+              .deleteOne({
+                _id:
+                  fallbackPaymentResult
+                    .insertedId
+              });
+
+            return res
+              .status(409)
+              .json({
+                success:
+                  false,
+
+                message:
+                  'Load bill balance changed. Refresh and try again.'
+              });
+          }
+
+          console.log(
+            'LOAD DELIVERY FALLBACK PAYMENT SUCCESS:',
+            {
+              paymentId:
+                fallbackPaymentResult
+                  .insertedId
+                  .toString(),
+
+              collectionId:
+                fallbackCollectionId,
+
+              loadId:
+                fallbackLoad
+                  ._id
+                  .toString(),
+
+              loadNo:
+                fallbackLoad.LoadNo,
+
+              billSeries:
+                fallbackDeliveryBill
+                  .TrnSeries,
+
+              billNo,
+
+              sysAcCode,
+
+              oldBalance:
+                fallbackOldBalance,
+
+              amountCollected,
+
+              newBalance:
+                fallbackNewBalance
+            }
+          );
+
+          // ====================================================
+          // VERY IMPORTANT:
+          // RETURN HERE.
+          //
+          // Do not continue to normal Mas_Outstanding code.
+          // ====================================================
+
+          return res
+            .status(201)
+            .json({
+              success:
+                true,
+
+              message:
+                'Load delivery payment saved successfully',
+
+              source:
+                'load_delivery',
+
+              payment_id:
+                fallbackPaymentResult
+                  .insertedId,
+
+              collection_id:
+                fallbackCollectionId,
+
+              outstanding_id:
+                null,
+
+              load_id:
+                fallbackLoad
+                  ._id
+                  .toString(),
+
+              load_series:
+                String(
+                  fallbackLoad
+                    .LoadSeries ??
+                  ''
+                ),
+
+              load_no:
+                fallbackLoad.LoadNo,
+
+              bill_series:
+                fallbackDeliveryBill
+                  .TrnSeries ??
+                billSeries,
+
+              bill_no:
+                fallbackDeliveryBill
+                  .TrnNo,
+
+              sys_ac_code:
+                fallbackDeliveryBill
+                  .SysAcCode,
+
+              old_balance:
+                fallbackOldBalance,
+
+              amount_collected:
+                amountCollected,
+
+              new_balance:
+                fallbackNewBalance,
+
+              payment_status:
+                fallbackNewBalance <= 0
+                  ? 'paid'
+                  : 'partial'
+            });
+        } catch (
+          fallbackSaveError
+        ) {
+          // Roll back payment if something failed after insert.
+          if (
+            fallbackPaymentResult
+              ?.insertedId
+          ) {
+            try {
+              await collections
+                .payment
+                .deleteOne({
+                  _id:
+                    fallbackPaymentResult
+                      .insertedId
+                });
+            } catch (
+              fallbackRollbackError
+            ) {
+              console.error(
+                'LOAD FALLBACK ROLLBACK ERROR:',
+                fallbackRollbackError
+              );
+            }
+          }
+
+          throw fallbackSaveError;
+        }
+      }
+    }
+
+    // ============================================================
+    // NOT FOUND IN Mas_Outstanding AND NOT FOUND IN Mas_Delivery
+    // Only now return the original error.
+    // ============================================================
+
+    console.log(
+      'BILL NOT FOUND IN OUTSTANDING OR LOAD DELIVERY:',
+      {
+        distributorId,
+        salesmanId,
+        billSeries,
+        billNo,
+        sysAcCode,
+        outstandingId
+      }
+    );
+
+    return res.status(404).json({
+      success: false,
+
+      message:
+        `Bill not found in Outstanding or Load Delivery. ` +
+        `Series: ${billSeries || 'blank'}, ` +
+        `Bill No: ${billNo}, ` +
+        `Account: ${sysAcCode}`
+    });
+  } catch (
+    loadFallbackError
+  ) {
+    console.error(
+      'LOAD DELIVERY FALLBACK ERROR:',
+      loadFallbackError
+    );
+
+    return res
+      .status(500)
+      .json({
+        success:
+          false,
+
+        message:
+          'Error while checking Load Delivery payment',
+
+        error:
+          loadFallbackError.message
+      });
+  }
+}
+
+      console.log(
+        'OUTSTANDING BILL FOUND:',
+        {
+          id:
+            outstandingBill._id
+              ?.toString(),
+
+          distributor:
+            outstandingBill.distributor_id ??
+            outstandingBill.distributorId,
+
+          series:
+            outstandingBill.TrnSeries,
+
+          billNo:
+            outstandingBill.TrnNo,
+
+          account:
+            outstandingBill.SysAcCode,
+
+          balance:
+            outstandingBill.Bamt ??
+            outstandingBill.balance,
+
+          storedSalesman:
+            outstandingBill.salesman_id,
+
+          collectingSalesman:
+            salesmanId
         }
       );
 
-    if (
-      outstandingUpdateResult.matchedCount === 0
-    ) {
-      return res.status(409).json({
-        success: false,
-        message:
-          'Outstanding balance was changed by another request. Refresh the bills and try again.'
-      });
-    }
+      // ============================================================
+      // DATABASE BALANCE IS FINAL SOURCE
+      // ============================================================
 
-    // ============================================================
-    // SAVE PAYMENT
-    // ============================================================
+      const databaseBalance = Number(
+        outstandingBill.Bamt ??
+          outstandingBill.balance ??
+          oldBalance
+      );
 
-    try {
-      const paymentResult =
-        await collections.payment.insertOne(
-          paymentDoc
-        );
-
-      // Keep the load-delivery copy of this bill in sync with the canonical
-      // outstanding balance. Delivery and payment are deliberately separate
-      // states, so receiving payment never changes delivery_status.
-      try {
-        await db.collection('Mas_Delivery').updateOne(
-        {
-          distributorId,
-          bills: {
-            $elemMatch: {
-              TrnNo: { $in: Number.isFinite(numericBillNo) ? [billNo, numericBillNo] : [billNo] },
-              SysAcCode: sysAcCode,
-              ...(billSeries ? { TrnSeries: billSeries } : {})
-            }
-          }
-        },
-        {
-          $set: {
-            'bills.$.paid_amount': Number(
-              (Number(outstandingBill.Amt ?? databaseBalance) - finalNewBalance).toFixed(2)
-            ),
-            'bills.$.balance_amount': finalNewBalance,
-            'bills.$.payment_status': finalNewBalance <= 0 ? 'paid' : 'partial',
-            'bills.$.last_payment_date': now,
-            'bills.$.last_payment_id': paymentResult.insertedId,
-            'bills.$.last_payment_proof': paymentDoc.payment_details.payment_photo_path,
-            'bills.$.payment_collected_by_type': paymentDoc.collected_by.type
-          }
-        }
-        );
-      } catch (deliverySyncError) {
-        // Payment/outstanding are already saved; returning a failure here
-        // would encourage a duplicate collection retry.
-        console.error('Load payment status sync failed:', deliverySyncError);
+      if (
+        !Number.isFinite(
+          databaseBalance
+        ) ||
+        databaseBalance <= 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          field: 'oldBalance',
+          message:
+            'This bill does not have any pending balance'
+        });
       }
 
-      return res.status(201).json({
-        success: true,
+      if (
+        amountCollected >
+        databaseBalance
+      ) {
+        return res.status(400).json({
+          success: false,
+          field: 'amountCollected',
 
-        message:
-          'Outstanding payment saved successfully',
+          message:
+            `Collection amount ₹${amountCollected} ` +
+            `cannot exceed current pending balance ` +
+            `₹${databaseBalance}`
+        });
+      }
 
-        payment_id:
-          paymentResult.insertedId,
+      const finalNewBalance =
+        Math.max(
+          0,
+          Number(
+            (
+              databaseBalance -
+              amountCollected
+            ).toFixed(2)
+          )
+        );
 
+      // ============================================================
+      // SALESMAN DETAILS
+      // ============================================================
+
+      let salesmanName =
+        salesmanNameFromRequest;
+
+      if (
+        !salesmanName &&
+        salesmanId
+      ) {
+        const salesman =
+          await collections.salesman.findOne({
+            salesman_id:
+              salesmanId
+          });
+
+        if (salesman) {
+          salesmanName =
+            salesman.name ||
+            salesman.salesman_name ||
+            '';
+        } else {
+          const registerUser =
+            await collections.register.findOne({
+              salesman_id:
+                salesmanId
+            });
+
+          if (registerUser) {
+            salesmanName =
+              registerUser.fullName ||
+              registerUser.name ||
+              '';
+          }
+        }
+      }
+
+      // ============================================================
+      // DISTRIBUTOR DETAILS
+      // ============================================================
+
+      let distributorName = '';
+
+      const distributor =
+        await collections.distributor.findOne({
+          distributor_id:
+            distributorId
+        });
+
+      if (distributor) {
+        distributorName =
+          distributor.name ||
+          distributor.distributor_name ||
+          distributor.firmName ||
+          '';
+      }
+
+      // ============================================================
+      // COLLECTION ID
+      // ============================================================
+
+      const collectionId =
+        generateCollectionId();
+
+      const now =
+        new Date().toISOString();
+
+      // ============================================================
+      // RESOLVE LOAD DETAILS
+      // ============================================================
+
+      const billNoValues =
+        Number.isFinite(
+          numericBillNo
+        )
+          ? [
+              billNo,
+              numericBillNo
+            ]
+          : [
+              billNo
+            ];
+
+      const sysAcCodeValues =
+        Number.isFinite(
+          numericSysAcCode
+        )
+          ? [
+              sysAcCode,
+              numericSysAcCode
+            ]
+          : [
+              sysAcCode
+            ];
+
+      const loadBillMatch = {
+        TrnNo: {
+          $in:
+            billNoValues
+        },
+
+        SysAcCode: {
+          $in:
+            sysAcCodeValues
+        },
+
+        ...(
+          billSeries
+            ? {
+                TrnSeries:
+                  billSeries
+              }
+            : {}
+        )
+      };
+
+      let matchingLoad = null;
+
+      // ============================================================
+      // CASE 1
+      // PAYMENT FROM LOAD DELIVERY
+      // ============================================================
+
+       if (isLoadDeliveryRequest) {
+        const numericRequestedLoadNo =
+          Number(
+            requestedLoadNo
+          );
+
+        const loadNoConditions = [
+          {
+            LoadNo:
+              requestedLoadNo
+          }
+        ];
+
+        if (
+          Number.isFinite(
+            numericRequestedLoadNo
+          )
+        ) {
+          loadNoConditions.push({
+            LoadNo:
+              numericRequestedLoadNo
+          });
+        }
+
+        const exactLoadFilter = {
+          distributorId:
+
+            distributorId,
+
+          $or:
+            loadNoConditions,
+
+          bills: {
+            $elemMatch:
+              loadBillMatch
+          }
+        };
+
+        if (
+          requestedLoadSeries
+        ) {
+          exactLoadFilter.LoadSeries =
+            requestedLoadSeries;
+        }
+
+        matchingLoad =
+          await db
+            .collection(
+              'Mas_Delivery'
+            )
+            .findOne(
+              exactLoadFilter,
+              {
+                projection: {
+                  LoadSeries: 1,
+                  LoadNo: 1
+                }
+              }
+            );
+      }
+
+      // ============================================================
+      // CASE 2
+      // NORMAL OUTSTANDING PAYMENT
+      // ============================================================
+
+      if (
+        !matchingLoad &&
+        !requestedLoadNo
+      ) {
+        matchingLoad =
+          await db
+            .collection(
+              'Mas_Delivery'
+            )
+            .findOne(
+              {
+                distributorId:
+
+                  distributorId,
+
+                bills: {
+                  $elemMatch:
+                    loadBillMatch
+                }
+              },
+              {
+                projection: {
+                  LoadSeries: 1,
+                  LoadNo: 1
+                }
+              }
+            );
+      }
+
+      // ============================================================
+      // FINAL LOAD VALUES
+      // ============================================================
+
+      const resolvedLoadId =
+        matchingLoad
+          ? matchingLoad
+              ._id
+              .toString()
+          : null;
+
+      const resolvedLoadSeries =
+        matchingLoad
+          ? String(
+              matchingLoad
+                .LoadSeries ??
+                ''
+            )
+          : requestedLoadSeries;
+
+      const resolvedLoadNo =
+        matchingLoad
+          ? matchingLoad.LoadNo
+          : (
+              requestedLoadNo ||
+              null
+            );
+
+      const hasLoadDetails =
+        resolvedLoadId !== null ||
+        resolvedLoadSeries !== '' ||
+        resolvedLoadNo !== null;
+
+      console.log(
+        'PAYMENT LOAD DETAILS:',
+        {
+          requestedLoadSeries,
+          requestedLoadNo,
+          resolvedLoadId,
+          resolvedLoadSeries,
+          resolvedLoadNo
+        }
+      );
+
+      // ============================================================
+      // CREATE PAYMENT DOCUMENT
+      // ============================================================
+
+      const paymentDoc = {
         collection_id:
           collectionId,
 
-        old_balance:
-          databaseBalance,
+        collection_date:
+          now,
+
+        distributor_id:
+          distributorId,
+
+        distributor_name:
+          distributorName,
+
+        // Store exact Outstanding reference for future tracing.
+        outstanding_id:
+          outstandingBill
+            ._id
+            .toString(),
+
+        salesman_details:
+          salesmanId
+            ? {
+                id:
+                  salesmanId,
+
+                name:
+                  salesmanName ||
+                  salesmanId
+              }
+            : null,
+
+        collected_by: {
+          type:
+            collectedByType ===
+              'distributor' ||
+            collectedByType ===
+              'admin'
+              ? 'distributor'
+              : 'salesman',
+
+          id:
+            collectedById,
+
+          name:
+            collectedByType ===
+              'distributor' ||
+            collectedByType ===
+              'admin'
+              ? (
+                  distributorName ||
+                  collectedById
+                )
+              : (
+                  salesmanName ||
+                  salesmanId
+                ),
+
+          time:
+            now
+        },
+
+        customer_id:
+          sysAcCode,
+
+        customer_name:
+          String(
+            req.body.customerName ||
+              ''
+          ).trim(),
+
+        // ==========================================================
+        // BILL DETAILS
+        // ==========================================================
+
+        bill_details: {
+          outstanding_id:
+            outstandingBill
+              ._id
+              .toString(),
+
+          bill_series:
+            billSeries,
+
+          bill_no:
+            billNo,
+
+          sys_ac_code:
+            sysAcCode,
+
+          customer_name:
+            String(
+              req.body.customerName ||
+                ''
+            ).trim(),
+
+          bill_amount:
+            Number(
+              req.body.billAmount ??
+                outstandingBill.Amt ??
+                databaseBalance
+            ),
+
+          old_balance:
+            databaseBalance,
+
+          amount_collected:
+            amountCollected,
+
+          balance_after_payment:
+            finalNewBalance
+        },
+
+        // ==========================================================
+        // LOAD DETAILS - TOP LEVEL
+        // ==========================================================
+
+        load_id:
+          resolvedLoadId,
+
+        load_series:
+          resolvedLoadSeries,
+
+        load_no:
+          resolvedLoadNo,
+
+        // ==========================================================
+        // LOAD DETAILS - NESTED
+        // ==========================================================
+
+        load_details:
+          hasLoadDetails
+            ? {
+                load_id:
+                  resolvedLoadId,
+
+                load_series:
+                  resolvedLoadSeries,
+
+                load_no:
+                  resolvedLoadNo
+              }
+            : null,
+
+        // ==========================================================
+        // PAYMENT
+        // ==========================================================
+
+        payment_mode:
+          paymentMode,
+
+        payment_details: {
+          cash_amount:
+            cashAmount,
+
+          cheque_amount:
+            chequeAmount,
+
+          upi_amount:
+            paymentMode
+                .toLowerCase() ===
+              'upi'
+              ? amountCollected
+              : 0,
+
+          cheque_number:
+            String(
+              req.body.chequeNumber ||
+                ''
+            ).trim() ||
+            null,
+
+          cheque_date:
+            String(
+              req.body.chequeDate ||
+                ''
+            ).trim() ||
+            null,
+
+          bank_name:
+            String(
+              req.body.bankName ||
+                ''
+            ).trim() ||
+            null,
+
+          upi_app:
+            String(
+              req.body.upiApp ||
+                ''
+            ).trim() ||
+            null,
+
+          transaction_number:
+            String(
+              req.body.transactionNumber ||
+                ''
+            ).trim() ||
+            null,
+
+          payment_photo_path:
+            req.file
+              ? `/uploads/${path.basename(
+                  req.file.path
+                )}`
+              : (
+                  String(
+                    req.body
+                      .paymentPhotoPath ||
+                      ''
+                  ).trim() ||
+                  null
+                )
+        },
 
         amount_collected:
           amountCollected,
 
-        new_balance:
-          finalNewBalance,
+        remark:
+          String(
+            req.body.remark || ''
+          ).trim(),
 
-        payment_status:
-          finalNewBalance <= 0
-            ? 'paid'
-            : 'partial'
-      });
-    } catch (paymentInsertError) {
-      console.error(
-        'Payment insertion failed. Rolling back outstanding:',
-        paymentInsertError
-      );
+        status:
+          'completed',
 
-      // Roll back outstanding if payment insert fails.
-      await collections.outstanding.updateOne(
-        {
-          _id: outstandingBill._id
-        },
-        {
-          $set: {
-            Bamt: databaseBalance,
+        created_at:
+          now,
+
+        updated_at:
+          now
+      };
+
+      // ============================================================
+      // UPDATE Mas_Outstanding
+      // ============================================================
+
+      const outstandingUpdateResult =
+        await collections
+          .outstanding
+          .updateOne(
+            {
+              _id:
+                outstandingBill._id,
+
+              // Prevent simultaneous duplicate updates.
+              Bamt:
+                outstandingBill.Bamt
+            },
+            {
+              $set: {
+                Bamt:
+                  finalNewBalance,
+
+                payment_status:
+                  finalNewBalance <= 0
+                    ? 'paid'
+                    : 'partial',
+
+                status:
+                  finalNewBalance <= 0
+                    ? 'paid'
+                    : 'pending',
+
+                last_payment_date:
+                  now,
+
+                updated_at:
+                  now
+              },
+
+              $inc: {
+                collected_amount:
+                  amountCollected
+              }
+            }
+          );
+
+      // ============================================================
+      // CONCURRENT UPDATE PROTECTION
+      // ============================================================
+
+      if (
+        outstandingUpdateResult
+          .matchedCount === 0
+      ) {
+        return res
+          .status(409)
+          .json({
+            success:
+              false,
+
+            message:
+              'Outstanding balance was changed by another request. Refresh the bills and try again.'
+          });
+      }
+
+      // ============================================================
+      // SAVE PAYMENT TO mas_payment
+      // ============================================================
+
+      try {
+        const paymentResult =
+          await collections
+            .payment
+            .insertOne(
+              paymentDoc
+            );
+
+        // ==========================================================
+        // UPDATE THE BILL COPY INSIDE Mas_Delivery
+        // ==========================================================
+        //
+        // Payment should NOT automatically change delivery_status.
+        // Only payment-related fields are updated here.
+        // ==========================================================
+
+        try {
+          if (matchingLoad) {
+            const deliveryUpdateResult =
+              await db
+                .collection(
+                  'Mas_Delivery'
+                )
+                .updateOne(
+                  {
+                    _id:
+                      matchingLoad._id,
+
+                    bills: {
+                      $elemMatch:
+                        loadBillMatch
+                    }
+                  },
+                  {
+                    $set: {
+                      'bills.$.paid_amount':
+                        Number(
+                          (
+                            Number(
+                              outstandingBill.Amt ??
+                                databaseBalance
+                            ) -
+                            finalNewBalance
+                          ).toFixed(2)
+                        ),
+
+                      'bills.$.balance_amount':
+                        finalNewBalance,
+
+                      'bills.$.payment_status':
+                        finalNewBalance <= 0
+                          ? 'paid'
+                          : 'partial',
+
+                      'bills.$.last_payment_date':
+                        now,
+
+                      'bills.$.last_payment_id':
+                        paymentResult
+                          .insertedId,
+
+                      'bills.$.last_payment_proof':
+                        paymentDoc
+                          .payment_details
+                          .payment_photo_path,
+
+                      'bills.$.payment_collected_by_type':
+                        paymentDoc
+                          .collected_by
+                          .type
+                    }
+                  }
+                );
+
+            console.log(
+              'LOAD PAYMENT SYNC:',
+              {
+                loadId:
+                  matchingLoad
+                    ._id
+                    .toString(),
+
+                matched:
+                  deliveryUpdateResult
+                    .matchedCount,
+
+                modified:
+                  deliveryUpdateResult
+                    .modifiedCount
+              }
+            );
+          } else if (
+            requestedLoadNo
+          ) {
+            console.warn(
+              `Payment saved with requested load ` +
+                `${requestedLoadSeries || ''}/` +
+                `${requestedLoadNo}, ` +
+                `but matching Mas_Delivery record was not found. ` +
+                `Delivery sync skipped.`
+            );
+          }
+        } catch (
+          deliverySyncError
+        ) {
+          // Payment and outstanding update already succeeded.
+          // Do not return failure because user could retry payment
+          // and create a duplicate.
+          console.error(
+            'Load payment status sync failed:',
+            deliverySyncError
+          );
+        }
+
+        // ==========================================================
+        // SUCCESS
+        // ==========================================================
+
+        console.log(
+          'OUTSTANDING PAYMENT SUCCESS:',
+          {
+            collectionId,
+
+            paymentId:
+              paymentResult
+                .insertedId
+                .toString(),
+
+            billSeries,
+            billNo,
+            sysAcCode,
+
+            oldBalance:
+              databaseBalance,
+
+            amountCollected,
+
+            newBalance:
+              finalNewBalance,
+
+            salesmanId,
+
+            storedSalesman:
+              outstandingBill
+                .salesman_id,
+
+            loadNo:
+              resolvedLoadNo
+          }
+        );
+
+        return res
+          .status(201)
+          .json({
+            success:
+              true,
+
+            message:
+              'Outstanding payment saved successfully',
+
+            payment_id:
+              paymentResult
+                .insertedId,
+
+            collection_id:
+              collectionId,
+
+            outstanding_id:
+              outstandingBill
+                ._id
+                .toString(),
+
+            load_id:
+              resolvedLoadId,
+
+            load_series:
+              resolvedLoadSeries,
+
+            load_no:
+              resolvedLoadNo,
+
+            old_balance:
+              databaseBalance,
+
+            amount_collected:
+              amountCollected,
+
+            new_balance:
+              finalNewBalance,
 
             payment_status:
-              databaseBalance > 0
-                ? 'pending'
-                : 'paid',
+              finalNewBalance <= 0
+                ? 'paid'
+                : 'partial'
+          });
 
-            status:
-              databaseBalance > 0
-                ? 'pending'
-                : 'paid',
+      } catch (
+        paymentInsertError
+      ) {
+        console.error(
+          'Payment insertion failed. Rolling back outstanding:',
+          paymentInsertError
+        );
 
-            updated_at:
-              new Date().toISOString()
-          },
+        // ==========================================================
+        // ROLLBACK Mas_Outstanding
+        // ==========================================================
 
-          $inc: {
-            collected_amount:
-              -amountCollected
-          }
-        }
+        await collections
+          .outstanding
+          .updateOne(
+            {
+              _id:
+                outstandingBill._id
+            },
+            {
+              $set: {
+                Bamt:
+                  databaseBalance,
+
+                payment_status:
+                  databaseBalance > 0
+                    ? 'pending'
+                    : 'paid',
+
+                status:
+                  databaseBalance > 0
+                    ? 'pending'
+                    : 'paid',
+
+                updated_at:
+                  new Date()
+                    .toISOString()
+              },
+
+              $inc: {
+                collected_amount:
+                  -amountCollected
+              }
+            }
+          );
+
+        throw paymentInsertError;
+      }
+
+    } catch (error) {
+      console.error(
+        'Outstanding payment error:',
+        error
       );
 
-      throw paymentInsertError;
-    }
-  } catch (error) {
-    console.error(
-      'Outstanding payment error:',
-      error
-    );
+      // ============================================================
+      // DUPLICATE COLLECTION
+      // ============================================================
 
-    if (error?.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message:
-          'Duplicate collection detected. Please refresh and try again.'
-      });
-    }
+      if (
+        error?.code === 11000
+      ) {
+        return res
+          .status(409)
+          .json({
+            success:
+              false,
 
-    return res.status(500).json({
-      success: false,
-      message:
-        error.message ||
-        'Unable to save outstanding payment'
-    });
+            message:
+              'Duplicate collection detected. Please refresh and try again.'
+          });
+      }
+
+      // ============================================================
+      // GENERAL ERROR
+      // ============================================================
+
+      return res
+        .status(500)
+        .json({
+          success:
+            false,
+
+          message:
+            error.message ||
+            'Unable to save outstanding payment'
+        });
+    }
   }
-});
+);
+
 // ============================================================
 // LOAD DELIVERY BULK UPLOAD
 // ============================================================
