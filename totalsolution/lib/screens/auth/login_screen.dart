@@ -691,7 +691,7 @@ class CartItemData {
 // ==================== API Service for backend communication ====================
 class ApiService {
    static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
- // static const String _remoteBaseUrl = 'http://localhost:3000/api';
+  //static const String _remoteBaseUrl = 'http://localhost:3000/api';
 
   static String get apiUrl {
     return _remoteBaseUrl; // ✅ Now uses the correct URL
@@ -24319,77 +24319,317 @@ Thank you.
     );
   }
 
-  Future<String?> _prepareDeliveryStart(String series, String loadNo) async {
-    try {
-      if (mounted) {
-        setState(() {
-          _deliveryRoadRoute = const [];
-          _deliveryRoadDistanceKm = null;
-          _deliveryRoadDurationMinutes = null;
-        });
-      }
-      final position = await _requestSalesmanLocation();
-      if (!mounted) return 'Unable to start delivery.';
-      setState(() => _salesmanPosition = position);
+Future<String?> _prepareDeliveryStart(
+  String series,
+  String loadNo,
+) async {
+  try {
+    final normalizedSeries = series.trim().toLowerCase();
+    final normalizedLoadNo = loadNo.trim();
 
-      final selectedBills = _deliveryBills
-          .whereType<Map>()
-          .map((bill) => Map<String, dynamic>.from(bill))
-          .where(
-            (bill) =>
-                _deliveryText(bill, const ['LoadSeries']).toLowerCase() ==
-                    series.toLowerCase() &&
-                _deliveryText(bill, const ['LoadNo']) == loadNo &&
-                !_isDeliveryCompleted(bill) &&
-                _hasValidDeliveryLocation(bill),
-          )
-          .toList();
-      if (selectedBills.isEmpty) {
-        return 'No valid customer locations are available for this load.';
-      }
+    // ============================================================
+    // 1. FIRST FIND THE EXACT LOAD SELECTED BY THE SALESMAN
+    // ============================================================
+    final loadBills = _deliveryBills
+        .whereType<Map>()
+        .map((bill) => Map<String, dynamic>.from(bill))
+        .where((bill) {
+          final billSeries =
+              _deliveryText(bill, const ['LoadSeries']).trim().toLowerCase();
 
-      await _updateDeliveryRoadRoute(position, selectedBills);
-      await _startDeliveryLocationTracking();
-      return null;
-    } catch (error) {
-      return error.toString().replaceFirst('Exception: ', '');
+          final billLoadNo =
+              _deliveryText(bill, const ['LoadNo']).trim();
+
+          return billSeries == normalizedSeries &&
+              billLoadNo == normalizedLoadNo;
+        })
+        .toList();
+
+    // Selected load does not exist / not assigned to salesman
+    if (loadBills.isEmpty) {
+      return series.trim().isEmpty
+          ? 'Load No. $normalizedLoadNo is not assigned to you.'
+          : 'Load ${series.trim()} / $normalizedLoadNo is not assigned to you.';
+    }
+
+    // ============================================================
+    // 2. GET ONLY PENDING DELIVERY BILLS
+    // ============================================================
+    final pendingBills = loadBills
+        .where((bill) => !_isDeliveryCompleted(bill))
+        .toList();
+
+    if (pendingBills.isEmpty) {
+      return 'All bills in this load are already delivered.';
+    }
+
+    // ============================================================
+    // 3. GET SALESMAN CURRENT LOCATION
+    // ============================================================
+    final position = await _requestSalesmanLocation();
+
+    if (!mounted) {
+      return 'Unable to start delivery.';
+    }
+
+    // ============================================================
+    // IMPORTANT FIX:
+    // ACTIVATE THE SELECTED LOAD BEFORE CALLING ROUTE API.
+    //
+    // Previously this happened only AFTER route API succeeded.
+    // Therefore if Google route API failed, second load never became
+    // active and previous load remained selected.
+    // ============================================================
+    setState(() {
+      _selectedLoadSeries = series;
+      _activeLoadSeries = series;
+      _activeLoadNumber = normalizedLoadNo;
+
+      _salesmanPosition = position;
+      _lastDeliveryRouteOrigin = position;
+
+      // Clear previous load route
+      _deliveryRoadRoute = const [];
+      _deliveryRoadDistanceKm = null;
+      _deliveryRoadDurationMinutes = null;
+    });
+
+    // ============================================================
+    // 4. ROUTE API SHOULD ONLY RECEIVE BILLS HAVING VALID LOCATION
+    // ============================================================
+    final routeBills = pendingBills
+        .where(_hasValidDeliveryLocation)
+        .toList();
+
+    // ============================================================
+    // 5. GOOGLE ROUTE IS OPTIONAL FOR STARTING THE LOAD
+    //
+    // If Google Routes API fails, the load MUST still open.
+    // Bill delivery/payment functionality is not dependent on it.
+    // ============================================================
+    if (routeBills.isNotEmpty) {
+      try {
+        await _updateDeliveryRoadRoute(
+          position,
+          routeBills,
+        );
+      } catch (routeError) {
+        debugPrint(
+          'Google route unavailable for '
+          '${series.isEmpty ? "(blank)" : series}/$normalizedLoadNo: '
+          '$routeError',
+        );
+
+        // Do NOT cancel load start because of Google route failure.
+        if (mounted) {
+          setState(() {
+            _deliveryRoadRoute = const [];
+            _deliveryRoadDistanceKm = null;
+            _deliveryRoadDurationMinutes = null;
+            _lastDeliveryRouteOrigin = position;
+          });
+        }
+      }
+    } else {
+      debugPrint(
+        'Load ${series.isEmpty ? "(blank)" : series}/$normalizedLoadNo '
+        'started without route because no valid customer coordinates exist.',
+      );
+    }
+
+    // ============================================================
+    // 6. START LIVE LOCATION TRACKING
+    // ============================================================
+    await _startDeliveryLocationTracking();
+
+    return null;
+  } catch (error) {
+    return error.toString().replaceFirst('Exception: ', '');
+  }
+}
+
+ Future<void> _updateDeliveryRoadRoute(
+  Position position,
+  List<Map<String, dynamic>> pendingBills,
+) async {
+  if (pendingBills.isEmpty) return;
+
+  // ============================================================
+  // 1. KEEP YOUR EXISTING ROUTE OPTIMIZATION
+  // ============================================================
+  final orderedBills = _optimizedDeliveryRoute(pendingBills);
+
+  // ============================================================
+  // 2. REMOVE DUPLICATE CUSTOMER LOCATIONS
+  //
+  // Example:
+  // Same customer may have 3 bills.
+  // Google Route should receive that outlet only once.
+  //
+  // Bill records themselves are NOT removed anywhere.
+  // This affects route coordinates only.
+  // ============================================================
+  final routeStops = <LatLng>[];
+  final seenLocations = <String>{};
+
+  for (final bill in orderedBills) {
+    final latitude = _getBillLatitude(bill);
+    final longitude = _getBillLongitude(bill);
+
+    if (latitude == null || longitude == null) {
+      continue;
+    }
+
+    if (latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180 ||
+        (latitude == 0 && longitude == 0)) {
+      continue;
+    }
+
+    // 6 decimals is accurate enough for identifying same outlet location.
+    final locationKey =
+        '${latitude.toStringAsFixed(6)}|'
+        '${longitude.toStringAsFixed(6)}';
+
+    if (seenLocations.add(locationKey)) {
+      routeStops.add(
+        LatLng(latitude, longitude),
+      );
     }
   }
 
-  Future<void> _updateDeliveryRoadRoute(
-    Position position,
-    List<Map<String, dynamic>> pendingBills,
-  ) async {
-    if (pendingBills.isEmpty) return;
-    final orderedBills = _optimizedDeliveryRoute(pendingBills);
-    final response = await ApiService.getDeliveryRoute(
-      originLatitude: position.latitude,
-      originLongitude: position.longitude,
-      stops: orderedBills
-          .map(
-            (bill) => LatLng(
-              _getBillLatitude(bill)!,
-              _getBillLongitude(bill)!,
-            ),
-          )
-          .toList(),
-    );
-    final encoded = response['encodedPolyline']?.toString() ?? '';
-    final distanceMeters = (response['distanceMeters'] as num?)?.toDouble();
-    final durationSeconds = (response['durationSeconds'] as num?)?.toDouble();
-    if (!mounted) return;
-    setState(() {
-      _salesmanPosition = position;
-      _lastDeliveryRouteOrigin = position;
-      _deliveryRoadRoute = decodeGooglePolyline(encoded);
-      _deliveryRoadDistanceKm = distanceMeters == null
-          ? null
-          : distanceMeters / 1000;
-      _deliveryRoadDurationMinutes = durationSeconds == null
-          ? null
-          : math.max(1, (durationSeconds / 60).ceil());
-    });
+  if (routeStops.isEmpty) {
+    return;
   }
+
+  // ============================================================
+  // 3. GOOGLE ROUTES BACKEND ALLOWS MAXIMUM 25 STOPS PER REQUEST
+  //
+  // Therefore split large delivery loads into chunks.
+  // This prevents Route API error when a load contains many outlets.
+  // ============================================================
+  const int maxStopsPerRequest = 25;
+
+  final completeRoadRoute = <LatLng>[];
+
+  double totalDistanceMeters = 0;
+  double totalDurationSeconds = 0;
+
+  double currentOriginLatitude = position.latitude;
+  double currentOriginLongitude = position.longitude;
+
+  for (
+    int startIndex = 0;
+    startIndex < routeStops.length;
+    startIndex += maxStopsPerRequest
+  ) {
+    final int endIndex = math.min(
+      startIndex + maxStopsPerRequest,
+      routeStops.length,
+    );
+
+    final chunk = routeStops.sublist(
+      startIndex,
+      endIndex,
+    );
+
+    if (chunk.isEmpty) {
+      continue;
+    }
+
+    final response = await ApiService.getDeliveryRoute(
+      originLatitude: currentOriginLatitude,
+      originLongitude: currentOriginLongitude,
+      stops: chunk,
+    );
+
+    // ------------------------------------------------------------
+    // Polyline
+    // ------------------------------------------------------------
+    final encoded =
+        response['encodedPolyline']?.toString() ?? '';
+
+    if (encoded.isNotEmpty) {
+      final decodedRoute = decodeGooglePolyline(encoded);
+
+      if (decodedRoute.isNotEmpty) {
+        if (completeRoadRoute.isNotEmpty) {
+          final previousPoint = completeRoadRoute.last;
+          final firstNewPoint = decodedRoute.first;
+
+          final samePoint =
+              (previousPoint.latitude - firstNewPoint.latitude).abs() <
+                      0.000001 &&
+                  (previousPoint.longitude -
+                              firstNewPoint.longitude)
+                          .abs() <
+                      0.000001;
+
+          if (samePoint) {
+            completeRoadRoute.addAll(
+              decodedRoute.skip(1),
+            );
+          } else {
+            completeRoadRoute.addAll(decodedRoute);
+          }
+        } else {
+          completeRoadRoute.addAll(decodedRoute);
+        }
+      }
+    }
+
+    // ------------------------------------------------------------
+    // Distance
+    // ------------------------------------------------------------
+    final distanceValue = response['distanceMeters'];
+
+    if (distanceValue is num) {
+      totalDistanceMeters += distanceValue.toDouble();
+    }
+
+    // ------------------------------------------------------------
+    // Duration
+    // ------------------------------------------------------------
+    final durationValue = response['durationSeconds'];
+
+    if (durationValue is num) {
+      totalDurationSeconds += durationValue.toDouble();
+    }
+
+    // Next chunk must start from previous chunk's final customer.
+    final lastStop = chunk.last;
+
+    currentOriginLatitude = lastStop.latitude;
+    currentOriginLongitude = lastStop.longitude;
+  }
+
+  if (!mounted) return;
+
+  // ============================================================
+  // 4. UPDATE ROUTE FOR CURRENT SELECTED LOAD
+  // ============================================================
+  setState(() {
+    _salesmanPosition = position;
+    _lastDeliveryRouteOrigin = position;
+
+    _deliveryRoadRoute = completeRoadRoute;
+
+    _deliveryRoadDistanceKm =
+        totalDistanceMeters > 0
+            ? totalDistanceMeters / 1000
+            : null;
+
+    _deliveryRoadDurationMinutes =
+        totalDurationSeconds > 0
+            ? math.max(
+                1,
+                (totalDurationSeconds / 60).ceil(),
+              )
+            : null;
+  });
+}
 
   Future<void> _startDeliveryLocationTracking() async {
     await _deliveryPositionSubscription?.cancel();
@@ -26662,7 +26902,7 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _successMessage;
 
   static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
-  //static const String _remoteBaseUrl = 'http://localhost:3000/api';
+ // static const String _remoteBaseUrl = 'http://localhost:3000/api';
 
   static String get apiUrl {
     return _remoteBaseUrl; // ✅ Now uses the correct URL
