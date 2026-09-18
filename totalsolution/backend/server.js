@@ -429,6 +429,15 @@ async function createCollectionHistory(order, paymentAmount, paymentMode, collec
     }
 }
 
+// Helper function to normalize payment mode
+function normalizePaymentMode(mode) {
+    const m = String(mode || '').trim().toLowerCase();
+    if (m.includes('cash')) return 'cash';
+    if (m.includes('cheque')) return 'cheque';
+    if (m.includes('upi') || m.includes('gpay') || m.includes('phonepe') || m.includes('paytm')) return 'upi';
+    return m || 'cash';
+}
+
 // Get collection history for distributor
 app.get('/api/collection-history/distributor/:distributorId', async (req, res) => {
     try {
@@ -438,7 +447,11 @@ app.get('/api/collection-history/distributor/:distributorId', async (req, res) =
         let query = { distributor_id: distributorId };
         
         if (salesmanId && salesmanId !== 'all') {
-            query['salesman_details.id'] = salesmanId;
+            query.$or = [
+                { 'salesman_details.id': salesmanId },
+                { salesman_id: salesmanId },
+                { 'collected_by.id': salesmanId }
+            ];
         }
         
         if (startDate || endDate) {
@@ -447,42 +460,185 @@ app.get('/api/collection-history/distributor/:distributorId', async (req, res) =
                 query.collection_date.$gte = new Date(startDate).toISOString();
             }
             if (endDate) {
-                query.collection_date.$lte = new Date(endDate).toISOString();
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999);
+                query.collection_date.$lte = end.toISOString();
             }
         }
         
-        const collectionRecords = await collections.collectionHistory
+        // 1. Fetch from collection history
+        let collectionRecords = await collections.collectionHistory
             .find(query)
             .sort({ collection_date: -1 })
             .toArray();
-        
-        // Calculate totals
-        const totalCollected = collectionRecords.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
-        
-        // Group by salesman
-        const salesmanSummary = {};
-        collectionRecords.forEach(c => {
-            if (c.salesman_details && c.salesman_details.id) {
-                const salesmanIdKey = c.salesman_details.id;
-                if (!salesmanSummary[salesmanIdKey]) {
-                    salesmanSummary[salesmanIdKey] = {
-                        salesman_id: c.salesman_details.id,
-                        salesman_name: c.salesman_details.name,
-                        total_collected: 0,
-                        count: 0
-                    };
+            
+        // 2. Also fetch payments from mas_payment that may not be in collectionHistory
+        try {
+            let paymentQuery = { distributor_id: distributorId };
+            if (salesmanId && salesmanId !== 'all') {
+                paymentQuery.$or = [
+                    { 'salesman_details.id': salesmanId },
+                    { salesman_id: salesmanId },
+                    { 'collected_by.id': salesmanId }
+                ];
+            }
+            if (startDate || endDate) {
+                paymentQuery.collection_date = {};
+                if (startDate) {
+                    paymentQuery.collection_date.$gte = new Date(startDate).toISOString();
                 }
-                salesmanSummary[salesmanIdKey].total_collected += c.amount_collected;
-                salesmanSummary[salesmanIdKey].count++;
+                if (endDate) {
+                    const end = new Date(endDate);
+                    end.setHours(23, 59, 59, 999);
+                    paymentQuery.collection_date.$lte = end.toISOString();
+                }
+            }
+            
+            const payments = await collections.payment
+                .find(paymentQuery)
+                .sort({ collection_date: -1 })
+                .toArray();
+                
+            const existingIds = new Set(collectionRecords.map(c => c.collection_id || (c._id && c._id.toString())));
+            for (const p of payments) {
+                const pId = p.collection_id || (p._id && p._id.toString());
+                if (pId && !existingIds.has(pId)) {
+                    existingIds.add(pId);
+                    collectionRecords.push({
+                        _id: p._id,
+                        collection_id: pId,
+                        order_id: p.order_id || p.bill_no || (p.bill_details && p.bill_details.bill_no) || '',
+                        order_amount: p.order_amount || (p.bill_details && p.bill_details.bill_amount) || p.amount_collected || p.payment_amount || 0,
+                        amount_collected: p.amount_collected || p.payment_amount || 0,
+                        payment_mode: p.payment_mode || 'Cash',
+                        customer_id: p.customer_id || (p.bill_details && p.bill_details.sys_ac_code) || '',
+                        customer_name: p.customer_name || (p.bill_details && p.bill_details.customer_name) || '',
+                        distributor_id: p.distributor_id || distributorId,
+                        collected_by: p.collected_by || { type: 'salesman', id: p.salesman_id, name: p.salesman_name },
+                        salesman_details: p.salesman_details || (p.salesman_id ? { id: p.salesman_id, name: p.salesman_name } : null),
+                        bill_no: p.bill_no || (p.bill_details && p.bill_details.bill_no) || p.order_id || '',
+                        collection_date: p.collection_date || p.created_at || new Date().toISOString(),
+                        created_at: p.created_at || p.collection_date || new Date().toISOString(),
+                        status: p.status || 'completed',
+                        cheque_number: p.cheque_number || (p.payment_details && p.payment_details.cheque_number) || p.reference_number,
+                        bank_name: p.bank_name || (p.payment_details && p.payment_details.bank_name),
+                        cheque_date: p.cheque_date || (p.payment_details && p.payment_details.cheque_date),
+                        upi_type: p.upi_type || (p.payment_details && p.payment_details.upi_app),
+                        transaction_number: p.transaction_number || (p.payment_details && p.payment_details.transaction_number) || p.reference_number
+                    });
+                }
+            }
+        } catch (paymentErr) {
+            console.error('Error merging payments into collection history:', paymentErr);
+        }
+        
+        // Re-sort all records by collection_date descending
+        collectionRecords.sort((a, b) => new Date(b.collection_date || b.created_at || 0) - new Date(a.collection_date || a.created_at || 0));
+        
+        // Calculate totals and payment mode breakdown
+        let totalCollected = 0;
+        let cashCollected = 0;
+        let chequeCollected = 0;
+        let upiCollected = 0;
+        
+        collectionRecords.forEach(c => {
+            const amount = Number(c.amount_collected || 0);
+            totalCollected += amount;
+            const mode = normalizePaymentMode(c.payment_mode);
+            if (mode === 'cash') {
+                cashCollected += amount;
+            } else if (mode === 'cheque') {
+                chequeCollected += amount;
+            } else if (mode === 'upi') {
+                upiCollected += amount;
+            } else {
+                cashCollected += amount;
             }
         });
+        
+        // Fetch all salesmen under distributor to populate route, code, and include salesmen with 0 collections
+        const allSalesmen = await collections.salesman
+            .find({ distributor_id: distributorId })
+            .toArray();
+            
+        const salesmanSummary = {};
+        
+        // Initialize summary for all registered salesmen
+        allSalesmen.forEach(s => {
+            const sId = s.salesman_id || (s._id && s._id.toString()) || s.id;
+            salesmanSummary[sId] = {
+                salesman_id: sId,
+                salesman_name: s.name || 'Unknown',
+                route: s.area_assigned || s.area || 'Route A',
+                code: s.salesman_id || s.code || '1001',
+                phone: s.phone || '',
+                total_collected: 0,
+                cash_collected: 0,
+                cheque_collected: 0,
+                upi_collected: 0,
+                count: 0,
+                last_collection: null
+            };
+        });
+        
+        // Populate from collection records
+        collectionRecords.forEach(c => {
+            const sId = (c.salesman_details && c.salesman_details.id) || c.salesman_id || (c.collected_by && c.collected_by.id);
+            const sName = (c.salesman_details && c.salesman_details.name) || c.salesman_name || (c.collected_by && c.collected_by.name) || 'Unknown';
+            const amount = Number(c.amount_collected || 0);
+            const mode = normalizePaymentMode(c.payment_mode);
+            const recordDate = c.collection_date || c.created_at;
+            
+            if (sId) {
+                if (!salesmanSummary[sId]) {
+                    salesmanSummary[sId] = {
+                        salesman_id: sId,
+                        salesman_name: sName,
+                        route: 'Route A',
+                        code: sId,
+                        phone: '',
+                        total_collected: 0,
+                        cash_collected: 0,
+                        cheque_collected: 0,
+                        upi_collected: 0,
+                        count: 0,
+                        last_collection: null
+                    };
+                }
+                
+                salesmanSummary[sId].total_collected += amount;
+                salesmanSummary[sId].count++;
+                
+                if (mode === 'cash') {
+                    salesmanSummary[sId].cash_collected += amount;
+                } else if (mode === 'cheque') {
+                    salesmanSummary[sId].cheque_collected += amount;
+                } else if (mode === 'upi') {
+                    salesmanSummary[sId].upi_collected += amount;
+                } else {
+                    salesmanSummary[sId].cash_collected += amount;
+                }
+                
+                if (recordDate) {
+                    if (!salesmanSummary[sId].last_collection || new Date(recordDate) > new Date(salesmanSummary[sId].last_collection)) {
+                        salesmanSummary[sId].last_collection = recordDate;
+                    }
+                }
+            }
+        });
+        
+        // Sort salesman summary by total_collected descending
+        const salesmanWise = Object.values(salesmanSummary).sort((a, b) => b.total_collected - a.total_collected);
         
         res.json({
             collections: collectionRecords,
             summary: {
                 total_collected: totalCollected,
                 total_transactions: collectionRecords.length,
-                salesman_wise: Object.values(salesmanSummary)
+                cash_collected: cashCollected,
+                cheque_collected: chequeCollected,
+                upi_collected: upiCollected,
+                salesman_wise: salesmanWise
             }
         });
     } catch (error) {
@@ -497,7 +653,13 @@ app.get('/api/collection-history/salesman/:salesmanId', async (req, res) => {
         const { salesmanId } = req.params;
         const { startDate, endDate } = req.query;
         
-        let query = { 'salesman_details.id': salesmanId };
+        let query = {
+            $or: [
+                { 'salesman_details.id': salesmanId },
+                { salesman_id: salesmanId },
+                { 'collected_by.id': salesmanId }
+            ]
+        };
         
         if (startDate || endDate) {
             query.collection_date = {};
@@ -505,22 +667,116 @@ app.get('/api/collection-history/salesman/:salesmanId', async (req, res) => {
                 query.collection_date.$gte = new Date(startDate).toISOString();
             }
             if (endDate) {
-                query.collection_date.$lte = new Date(endDate).toISOString();
+                const end = new Date(endDate);
+                end.setHours(23, 59, 59, 999);
+                query.collection_date.$lte = end.toISOString();
             }
         }
         
-        const collectionRecords = await collections.collectionHistory
+        let collectionRecords = await collections.collectionHistory
             .find(query)
             .sort({ collection_date: -1 })
             .toArray();
+            
+        // Also fetch from mas_payment
+        try {
+            const payments = await collections.payment
+                .find(query)
+                .sort({ collection_date: -1 })
+                .toArray();
+                
+            const existingIds = new Set(collectionRecords.map(c => c.collection_id || (c._id && c._id.toString())));
+            for (const p of payments) {
+                const pId = p.collection_id || (p._id && p._id.toString());
+                if (pId && !existingIds.has(pId)) {
+                    existingIds.add(pId);
+                    collectionRecords.push({
+                        _id: p._id,
+                        collection_id: pId,
+                        order_id: p.order_id || p.bill_no || (p.bill_details && p.bill_details.bill_no) || '',
+                        order_amount: p.order_amount || (p.bill_details && p.bill_details.bill_amount) || p.amount_collected || p.payment_amount || 0,
+                        amount_collected: p.amount_collected || p.payment_amount || 0,
+                        payment_mode: p.payment_mode || 'Cash',
+                        customer_id: p.customer_id || (p.bill_details && p.bill_details.sys_ac_code) || '',
+                        customer_name: p.customer_name || (p.bill_details && p.bill_details.customer_name) || '',
+                        distributor_id: p.distributor_id || '',
+                        collected_by: p.collected_by || { type: 'salesman', id: p.salesman_id, name: p.salesman_name },
+                        salesman_details: p.salesman_details || (p.salesman_id ? { id: p.salesman_id, name: p.salesman_name } : null),
+                        bill_no: p.bill_no || (p.bill_details && p.bill_details.bill_no) || p.order_id || '',
+                        collection_date: p.collection_date || p.created_at || new Date().toISOString(),
+                        created_at: p.created_at || p.collection_date || new Date().toISOString(),
+                        status: p.status || 'completed',
+                        cheque_number: p.cheque_number || (p.payment_details && p.payment_details.cheque_number) || p.reference_number,
+                        bank_name: p.bank_name || (p.payment_details && p.payment_details.bank_name),
+                        cheque_date: p.cheque_date || (p.payment_details && p.payment_details.cheque_date),
+                        upi_type: p.upi_type || (p.payment_details && p.payment_details.upi_app),
+                        transaction_number: p.transaction_number || (p.payment_details && p.payment_details.transaction_number) || p.reference_number
+                    });
+                }
+            }
+        } catch (pErr) {
+            console.error('Error merging payments for salesman:', pErr);
+        }
         
-        const totalCollected = collectionRecords.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+        collectionRecords.sort((a, b) => new Date(b.collection_date || b.created_at || 0) - new Date(a.collection_date || a.created_at || 0));
+        
+        let totalCollected = 0;
+        let cashCollected = 0;
+        let chequeCollected = 0;
+        let upiCollected = 0;
+        let lastCollection = null;
+        
+        collectionRecords.forEach(c => {
+            const amount = Number(c.amount_collected || 0);
+            totalCollected += amount;
+            const mode = normalizePaymentMode(c.payment_mode);
+            if (mode === 'cash') {
+                cashCollected += amount;
+            } else if (mode === 'cheque') {
+                chequeCollected += amount;
+            } else if (mode === 'upi') {
+                upiCollected += amount;
+            } else {
+                cashCollected += amount;
+            }
+            const recordDate = c.collection_date || c.created_at;
+            if (recordDate && (!lastCollection || new Date(recordDate) > new Date(lastCollection))) {
+                lastCollection = recordDate;
+            }
+        });
+        
+        // Fetch salesman details
+        let salesmanDoc = await collections.salesman.findOne({
+            $or: [{ salesman_id: salesmanId }, { _id: salesmanId }]
+        });
+        if (!salesmanDoc) {
+            salesmanDoc = await collections.register.findOne({ salesman_id: salesmanId });
+        }
+        
+        const salesmanName = salesmanDoc ? (salesmanDoc.name || salesmanDoc.fullName || 'Salesman') : 'Salesman';
+        const salesmanWise = [{
+            salesman_id: salesmanId,
+            salesman_name: salesmanName,
+            route: (salesmanDoc && (salesmanDoc.area_assigned || salesmanDoc.area)) || 'Route A',
+            code: (salesmanDoc && (salesmanDoc.salesman_id || salesmanDoc.code)) || salesmanId,
+            phone: (salesmanDoc && (salesmanDoc.phone || salesmanDoc.phoneNumber)) || '',
+            total_collected: totalCollected,
+            cash_collected: cashCollected,
+            cheque_collected: chequeCollected,
+            upi_collected: upiCollected,
+            count: collectionRecords.length,
+            last_collection: lastCollection
+        }];
         
         res.json({
             collections: collectionRecords,
             summary: {
                 total_collected: totalCollected,
-                total_transactions: collectionRecords.length
+                total_transactions: collectionRecords.length,
+                cash_collected: cashCollected,
+                cheque_collected: chequeCollected,
+                upi_collected: upiCollected,
+                salesman_wise: salesmanWise
             }
         });
     } catch (error) {
