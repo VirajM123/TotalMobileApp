@@ -1431,9 +1431,16 @@ class ApiService {
       if (response.statusCode == 200 || response.statusCode == 201) {
         return json.decode(response.body);
       }
-      throw Exception('Failed to add salesman: ${response.statusCode}');
+      String serverError = 'Failed to add salesman: ${response.statusCode}';
+      try {
+        final errorData = json.decode(response.body);
+        if (errorData is Map && errorData['error'] != null) {
+          serverError = errorData['error'].toString();
+        }
+      } catch (_) {}
+      throw Exception(serverError);
     } catch (e) {
-      throw Exception('Error adding salesman: $e');
+      throw Exception(e.toString().replaceAll('Exception: ', ''));
     }
   }
 
@@ -8406,25 +8413,47 @@ class _DistributorDashboardEnhancedState
               setState(() => _isLoading = true);
               Navigator.pop(context);
 
-              final defaultPassword =
-                  '${nameController.text.substring(0, 3).toLowerCase()}${phoneController.text.substring(6)}';
+             final rawName = nameController.text.trim();
+final rawPhone = phoneController.text.trim();
 
-              final salesman = SalesmanModel(
-                id: 'salesman_${DateTime.now().millisecondsSinceEpoch}',
-                salesmanId:
-                    'SM${DateTime.now().millisecondsSinceEpoch.toString().substring(8, 13)}',
-                name: nameController.text,
-                email: emailController.text,
-                phone: phoneController.text,
-                distributorId: _currentDistributor.distributorId!,
-                createdBy: _currentDistributor.email,
-                createdAt: DateTime.now(),
-                updatedAt: DateTime.now(),
-                areaAssigned: areaController.text,
-                address: addressController.text,
-                targetAmount: double.tryParse(targetController.text) ?? 0,
-                joiningDate: DateTime.now(),
-              );
+// SAFE: same logic as before, but no fixed substring range.
+final namePrefix = rawName
+    .split('')
+    .take(3)
+    .join()
+    .toLowerCase();
+
+final phoneSuffix = rawPhone
+    .split('')
+    .reversed
+    .take(4)
+    .toList()
+    .reversed
+    .join();
+
+final defaultPassword = '$namePrefix$phoneSuffix';
+
+// SAFE salesman ID.
+// This keeps the same format: SM + last 5 digits of timestamp.
+final timestamp = DateTime.now().millisecondsSinceEpoch;
+final generatedSalesmanId =
+    'SM${(timestamp % 100000).toString().padLeft(5, '0')}';
+
+final salesman = SalesmanModel(
+  id: 'salesman_$timestamp',
+  salesmanId: generatedSalesmanId,
+  name: rawName,
+  email: emailController.text.trim(),
+  phone: rawPhone,
+  distributorId: _currentDistributor.distributorId!,
+  createdBy: _currentDistributor.email,
+  createdAt: DateTime.now(),
+  updatedAt: DateTime.now(),
+  areaAssigned: areaController.text.trim(),
+  address: addressController.text.trim(),
+  targetAmount: double.tryParse(targetController.text.trim()) ?? 0,
+  joiningDate: DateTime.now(),
+);
 
               final salesmanMap = salesman.toMap();
               salesmanMap['password'] = defaultPassword;
@@ -8455,9 +8484,10 @@ class _DistributorDashboardEnhancedState
                 if (mounted) {
                   showSafeSnackBar(
                     context,
-                    '✅ Salesman added!\nPassword: $defaultPassword',
+                    '✅ Salesman added!\nPassword: ${response['defaultPassword'] ?? defaultPassword}',
                     backgroundColor: successGreen,
                   );
+                  await _loadData();
                   await _loadUsersUnderDistributor();
                 }
               } catch (e) {
@@ -11976,164 +12006,348 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  Widget _buildSalesmanCard(SalesmanModel salesman) {
-    final orderCount = getSalesmanOrderCount(salesman.id);
-    final revenue = getSalesmanRevenue(salesman.id);
-    final collection = getSalesmanCollection(salesman.id);
-    final lastOrder = getLastOrderForSalesman(salesman.id);
+ Widget _buildSalesmanCard(SalesmanModel salesman) {
+  final orderCount = getSalesmanOrderCount(salesman.id);
+  final revenue = getSalesmanRevenue(salesman.id);
+  final collection = getSalesmanCollection(salesman.id);
+  final lastOrder = getLastOrderForSalesman(salesman.id);
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: ExpansionTile(
-        leading: CircleAvatar(
-          backgroundColor: salesman.status == 'active'
-              ? accentTeal.withOpacity(0.1)
-              : Colors.grey.withOpacity(0.1),
-          child: Icon(
-            Icons.person,
-            color: salesman.status == 'active' ? accentTeal : Colors.grey,
+  final isActive = salesman.status.toLowerCase() == 'active';
+
+  Widget actionButton({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onPressed,
+  }) {
+    return SizedBox(
+      height: 34,
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(
+          icon,
+          size: 15,
+          color: color,
+        ),
+        label: Text(
+          label,
+          style: TextStyle(
+            color: color,
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
           ),
         ),
-        title: Text(
-          salesman.name,
-          style: const TextStyle(fontWeight: FontWeight.bold),
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 9,
+          ),
+          side: BorderSide(
+            color: color.withOpacity(0.22),
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          visualDensity: VisualDensity.compact,
         ),
-        subtitle: Text(salesman.email),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
+      ),
+    );
+  }
+
+  Widget detailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 7),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 75,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey.shade600,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1E293B),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  return Container(
+    margin: const EdgeInsets.only(bottom: 12),
+    decoration: BoxDecoration(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(
+        color: const Color(0xFFE7ECF3),
+      ),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withOpacity(0.035),
+          blurRadius: 10,
+          offset: const Offset(0, 3),
+        ),
+      ],
+    ),
+    clipBehavior: Clip.antiAlias,
+    child: Theme(
+      data: Theme.of(context).copyWith(
+        dividerColor: Colors.transparent,
+      ),
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.fromLTRB(
+          12,
+          8,
+          10,
+          8,
+        ),
+        childrenPadding: EdgeInsets.zero,
+
+        leading: CircleAvatar(
+          radius: 21,
+          backgroundColor: isActive
+              ? accentTeal.withOpacity(0.12)
+              : Colors.grey.withOpacity(0.12),
+          child: Icon(
+            Icons.person_outline,
+            size: 21,
+            color: isActive
+                ? accentTeal
+                : Colors.grey,
+          ),
+        ),
+
+        // ------------------------------
+        // NAME + STATUS
+        // ------------------------------
+
+        title: Row(
           children: [
-            IconButton(
-              icon: const Icon(Icons.security, color: primaryBlue, size: 20),
-              onPressed: () => _showPermissionsDialog(salesman),
-              tooltip: 'Set Permissions',
+            Expanded(
+              child: Text(
+                salesman.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF0F2D5C),
+                ),
+              ),
             ),
-            IconButton(
-              icon: const Icon(Icons.edit, color: primaryBlue, size: 20),
-              onPressed: () => _showEditSalesmanDialog(salesman),
-              tooltip: 'Edit Salesman',
-            ),
-            IconButton(
-              icon: const Icon(Icons.delete, size: 20, color: errorRed),
-              onPressed: () => _deleteSalesman(salesman),
-              tooltip: 'Deactivate Salesman',
-            ),
+
+            const SizedBox(width: 7),
+
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 4,
+              ),
               decoration: BoxDecoration(
-                color: salesman.status == 'active'
-                    ? successGreen.withOpacity(0.1)
-                    : Colors.grey.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(10),
+                color: isActive
+                    ? successGreen.withOpacity(0.10)
+                    : Colors.grey.withOpacity(0.10),
+                borderRadius: BorderRadius.circular(20),
               ),
               child: Text(
-                salesman.status == 'active' ? 'Active' : 'Inactive',
+                isActive ? 'Active' : 'Inactive',
                 style: TextStyle(
-                  color: salesman.status == 'active'
+                  color: isActive
                       ? successGreen
-                      : Colors.grey,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
+                      : Colors.grey.shade600,
+                  fontSize: 9,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
             ),
           ],
         ),
+
+        // ------------------------------
+        // EMAIL + PHONE + ACTIONS
+        // ------------------------------
+
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                salesman.email,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 10,
+                  color: Color(0xFF64748B),
+                ),
+              ),
+
+              if (salesman.phone.trim().isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Text(
+                  salesman.phone,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 9),
+
+              // Wrap instead of Row.
+              // So mobile width will NEVER overflow.
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: [
+                  actionButton(
+                    icon: Icons.security_outlined,
+                    label: 'Permission',
+                    color: primaryBlue,
+                    onPressed: () =>
+                        _showPermissionsDialog(salesman),
+                  ),
+
+                  actionButton(
+                    icon: Icons.edit_outlined,
+                    label: 'Edit',
+                    color: primaryBlue,
+                    onPressed: () =>
+                        _showEditSalesmanDialog(salesman),
+                  ),
+
+                  actionButton(
+                    icon: Icons.delete_outline,
+                    label: 'Deactivate',
+                    color: errorRed,
+                    onPressed: () =>
+                        _deleteSalesman(salesman),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+
         children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
+          Container(
+            width: double.infinity,
+            decoration: const BoxDecoration(
+              color: Color(0xFFF8FAFC),
+              border: Border(
+                top: BorderSide(
+                  color: Color(0xFFE7ECF3),
+                ),
+              ),
+            ),
+            padding: const EdgeInsets.all(14),
             child: Column(
               children: [
+                // ------------------------------
+                // LAST ORDER
+                // ------------------------------
+
                 if (lastOrder != null) ...[
                   Container(
+                    width: double.infinity,
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.orange[50],
-                      borderRadius: BorderRadius.circular(8),
+                      color: const Color(0xFFFFF8EB),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: warningOrange.withOpacity(0.15),
+                      ),
                     ),
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      crossAxisAlignment:
+                          CrossAxisAlignment.start,
                       children: [
                         const Row(
                           children: [
                             Icon(
-                              Icons.shopping_bag,
+                              Icons.shopping_bag_outlined,
                               size: 16,
                               color: warningOrange,
                             ),
-                            SizedBox(width: 8),
+                            SizedBox(width: 7),
                             Text(
                               'Last Order',
                               style: TextStyle(
-                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
                                 color: warningOrange,
                               ),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Order:'),
-                            Text(
-                              lastOrder.orderNumber,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
+
+                        const SizedBox(height: 5),
+
+                        detailRow(
+                          'Order',
+                          lastOrder.orderNumber,
                         ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Customer:'),
-                            Text(
-                              lastOrder.customerName,
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
+
+                        detailRow(
+                          'Customer',
+                          lastOrder.customerName,
                         ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Amount:'),
-                            Text(
-                              '₹${lastOrder.totalAmount.toStringAsFixed(0)}',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
+
+                        detailRow(
+                          'Amount',
+                          '₹${lastOrder.totalAmount.toStringAsFixed(0)}',
                         ),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text('Date:'),
-                            Text(
-                              '${lastOrder.createdAt.day}/${lastOrder.createdAt.month}/${lastOrder.createdAt.year}',
-                            ),
-                          ],
+
+                        detailRow(
+                          'Date',
+                          '${lastOrder.createdAt.day}/'
+                              '${lastOrder.createdAt.month}/'
+                              '${lastOrder.createdAt.year}',
                         ),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 16),
+
+                  const SizedBox(height: 14),
                 ],
+
+                // ------------------------------
+                // PERFORMANCE
+                // ------------------------------
+
                 Row(
                   children: [
                     Expanded(
                       child: _buildSalesmanStat(
                         'Orders',
                         '$orderCount',
-                        Icons.receipt,
+                        Icons.receipt_long_outlined,
                       ),
                     ),
+
+                    Container(
+                      height: 40,
+                      width: 1,
+                      color: const Color(0xFFE2E8F0),
+                    ),
+
                     Expanded(
                       child: _buildSalesmanStat(
                         'Revenue',
@@ -12141,38 +12355,68 @@ class _DistributorDashboardEnhancedState
                         Icons.currency_rupee,
                       ),
                     ),
+
+                    Container(
+                      height: 40,
+                      width: 1,
+                      color: const Color(0xFFE2E8F0),
+                    ),
+
                     Expanded(
                       child: _buildSalesmanStat(
                         'Collection',
                         '₹${(collection / 1000).toStringAsFixed(1)}K',
-                        Icons.account_balance_wallet,
+                        Icons.account_balance_wallet_outlined,
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: () {
-                        setState(() {
-                          _selectedOrderSalesmanId = salesman.id;
-                          _selectedIndex = 5;
-                        });
-                      },
-                      icon: const Icon(Icons.visibility, size: 16),
-                      label: const Text('View Orders'),
+
+                const SizedBox(height: 14),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 38,
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        _selectedOrderSalesmanId =
+                            salesman.id;
+                        _selectedIndex = 5;
+                      });
+                    },
+                    icon: const Icon(
+                      Icons.visibility_outlined,
+                      size: 16,
                     ),
-                  ],
+                    label: const Text(
+                      'View Salesman Orders',
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: primaryBlue,
+                      side: BorderSide(
+                        color:
+                            primaryBlue.withOpacity(0.25),
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius:
+                            BorderRadius.circular(9),
+                      ),
+                      textStyle: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildSalesmanStat(String label, String value, IconData icon) {
     return Column(
@@ -15011,42 +15255,90 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                     setState(() => _isLoading = true);
 
                                     // FIXED: Send all required fields including distributorId, salesmanId, billNo, sysAcCode
-                                    await ApiService.collectOutstandingPayment({
-                                      'distributorId':
-                                          _currentSalesman.distributorId ?? '',
-                                      'salesmanId':
-                                          _currentSalesman.salesmanId ??
-                                          _currentSalesman.id,
-                                      'salesmanName': _currentSalesman.name,
-                                      'billSeries': bill['TrnSeries'] ?? '',
-                                      'billNo': bill['TrnNo']?.toString() ?? '',
-                                      'sysAcCode':
-                                          bill['SysAcCode']?.toString() ?? '',
-                                      'customerName':
-                                          bill['customer_name'] ??
-                                          bill['CustomerName'] ??
-                                          bill['AcName'] ??
-                                          '',
-                                      'billAmount': billAmount,
-                                      'oldBalance': balance,
-                                      'amountCollected': amount,
-                                      'balanceAfterPayment': balance - amount,
-                                      'paymentMode': selectedMode,
-                                      'cashAmount': cashAmount,
-                                      'chequeAmount': chequeAmount,
-                                      'chequeNumber': chequeNoController.text
-                                          .trim(),
-                                      'chequeDate': chequeDateController.text
-                                          .trim(),
-                                      'bankName': selectedBank,
-                                      'upiApp': selectedUpiApp,
-                                      'transactionNumber': transactionController
-                                          .text
-                                          .trim(),
-                                      'remark': remarkController.text.trim(),
-                                    }, paymentPhoto: paymentPhoto);
+                                  // FIXED:
+// Send all required fields including
+// distributorId, salesmanId, loadSeries, loadNo,
+// billNo and sysAcCode.
+await ApiService.collectOutstandingPayment(
+  {
+    'distributorId':
+        _currentSalesman.distributorId ?? '',
 
-                                    final newBalance = balance - amount;
+    'salesmanId':
+        _currentSalesman.salesmanId ??
+        _currentSalesman.id,
+
+    'salesmanName':
+        _currentSalesman.name,
+
+    // LOAD DELIVERY DETAILS
+    'loadSeries':
+        bill['LoadSeries']?.toString() ?? '',
+
+    'loadNo':
+        bill['LoadNo']?.toString() ?? '',
+
+    // BILL DETAILS
+    'billSeries':
+        bill['TrnSeries']?.toString() ?? '',
+
+    'billNo':
+        bill['TrnNo']?.toString() ?? '',
+
+    'sysAcCode':
+        bill['SysAcCode']?.toString() ?? '',
+
+    'customerName':
+        bill['customer_name'] ??
+        bill['CustomerName'] ??
+        bill['AcName'] ??
+        '',
+
+    'billAmount':
+        billAmount,
+
+    // OUTSTANDING DETAILS
+    'oldBalance':
+        balance,
+
+    'amountCollected':
+        amount,
+
+    'balanceAfterPayment':
+        balance - amount,
+
+    // PAYMENT DETAILS
+    'paymentMode':
+        selectedMode,
+
+    'cashAmount':
+        cashAmount,
+
+    'chequeAmount':
+        chequeAmount,
+
+    'chequeNumber':
+        chequeNoController.text.trim(),
+
+    'chequeDate':
+        chequeDateController.text.trim(),
+
+    'bankName':
+        selectedBank,
+
+    'upiApp':
+        selectedUpiApp,
+
+    'transactionNumber':
+        transactionController.text.trim(),
+
+    'remark':
+        remarkController.text.trim(),
+  },
+  paymentPhoto: paymentPhoto,
+);
+
+final newBalance = balance - amount;
 
                                     setState(() {
                                       bill['Bamt'] = math.max(0, newBalance);
