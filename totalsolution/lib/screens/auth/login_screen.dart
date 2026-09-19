@@ -114,6 +114,16 @@ class CustomerModel {
   final String? createdBy;
   final String? customerId;
   final String? distributorId;
+  final String? gstStatus;
+  final String? gstNo;
+  final String? creditStatus;
+  final String? sysCompCode;
+  final String? companyCode;
+  final String? companyName;
+  final String? areaCode;
+  final String? erpRouteCode;
+  final String? customerCompanyKey;
+  final List<Map<String, dynamic>> companies;
 
   CustomerModel({
     required this.id,
@@ -129,7 +139,25 @@ class CustomerModel {
     this.createdBy,
     this.customerId,
     this.distributorId,
+    this.gstStatus,
+    this.gstNo,
+    this.creditStatus,
+    this.sysCompCode,
+    this.companyCode,
+    this.companyName,
+    this.areaCode,
+    this.erpRouteCode,
+    this.customerCompanyKey,
+    this.companies = const [],
   });
+
+  static String? _firstCompanyValue(Map<String, dynamic> map, String key) {
+    final companies = map['companies'];
+    if (companies is List && companies.isNotEmpty && companies.first is Map) {
+      return (companies.first as Map)[key]?.toString();
+    }
+    return null;
+  }
 
   Map<String, dynamic> toMap() {
     return {
@@ -144,6 +172,13 @@ class CustomerModel {
       'status': status,
       'created_by': createdBy,
       'distributor_id': distributorId,
+      'sysCompCode': sysCompCode,
+      'companyCode': companyCode,
+      'companyName': companyName,
+      'area_code': areaCode,
+      'erp_route_code': erpRouteCode,
+      'customer_company_key': customerCompanyKey,
+      'companies': companies,
     };
   }
 
@@ -166,6 +201,39 @@ class CustomerModel {
       createdBy: map['created_by'],
       customerId: map['customer_id'],
       distributorId: map['distributor_id'],
+      gstStatus: (map['gstStatus'] ??
+              map['GSTStatus'] ??
+              map['gst_status'] ??
+              map['gst_type'] ??
+              map['gstType'] ??
+              map['GSTType'] ??
+              map['registrationType'] ??
+              map['RegistrationType'])
+          ?.toString(),
+      gstNo: (map['gstNo'] ??
+              map['GSTNo'] ??
+              map['gst_no'] ??
+              map['gstin'] ??
+              map['GSTIN'] ??
+              map['GstNo'])
+          ?.toString(),
+      creditStatus: (map['creditStatus'] ??
+              map['credit_status'] ??
+              map['CreditStatus'] ??
+              map['creditState'] ??
+              map['credit_state'])
+          ?.toString(),
+      sysCompCode: (map['sysCompCode'] ?? map['sys_comp_code'] ?? map['SysCompCode'] ?? _firstCompanyValue(map, 'sysCompCode'))?.toString(),
+      companyCode: (map['companyCode'] ?? map['company_code'] ?? _firstCompanyValue(map, 'companyCode'))?.toString(),
+      companyName: (map['companyName'] ?? map['company_name'] ?? _firstCompanyValue(map, 'companyName'))?.toString(),
+      areaCode: (map['areaCode'] ?? map['area_code'])?.toString(),
+      erpRouteCode: (map['erpRouteCode'] ?? map['erp_route_code'])?.toString(),
+      customerCompanyKey:
+          (map['customerCompanyKey'] ?? map['customer_company_key'])?.toString(),
+      companies: (map['companies'] as List? ?? const [])
+          .whereType<Map>()
+          .map((company) => Map<String, dynamic>.from(company))
+          .toList(),
     );
   }
 }
@@ -186,6 +254,9 @@ class ProductModel {
   final bool isActive;
   final List<String> images;
   final List<String> tags;
+  final String? sysCompCode;
+  final String? companyCode;
+  final String? companyName;
 
   ProductModel({
     required this.id,
@@ -203,6 +274,9 @@ class ProductModel {
     this.isActive = true,
     this.images = const [],
     this.tags = const [],
+    this.sysCompCode,
+    this.companyCode,
+    this.companyName,
   });
 
   Map<String, dynamic> toMap() {
@@ -222,6 +296,9 @@ class ProductModel {
       'isActive': isActive,
       'images': images,
       'tags': tags,
+      'sysCompCode': sysCompCode,
+      'companyCode': companyCode,
+      'companyName': companyName,
     };
   }
 
@@ -246,6 +323,9 @@ class ProductModel {
       isActive: map['isActive'] ?? true,
       images: List<String>.from(map['images'] ?? []),
       tags: List<String>.from(map['tags'] ?? []),
+      sysCompCode: (map['sysCompCode'] ?? map['sys_comp_code'])?.toString(),
+      companyCode: (map['companyCode'] ?? map['company_code'])?.toString(),
+      companyName: (map['companyName'] ?? map['company_name'])?.toString(),
     );
   }
 }
@@ -428,7 +508,9 @@ class CollectionHistoryModel {
       collectionId: map['collection_id']?.toString() ?? '',
       orderId: map['order_id']?.toString() ?? '',
       orderAmount: parseDouble(map['order_amount'] ?? map['order_total']),
-      amountCollected: parseDouble(map['amount_collected'] ?? map['payment_amount']),
+      amountCollected: parseDouble(
+        map['amount_collected'] ?? map['payment_amount'],
+      ),
       paymentMode: map['payment_mode']?.toString() ?? 'Cash',
       customerId: map['customer_id']?.toString() ?? '',
       customerName: map['customer_name']?.toString() ?? '',
@@ -441,11 +523,15 @@ class CollectionHistoryModel {
       collectionDate: parseDate(map['collection_date'] ?? map['created_at']),
       createdAt: parseDate(map['created_at'] ?? map['collection_date']),
       status: map['status']?.toString() ?? 'completed',
-      chequeNumber: map['cheque_number']?.toString() ?? map['reference_number']?.toString(),
+      chequeNumber:
+          map['cheque_number']?.toString() ??
+          map['reference_number']?.toString(),
       bankName: map['bank_name']?.toString(),
       chequeDate: map['cheque_date']?.toString(),
       upiType: map['upi_type']?.toString(),
-      transactionNumber: map['transaction_number']?.toString() ?? map['reference_number']?.toString(),
+      transactionNumber:
+          map['transaction_number']?.toString() ??
+          map['reference_number']?.toString(),
     );
   }
 }
@@ -511,6 +597,7 @@ class OrderItemModel {
   final double rate;
   final double amount;
   final double? mrp;
+  final int freeQty;
 
   OrderItemModel({
     required this.id,
@@ -521,6 +608,7 @@ class OrderItemModel {
     required this.rate,
     required this.amount,
     this.mrp,
+    this.freeQty = 0,
   });
 }
 
@@ -646,6 +734,7 @@ class CartItemData {
   double netAmt;
   int stock;
   bool schEnabled;
+  int freeQty;
 
   CartItemData({
     required this.productId,
@@ -660,6 +749,7 @@ class CartItemData {
     this.netAmt = 0,
     this.stock = 0,
     this.schEnabled = false,
+    this.freeQty = 0,
   });
 
   void calculate() {
@@ -674,6 +764,7 @@ class CartItemData {
     double? mrp,
     double? schPer,
     bool? schEnabled,
+    int? freeQty,
   }) {
     return CartItemData(
       productId: productId,
@@ -684,6 +775,7 @@ class CartItemData {
       mrp: mrp ?? this.mrp,
       schPer: schPer ?? this.schPer,
       schEnabled: schEnabled ?? this.schEnabled,
+      freeQty: freeQty ?? this.freeQty,
     );
   }
 }
@@ -691,7 +783,7 @@ class CartItemData {
 // ==================== API Service for backend communication ====================
 class ApiService {
    static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
-  //static const String _remoteBaseUrl = 'http://localhost:3000/api';
+ // static const String _remoteBaseUrl = 'http://localhost:3000/api';
 
   static String get apiUrl {
     return _remoteBaseUrl; // ✅ Now uses the correct URL
@@ -699,7 +791,10 @@ class ApiService {
 
   static Uri uploadedFileUri(String relativePath) {
     final api = Uri.parse(apiUrl);
-    return api.replace(path: relativePath.startsWith('/') ? relativePath : '/$relativePath', query: null);
+    return api.replace(
+      path: relativePath.startsWith('/') ? relativePath : '/$relativePath',
+      query: null,
+    );
   }
 
   // Flutter web can decode JSON objects as LinkedMap<dynamic, dynamic>.
@@ -933,9 +1028,9 @@ class ApiService {
   }
 
   static Future<Map<String, dynamic>> collectOutstandingPayment(
-    Map<String, dynamic> paymentData,
-    {XFile? paymentPhoto}
-  ) async {
+    Map<String, dynamic> paymentData, {
+    XFile? paymentPhoto,
+  }) async {
     final url = Uri.parse('$apiUrl/outstanding/collect-payment');
 
     try {
@@ -1228,7 +1323,9 @@ class ApiService {
         : _decodeJsonObject(response.body);
     if (response.statusCode != 200 || data['success'] == false) {
       throw Exception(
-        data['message'] ?? data['error'] ?? 'Unable to calculate delivery route',
+        data['message'] ??
+            data['error'] ??
+            'Unable to calculate delivery route',
       );
     }
     return data;
@@ -2468,6 +2565,9 @@ class OrderService {
                     rate: (item['rate'] ?? 0).toDouble(),
                     amount: (item['amount'] ?? 0).toDouble(),
                     mrp: (item['mrp'] ?? 0).toDouble(),
+                    freeQty: (item['freeQty'] ?? item['free_qty'] ?? 0) is num
+                        ? (item['freeQty'] ?? item['free_qty'] ?? 0).toInt()
+                        : int.tryParse((item['freeQty'] ?? item['free_qty'] ?? '0').toString()) ?? 0,
                   ),
                 )
                 .toList() ??
@@ -2546,8 +2646,11 @@ class OrderService {
   Future<void> createOrder(
     OrderModel order,
     String? currentDistributorId,
-    String? currentSalesmanId,
-  ) async {
+    String? currentSalesmanId, {
+    String? sysCompCode,
+    String? companyCode,
+    String? companyName,
+  }) async {
     try {
       final orderMap = {
         'orderNumber': order.orderNumber,
@@ -2560,6 +2663,9 @@ class OrderService {
         'salesmanName': order.salesmanName,
         'distributor_id': currentDistributorId,
         'distributorId': currentDistributorId,
+        'sysCompCode': sysCompCode,
+        'companyCode': companyCode,
+        'companyName': companyName,
         'items': order.items
             .map(
               (item) => {
@@ -2570,6 +2676,7 @@ class OrderService {
                 'rate': item.rate,
                 'amount': item.amount,
                 'mrp': item.mrp != null && item.mrp! > 0 ? item.mrp : item.rate,
+                'freeQty': item.freeQty,
               },
             )
             .toList(),
@@ -2626,6 +2733,7 @@ class OrderService {
                 'rate': item.rate,
                 'amount': item.amount,
                 'mrp': item.mrp != null && item.mrp! > 0 ? item.mrp : item.rate,
+                'freeQty': item.freeQty,
               },
             )
             .toList(),
@@ -3041,7 +3149,8 @@ class CollectionHistoryService {
   double get totalCollected => (_summary['total_collected'] ?? 0.0).toDouble();
   int get totalTransactions => (_summary['total_transactions'] ?? 0).toInt();
   double get cashCollected => (_summary['cash_collected'] ?? 0.0).toDouble();
-  double get chequeCollected => (_summary['cheque_collected'] ?? 0.0).toDouble();
+  double get chequeCollected =>
+      (_summary['cheque_collected'] ?? 0.0).toDouble();
   double get upiCollected => (_summary['upi_collected'] ?? 0.0).toDouble();
   List<dynamic> get salesmanWise => _summary['salesman_wise'] ?? [];
 }
@@ -3801,7 +3910,20 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
 
   String _formatDate(DateTime? dt) {
     if (dt == null) return 'All Dates';
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     final day = dt.day.toString().padLeft(2, '0');
     final month = months[dt.month - 1];
     return '$day $month ${dt.year}';
@@ -3873,22 +3995,40 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
   List<CollectionHistoryModel> _getFilteredCollections() {
     return _collections.where((c) {
       // 1. Salesman filter (Distributor only)
-      if (widget.isDistributor && _selectedSalesmanId != null && _selectedSalesmanId != 'all') {
-        final sId = c.salesmanDetails?['id']?.toString() ?? c.collectedBy['id']?.toString();
+      if (widget.isDistributor &&
+          _selectedSalesmanId != null &&
+          _selectedSalesmanId != 'all') {
+        final sId =
+            c.salesmanDetails?['id']?.toString() ??
+            c.collectedBy['id']?.toString();
         final sCode = c.salesmanDetails?['code']?.toString();
         final sName = c.salesmanDetails?['name']?.toString();
-        if (sId != _selectedSalesmanId && sCode != _selectedSalesmanId && sName != _selectedSalesmanId) {
+        if (sId != _selectedSalesmanId &&
+            sCode != _selectedSalesmanId &&
+            sName != _selectedSalesmanId) {
           return false;
         }
       }
 
       // 2. Date filter
       if (_startDate != null) {
-        final start = DateTime(_startDate!.year, _startDate!.month, _startDate!.day);
+        final start = DateTime(
+          _startDate!.year,
+          _startDate!.month,
+          _startDate!.day,
+        );
         if (c.collectionDate.isBefore(start)) return false;
       }
       if (_endDate != null) {
-        final end = DateTime(_endDate!.year, _endDate!.month, _endDate!.day, 23, 59, 59, 999);
+        final end = DateTime(
+          _endDate!.year,
+          _endDate!.month,
+          _endDate!.day,
+          23,
+          59,
+          59,
+          999,
+        );
         if (c.collectionDate.isAfter(end)) return false;
       }
 
@@ -3899,28 +4039,43 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
       } else if (_selectedPaymentMode == 'Cheque') {
         return mode.contains('cheque');
       } else if (_selectedPaymentMode == 'UPI') {
-        return mode.contains('upi') || mode.contains('gpay') || mode.contains('phonepe') || mode.contains('paytm');
+        return mode.contains('upi') ||
+            mode.contains('gpay') ||
+            mode.contains('phonepe') ||
+            mode.contains('paytm');
       }
 
       return true;
     }).toList();
   }
 
-  List<_SalesmanSummaryItem> _getSalesmanSummaries(List<CollectionHistoryModel> filteredList) {
+  List<_SalesmanSummaryItem> _getSalesmanSummaries(
+    List<CollectionHistoryModel> filteredList,
+  ) {
     final Map<String, _SalesmanSummaryItem> summaryMap = {};
 
     for (var c in filteredList) {
-      final sId = c.salesmanDetails?['id']?.toString() ?? c.collectedBy['id']?.toString() ?? 'unknown';
-      var sName = c.salesmanDetails?['name']?.toString() ?? c.collectedBy['name']?.toString() ?? 'Salesman';
+      final sId =
+          c.salesmanDetails?['id']?.toString() ??
+          c.collectedBy['id']?.toString() ??
+          'unknown';
+      var sName =
+          c.salesmanDetails?['name']?.toString() ??
+          c.collectedBy['name']?.toString() ??
+          'Salesman';
       var sRoute = c.salesmanDetails?['route']?.toString() ?? 'Route A';
-      var sCode = c.salesmanDetails?['code']?.toString() ?? (sId.length > 4 ? sId.substring(0, 4) : sId);
+      var sCode =
+          c.salesmanDetails?['code']?.toString() ??
+          (sId.length > 4 ? sId.substring(0, 4) : sId);
 
       // Match with widget.salesmen for richer details if available
       if (widget.salesmen.isNotEmpty) {
         for (var sm in widget.salesmen) {
           if (sm.salesmanId == sId || sm.id == sId) {
             if (sName == 'Salesman' || sName.isEmpty) sName = sm.name;
-            if (sm.areaAssigned.isNotEmpty && (sRoute == 'Route A' || sRoute.isEmpty)) sRoute = sm.areaAssigned;
+            if (sm.areaAssigned.isNotEmpty &&
+                (sRoute == 'Route A' || sRoute.isEmpty))
+              sRoute = sm.areaAssigned;
             if (sm.salesmanId.isNotEmpty) sCode = sm.salesmanId;
             break;
           }
@@ -3955,22 +4110,34 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
 
       final isCash = mode.contains('cash');
       final isCheque = mode.contains('cheque');
-      final isUpi = mode.contains('upi') || mode.contains('gpay') || mode.contains('phonepe') || mode.contains('paytm');
+      final isUpi =
+          mode.contains('upi') ||
+          mode.contains('gpay') ||
+          mode.contains('phonepe') ||
+          mode.contains('paytm');
 
       final newTotal = existing.totalCollected + amount;
       final newCash = existing.cashCollected + (isCash ? amount : 0);
       final newCheque = existing.chequeCollected + (isCheque ? amount : 0);
       final newUpi = existing.upiCollected + (isUpi ? amount : 0);
       final newCount = existing.transactionCount + 1;
-      final newLast = (existing.lastCollectionDate == null || c.collectionDate.isAfter(existing.lastCollectionDate!))
+      final newLast =
+          (existing.lastCollectionDate == null ||
+              c.collectionDate.isAfter(existing.lastCollectionDate!))
           ? c.collectionDate
           : existing.lastCollectionDate;
-      final newCollections = List<CollectionHistoryModel>.from(existing.collections)..add(c);
+      final newCollections = List<CollectionHistoryModel>.from(
+        existing.collections,
+      )..add(c);
 
       summaryMap[targetKey] = _SalesmanSummaryItem(
         id: existing.id,
-        name: existing.name.isNotEmpty && existing.name != 'Salesman' ? existing.name : sName,
-        route: existing.route.isNotEmpty && existing.route != 'Route A' ? existing.route : sRoute,
+        name: existing.name.isNotEmpty && existing.name != 'Salesman'
+            ? existing.name
+            : sName,
+        route: existing.route.isNotEmpty && existing.route != 'Route A'
+            ? existing.route
+            : sRoute,
         code: existing.code.isNotEmpty ? existing.code : sCode,
         totalCollected: newTotal,
         cashCollected: newCash,
@@ -3983,8 +4150,17 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
     }
 
     var result = summaryMap.values.toList();
-    if (widget.isDistributor && _selectedSalesmanId != null && _selectedSalesmanId != 'all') {
-      result = result.where((s) => s.id == _selectedSalesmanId || s.code == _selectedSalesmanId || s.name == _selectedSalesmanId).toList();
+    if (widget.isDistributor &&
+        _selectedSalesmanId != null &&
+        _selectedSalesmanId != 'all') {
+      result = result
+          .where(
+            (s) =>
+                s.id == _selectedSalesmanId ||
+                s.code == _selectedSalesmanId ||
+                s.name == _selectedSalesmanId,
+          )
+          .toList();
     }
 
     result.sort((a, b) => b.totalCollected.compareTo(a.totalCollected));
@@ -4101,7 +4277,8 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                             _startDate = null;
                             _endDate = null;
                             _selectedPaymentMode = 'All';
-                            if (widget.isDistributor) _selectedSalesmanId = null;
+                            if (widget.isDistributor)
+                              _selectedSalesmanId = null;
                           });
                           _loadCollections();
                         },
@@ -4139,7 +4316,10 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                   // Total Collected Card
                   Expanded(
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 13,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFF0FDF4),
                         borderRadius: BorderRadius.circular(14),
@@ -4213,7 +4393,10 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                   // Total Transactions Card
                   Expanded(
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 13,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFEFF6FF),
                         borderRadius: BorderRadius.circular(14),
@@ -4293,7 +4476,10 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                   // Cash Collected
                   Expanded(
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFF0FDF4),
                         borderRadius: BorderRadius.circular(12),
@@ -4357,7 +4543,10 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                   // Cheque Collected
                   Expanded(
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFFFFBEB),
                         borderRadius: BorderRadius.circular(12),
@@ -4421,7 +4610,10 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                   // UPI Collected
                   Expanded(
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFFAF5FF),
                         borderRadius: BorderRadius.circular(12),
@@ -4525,7 +4717,10 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                         child: DropdownButtonHideUnderline(
                           child: DropdownButton<String?>(
                             isExpanded: true,
-                            icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF64748B)),
+                            icon: const Icon(
+                              Icons.keyboard_arrow_down,
+                              color: Color(0xFF64748B),
+                            ),
                             value: _selectedSalesmanId,
                             hint: const Text(
                               'All Salesmen',
@@ -4540,7 +4735,10 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                 value: null,
                                 child: Text(
                                   'All Salesmen',
-                                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
                               ),
                               ...dropdownOptions.map(
@@ -4572,10 +4770,15 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                             onTap: _pickStartDate,
                             borderRadius: BorderRadius.circular(10),
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 8,
+                              ),
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: const Color(0xFFE2E8F0)),
+                                border: Border.all(
+                                  color: const Color(0xFFE2E8F0),
+                                ),
                                 color: const Color(0xFFF8FAFC),
                               ),
                               child: Row(
@@ -4588,7 +4791,8 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         const Text(
                                           'Start Date',
@@ -4622,10 +4826,15 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                             onTap: _pickEndDate,
                             borderRadius: BorderRadius.circular(10),
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 8,
+                              ),
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: const Color(0xFFE2E8F0)),
+                                border: Border.all(
+                                  color: const Color(0xFFE2E8F0),
+                                ),
                                 color: const Color(0xFFF8FAFC),
                               ),
                               child: Row(
@@ -4638,7 +4847,8 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         const Text(
                                           'End Date',
@@ -4686,18 +4896,26 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Row(
-                            children: ['All', 'Cash', 'Cheque', 'UPI'].map((mode) {
+                            children: ['All', 'Cash', 'Cheque', 'UPI'].map((
+                              mode,
+                            ) {
                               final isSelected = _selectedPaymentMode == mode;
                               return Expanded(
                                 child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 2,
+                                  ),
                                   child: InkWell(
                                     onTap: () {
-                                      setState(() => _selectedPaymentMode = mode);
+                                      setState(
+                                        () => _selectedPaymentMode = mode,
+                                      );
                                     },
                                     borderRadius: BorderRadius.circular(8),
                                     child: Container(
-                                      padding: const EdgeInsets.symmetric(vertical: 7),
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 7,
+                                      ),
                                       alignment: Alignment.center,
                                       decoration: BoxDecoration(
                                         color: isSelected
@@ -4716,8 +4934,12 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                           mode,
                                           style: TextStyle(
                                             fontSize: 11,
-                                            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                                            color: isSelected ? Colors.white : const Color(0xFF334155),
+                                            fontWeight: isSelected
+                                                ? FontWeight.w700
+                                                : FontWeight.w500,
+                                            color: isSelected
+                                                ? Colors.white
+                                                : const Color(0xFF334155),
                                           ),
                                         ),
                                       ),
@@ -4772,11 +4994,18 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                     padding: const EdgeInsets.symmetric(vertical: 40),
                     child: Column(
                       children: [
-                        Icon(Icons.people_outline, size: 50, color: Colors.grey[400]),
+                        Icon(
+                          Icons.people_outline,
+                          size: 50,
+                          color: Colors.grey[400],
+                        ),
                         const SizedBox(height: 10),
                         Text(
                           'No salesman records found',
-                          style: TextStyle(color: Colors.grey[600], fontSize: 14),
+                          style: TextStyle(
+                            color: Colors.grey[600],
+                            fontSize: 14,
+                          ),
                         ),
                       ],
                     ),
@@ -4787,7 +5016,9 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                   final index = entry.key;
                   final item = entry.value;
                   final isExpanded = _expandedSalesmanId == item.id;
-                  final initial = item.name.isNotEmpty ? item.name[0].toUpperCase() : 'S';
+                  final initial = item.name.isNotEmpty
+                      ? item.name[0].toUpperCase()
+                      : 'S';
 
                   return Container(
                     margin: const EdgeInsets.only(bottom: 12),
@@ -4836,7 +5067,8 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
                                         children: [
                                           Text(
                                             item.name,
@@ -4864,13 +5096,16 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                     ),
                                     const SizedBox(width: 8),
                                     Column(
-                                      crossAxisAlignment: CrossAxisAlignment.end,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.end,
                                       children: [
                                         FittedBox(
                                           fit: BoxFit.scaleDown,
                                           alignment: Alignment.centerRight,
                                           child: Text(
-                                            _formatCurrency(item.totalCollected),
+                                            _formatCurrency(
+                                              item.totalCollected,
+                                            ),
                                             style: const TextStyle(
                                               fontSize: 15.5,
                                               fontWeight: FontWeight.w800,
@@ -4894,7 +5129,9 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                     ),
                                     const SizedBox(width: 4),
                                     Icon(
-                                      isExpanded ? Icons.expand_less : Icons.chevron_right,
+                                      isExpanded
+                                          ? Icons.expand_less
+                                          : Icons.chevron_right,
                                       color: const Color(0xFF94A3B8),
                                       size: 18,
                                     ),
@@ -4908,11 +5145,18 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                     // Cash Pill
                                     Expanded(
                                       child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 6,
+                                        ),
                                         decoration: BoxDecoration(
                                           color: const Color(0xFFF8FAFC),
-                                          borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          border: Border.all(
+                                            color: const Color(0xFFE2E8F0),
+                                          ),
                                         ),
                                         child: Row(
                                           children: [
@@ -4921,7 +5165,8 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                               height: 22,
                                               decoration: BoxDecoration(
                                                 color: const Color(0xFFDCFCE7),
-                                                borderRadius: BorderRadius.circular(6),
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
                                               ),
                                               alignment: Alignment.center,
                                               child: const Icon(
@@ -4933,29 +5178,39 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                             const SizedBox(width: 5),
                                             Expanded(
                                               child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
                                                 mainAxisSize: MainAxisSize.min,
                                                 children: [
                                                   FittedBox(
                                                     fit: BoxFit.scaleDown,
-                                                    alignment: Alignment.centerLeft,
+                                                    alignment:
+                                                        Alignment.centerLeft,
                                                     child: Text(
-                                                      _formatCurrency(item.cashCollected),
+                                                      _formatCurrency(
+                                                        item.cashCollected,
+                                                      ),
                                                       style: const TextStyle(
-                                                        fontWeight: FontWeight.w800,
+                                                        fontWeight:
+                                                            FontWeight.w800,
                                                         fontSize: 11,
-                                                        color: Color(0xFF0F172A),
+                                                        color: Color(
+                                                          0xFF0F172A,
+                                                        ),
                                                       ),
                                                     ),
                                                   ),
                                                   const FittedBox(
                                                     fit: BoxFit.scaleDown,
-                                                    alignment: Alignment.centerLeft,
+                                                    alignment:
+                                                        Alignment.centerLeft,
                                                     child: Text(
                                                       'Cash',
                                                       style: TextStyle(
                                                         fontSize: 9,
-                                                        color: Color(0xFF64748B),
+                                                        color: Color(
+                                                          0xFF64748B,
+                                                        ),
                                                       ),
                                                     ),
                                                   ),
@@ -4970,11 +5225,18 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                     // Cheque Pill
                                     Expanded(
                                       child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 6,
+                                        ),
                                         decoration: BoxDecoration(
                                           color: const Color(0xFFF8FAFC),
-                                          borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          border: Border.all(
+                                            color: const Color(0xFFE2E8F0),
+                                          ),
                                         ),
                                         child: Row(
                                           children: [
@@ -4983,7 +5245,8 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                               height: 22,
                                               decoration: BoxDecoration(
                                                 color: const Color(0xFFFEF3C7),
-                                                borderRadius: BorderRadius.circular(6),
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
                                               ),
                                               alignment: Alignment.center,
                                               child: const Icon(
@@ -4995,29 +5258,39 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                             const SizedBox(width: 5),
                                             Expanded(
                                               child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
                                                 mainAxisSize: MainAxisSize.min,
                                                 children: [
                                                   FittedBox(
                                                     fit: BoxFit.scaleDown,
-                                                    alignment: Alignment.centerLeft,
+                                                    alignment:
+                                                        Alignment.centerLeft,
                                                     child: Text(
-                                                      _formatCurrency(item.chequeCollected),
+                                                      _formatCurrency(
+                                                        item.chequeCollected,
+                                                      ),
                                                       style: const TextStyle(
-                                                        fontWeight: FontWeight.w800,
+                                                        fontWeight:
+                                                            FontWeight.w800,
                                                         fontSize: 11,
-                                                        color: Color(0xFF0F172A),
+                                                        color: Color(
+                                                          0xFF0F172A,
+                                                        ),
                                                       ),
                                                     ),
                                                   ),
                                                   const FittedBox(
                                                     fit: BoxFit.scaleDown,
-                                                    alignment: Alignment.centerLeft,
+                                                    alignment:
+                                                        Alignment.centerLeft,
                                                     child: Text(
                                                       'Cheque',
                                                       style: TextStyle(
                                                         fontSize: 9,
-                                                        color: Color(0xFF64748B),
+                                                        color: Color(
+                                                          0xFF64748B,
+                                                        ),
                                                       ),
                                                     ),
                                                   ),
@@ -5032,11 +5305,18 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                     // UPI Pill
                                     Expanded(
                                       child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 6,
+                                        ),
                                         decoration: BoxDecoration(
                                           color: const Color(0xFFF8FAFC),
-                                          borderRadius: BorderRadius.circular(8),
-                                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          border: Border.all(
+                                            color: const Color(0xFFE2E8F0),
+                                          ),
                                         ),
                                         child: Row(
                                           children: [
@@ -5045,7 +5325,8 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                               height: 22,
                                               decoration: BoxDecoration(
                                                 color: const Color(0xFFF3E8FF),
-                                                borderRadius: BorderRadius.circular(6),
+                                                borderRadius:
+                                                    BorderRadius.circular(6),
                                               ),
                                               alignment: Alignment.center,
                                               child: const Icon(
@@ -5057,29 +5338,39 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                             const SizedBox(width: 5),
                                             Expanded(
                                               child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
                                                 mainAxisSize: MainAxisSize.min,
                                                 children: [
                                                   FittedBox(
                                                     fit: BoxFit.scaleDown,
-                                                    alignment: Alignment.centerLeft,
+                                                    alignment:
+                                                        Alignment.centerLeft,
                                                     child: Text(
-                                                      _formatCurrency(item.upiCollected),
+                                                      _formatCurrency(
+                                                        item.upiCollected,
+                                                      ),
                                                       style: const TextStyle(
-                                                        fontWeight: FontWeight.w800,
+                                                        fontWeight:
+                                                            FontWeight.w800,
                                                         fontSize: 11,
-                                                        color: Color(0xFF0F172A),
+                                                        color: Color(
+                                                          0xFF0F172A,
+                                                        ),
                                                       ),
                                                     ),
                                                   ),
                                                   const FittedBox(
                                                     fit: BoxFit.scaleDown,
-                                                    alignment: Alignment.centerLeft,
+                                                    alignment:
+                                                        Alignment.centerLeft,
                                                     child: Text(
                                                       'UPI',
                                                       style: TextStyle(
                                                         fontSize: 9,
-                                                        color: Color(0xFF64748B),
+                                                        color: Color(
+                                                          0xFF64748B,
+                                                        ),
                                                       ),
                                                     ),
                                                   ),
@@ -5119,7 +5410,8 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                     const SizedBox(width: 8),
                                     Expanded(
                                       child: Row(
-                                        mainAxisAlignment: MainAxisAlignment.end,
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.end,
                                         children: [
                                           const Icon(
                                             Icons.access_time,
@@ -5163,15 +5455,21 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                     child: Center(
                                       child: Text(
                                         'No collection records found for this salesman',
-                                        style: TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Color(0xFF64748B),
+                                        ),
                                       ),
                                     ),
                                   )
                                 : Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Padding(
-                                        padding: const EdgeInsets.only(bottom: 8),
+                                        padding: const EdgeInsets.only(
+                                          bottom: 8,
+                                        ),
                                         child: Text(
                                           'Transactions (${item.collections.length})',
                                           style: const TextStyle(
@@ -5182,7 +5480,8 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                         ),
                                       ),
                                       ...item.collections.map((coll) {
-                                        final modeLower = coll.paymentMode.toLowerCase();
+                                        final modeLower = coll.paymentMode
+                                            .toLowerCase();
                                         Color badgeBg = const Color(0xFFF0FDF4);
                                         Color badgeFg = const Color(0xFF16A34A);
                                         if (modeLower.contains('cheque')) {
@@ -5194,43 +5493,65 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                         }
 
                                         return Container(
-                                          margin: const EdgeInsets.only(bottom: 8),
+                                          margin: const EdgeInsets.only(
+                                            bottom: 8,
+                                          ),
                                           padding: const EdgeInsets.all(10),
                                           decoration: BoxDecoration(
                                             color: Colors.white,
-                                            borderRadius: BorderRadius.circular(10),
-                                            border: Border.all(color: const Color(0xFFE2E8F0)),
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
+                                            border: Border.all(
+                                              color: const Color(0xFFE2E8F0),
+                                            ),
                                           ),
                                           child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
                                             children: [
                                               Row(
                                                 children: [
                                                   Expanded(
                                                     child: Text(
-                                                      coll.billNo.isNotEmpty ? 'Bill #${coll.billNo}' : 'Payment #${coll.collectionId}',
+                                                      coll.billNo.isNotEmpty
+                                                          ? 'Bill #${coll.billNo}'
+                                                          : 'Payment #${coll.collectionId}',
                                                       style: const TextStyle(
-                                                        fontWeight: FontWeight.w700,
+                                                        fontWeight:
+                                                            FontWeight.w700,
                                                         fontSize: 13,
-                                                        color: Color(0xFF0F172A),
+                                                        color: Color(
+                                                          0xFF0F172A,
+                                                        ),
                                                       ),
                                                       maxLines: 1,
-                                                      overflow: TextOverflow.ellipsis,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
                                                     ),
                                                   ),
                                                   const SizedBox(width: 8),
                                                   Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 8,
+                                                          vertical: 3,
+                                                        ),
                                                     decoration: BoxDecoration(
                                                       color: badgeBg,
-                                                      borderRadius: BorderRadius.circular(12),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            12,
+                                                          ),
                                                     ),
                                                     child: Text(
-                                                      coll.paymentMode.toUpperCase(),
+                                                      coll.paymentMode
+                                                          .toUpperCase(),
                                                       style: TextStyle(
                                                         fontSize: 10,
                                                         color: badgeFg,
-                                                        fontWeight: FontWeight.w800,
+                                                        fontWeight:
+                                                            FontWeight.w800,
                                                       ),
                                                     ),
                                                   ),
@@ -5238,7 +5559,9 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                               ),
                                               const SizedBox(height: 4),
                                               Text(
-                                                coll.customerName.isNotEmpty ? coll.customerName : 'Customer: ${coll.customerId}',
+                                                coll.customerName.isNotEmpty
+                                                    ? coll.customerName
+                                                    : 'Customer: ${coll.customerId}',
                                                 style: const TextStyle(
                                                   fontSize: 12,
                                                   color: Color(0xFF475569),
@@ -5251,30 +5574,45 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                                 children: [
                                                   Expanded(
                                                     child: Column(
-                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      crossAxisAlignment:
+                                                          CrossAxisAlignment
+                                                              .start,
                                                       children: [
                                                         FittedBox(
                                                           fit: BoxFit.scaleDown,
-                                                          alignment: Alignment.centerLeft,
+                                                          alignment: Alignment
+                                                              .centerLeft,
                                                           child: Text(
                                                             'Collected: ${_formatCurrency(coll.amountCollected)}',
-                                                            style: const TextStyle(
-                                                              fontSize: 12,
-                                                              fontWeight: FontWeight.w800,
-                                                              color: Color(0xFF16A34A),
-                                                            ),
+                                                            style:
+                                                                const TextStyle(
+                                                                  fontSize: 12,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w800,
+                                                                  color: Color(
+                                                                    0xFF16A34A,
+                                                                  ),
+                                                                ),
                                                           ),
                                                         ),
-                                                        if (coll.orderAmount > 0)
+                                                        if (coll.orderAmount >
+                                                            0)
                                                           FittedBox(
-                                                            fit: BoxFit.scaleDown,
-                                                            alignment: Alignment.centerLeft,
+                                                            fit: BoxFit
+                                                                .scaleDown,
+                                                            alignment: Alignment
+                                                                .centerLeft,
                                                             child: Text(
                                                               'Order Amount: ${_formatCurrency(coll.orderAmount)}',
-                                                              style: const TextStyle(
-                                                                fontSize: 10,
-                                                                color: Color(0xFF64748B),
-                                                              ),
+                                                              style:
+                                                                  const TextStyle(
+                                                                    fontSize:
+                                                                        10,
+                                                                    color: Color(
+                                                                      0xFF64748B,
+                                                                    ),
+                                                                  ),
                                                             ),
                                                           ),
                                                       ],
@@ -5283,43 +5621,63 @@ class _CollectionHistoryViewState extends State<CollectionHistoryView> {
                                                   const SizedBox(width: 8),
                                                   Flexible(
                                                     child: Text(
-                                                      _formatDateTime(coll.collectionDate),
+                                                      _formatDateTime(
+                                                        coll.collectionDate,
+                                                      ),
                                                       style: const TextStyle(
                                                         fontSize: 10,
-                                                        color: Color(0xFF64748B),
+                                                        color: Color(
+                                                          0xFF64748B,
+                                                        ),
                                                       ),
                                                       maxLines: 1,
-                                                      overflow: TextOverflow.ellipsis,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
                                                     ),
                                                   ),
                                                 ],
                                               ),
-                                              if (coll.chequeNumber != null && coll.chequeNumber!.isNotEmpty)
+                                              if (coll.chequeNumber != null &&
+                                                  coll.chequeNumber!.isNotEmpty)
                                                 Padding(
-                                                  padding: const EdgeInsets.only(top: 4),
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                        top: 4,
+                                                      ),
                                                   child: Text(
                                                     'Cheque: ${coll.chequeNumber} (${coll.bankName ?? ''})',
                                                     style: const TextStyle(
                                                       fontSize: 10,
                                                       color: Color(0xFFD97706),
-                                                      fontWeight: FontWeight.w500,
+                                                      fontWeight:
+                                                          FontWeight.w500,
                                                     ),
                                                     maxLines: 1,
-                                                    overflow: TextOverflow.ellipsis,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
                                                   ),
                                                 ),
-                                              if (coll.transactionNumber != null && coll.transactionNumber!.isNotEmpty)
+                                              if (coll.transactionNumber !=
+                                                      null &&
+                                                  coll
+                                                      .transactionNumber!
+                                                      .isNotEmpty)
                                                 Padding(
-                                                  padding: const EdgeInsets.only(top: 4),
+                                                  padding:
+                                                      const EdgeInsets.only(
+                                                        top: 4,
+                                                      ),
                                                   child: Text(
                                                     'UPI Ref: ${coll.transactionNumber} (${coll.upiType ?? ''})',
                                                     style: const TextStyle(
                                                       fontSize: 10,
                                                       color: Color(0xFF9333EA),
-                                                      fontWeight: FontWeight.w500,
+                                                      fontWeight:
+                                                          FontWeight.w500,
                                                     ),
                                                     maxLines: 1,
-                                                    overflow: TextOverflow.ellipsis,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
                                                   ),
                                                 ),
                                             ],
@@ -5366,14 +5724,19 @@ class CollectionHistoryDialog extends StatelessWidget {
           child: Column(
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 color: const Color(0xFF1A3B70),
                 child: Row(
                   children: [
                     const Icon(Icons.history, color: Colors.white, size: 24),
                     const SizedBox(width: 10),
                     Text(
-                      isDistributor ? 'Collection History' : 'My Collection History',
+                      isDistributor
+                          ? 'Collection History'
+                          : 'My Collection History',
                       style: const TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -6556,6 +6919,7 @@ class _DistributorDashboardEnhancedState
             rate: item.rate,
             amount: item.netAmt,
             mrp: item.mrp,
+            freeQty: item.freeQty,
           );
         }).toList(),
         totalAmount: newTotalAmount,
@@ -7008,7 +7372,9 @@ class _DistributorDashboardEnhancedState
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: Text('Assign Load ${load['LoadSeries'] ?? ''}/${load['LoadNo'] ?? ''}'),
+          title: Text(
+            'Assign Load ${load['LoadSeries'] ?? ''}/${load['LoadNo'] ?? ''}',
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -7019,10 +7385,12 @@ class _DistributorDashboardEnhancedState
                   border: OutlineInputBorder(),
                 ),
                 items: _salesmen
-                    .map((salesman) => DropdownMenuItem(
-                          value: salesman.salesmanId,
-                          child: Text(salesman.name),
-                        ))
+                    .map(
+                      (salesman) => DropdownMenuItem(
+                        value: salesman.salesmanId,
+                        child: Text(salesman.name),
+                      ),
+                    )
                     .toList(),
                 onChanged: (value) => setDialogState(() => salesmanId = value),
               ),
@@ -7035,16 +7403,26 @@ class _DistributorDashboardEnhancedState
                 ),
                 items: const [
                   DropdownMenuItem(value: 'none', child: Text('No grouping')),
-                  DropdownMenuItem(value: 'company', child: Text('Company wise')),
+                  DropdownMenuItem(
+                    value: 'company',
+                    child: Text('Company wise'),
+                  ),
                   DropdownMenuItem(value: 'route', child: Text('Route wise')),
-                  DropdownMenuItem(value: 'company_route', child: Text('Company + Route wise')),
+                  DropdownMenuItem(
+                    value: 'company_route',
+                    child: Text('Company + Route wise'),
+                  ),
                 ],
-                onChanged: (value) => setDialogState(() => groupingMode = value ?? 'none'),
+                onChanged: (value) =>
+                    setDialogState(() => groupingMode = value ?? 'none'),
               ),
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
             ElevatedButton(
               onPressed: salesmanId == null
                   ? null
@@ -7056,11 +7434,15 @@ class _DistributorDashboardEnhancedState
                           salesmanId: salesmanId!,
                           groupingMode: groupingMode,
                         );
-                        if (dialogContext.mounted) Navigator.pop(dialogContext, true);
+                        if (dialogContext.mounted)
+                          Navigator.pop(dialogContext, true);
                       } catch (error) {
                         if (dialogContext.mounted) {
                           ScaffoldMessenger.of(dialogContext).showSnackBar(
-                            SnackBar(content: Text('$error'), backgroundColor: errorRed),
+                            SnackBar(
+                              content: Text('$error'),
+                              backgroundColor: errorRed,
+                            ),
                           );
                         }
                       }
@@ -7073,7 +7455,12 @@ class _DistributorDashboardEnhancedState
     );
     if (saved == true) {
       await _loadAdminDeliveryLoads();
-      if (mounted) showSafeSnackBar(context, 'Load assigned successfully', backgroundColor: successGreen);
+      if (mounted)
+        showSafeSnackBar(
+          context,
+          'Load assigned successfully',
+          backgroundColor: successGreen,
+        );
     }
   }
 
@@ -7084,12 +7471,19 @@ class _DistributorDashboardEnhancedState
         .where((bill) => (bill['payment_status'] ?? '').toString() != 'paid')
         .toList();
     if (bills.isEmpty) {
-      showSafeSnackBar(context, 'All bills in this load are paid', backgroundColor: successGreen);
+      showSafeSnackBar(
+        context,
+        'All bills in this load are paid',
+        backgroundColor: successGreen,
+      );
       return;
     }
     Map<String, dynamic> selectedBill = bills.first;
     final amountController = TextEditingController(
-      text: ((selectedBill['balance_amount'] ?? selectedBill['BillAmount'] ?? 0) as num).toStringAsFixed(2),
+      text:
+          ((selectedBill['balance_amount'] ?? selectedBill['BillAmount'] ?? 0)
+                  as num)
+              .toStringAsFixed(2),
     );
     String paymentMode = 'Cash';
     XFile? paymentPhoto;
@@ -7104,52 +7498,94 @@ class _DistributorDashboardEnhancedState
               children: [
                 DropdownButtonFormField<Map<String, dynamic>>(
                   value: selectedBill,
-                  decoration: const InputDecoration(labelText: 'Bill', border: OutlineInputBorder()),
-                  items: bills.map((bill) => DropdownMenuItem(
-                    value: bill,
-                    child: Text('${bill['TrnSeries'] ?? ''}/${bill['TrnNo'] ?? ''} - ${bill['AcName'] ?? bill['SysAcCode'] ?? ''}'),
-                  )).toList(),
+                  decoration: const InputDecoration(
+                    labelText: 'Bill',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: bills
+                      .map(
+                        (bill) => DropdownMenuItem(
+                          value: bill,
+                          child: Text(
+                            '${bill['TrnSeries'] ?? ''}/${bill['TrnNo'] ?? ''} - ${bill['AcName'] ?? bill['SysAcCode'] ?? ''}',
+                          ),
+                        ),
+                      )
+                      .toList(),
                   onChanged: (bill) {
                     if (bill == null) return;
                     setDialogState(() {
                       selectedBill = bill;
-                      amountController.text = ((bill['balance_amount'] ?? bill['BillAmount'] ?? 0) as num).toStringAsFixed(2);
+                      amountController.text =
+                          ((bill['balance_amount'] ?? bill['BillAmount'] ?? 0)
+                                  as num)
+                              .toStringAsFixed(2);
                     });
                   },
                 ),
                 const SizedBox(height: 12),
                 TextField(
                   controller: amountController,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(labelText: 'Amount received', prefixText: '₹ ', border: OutlineInputBorder()),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(
+                    labelText: 'Amount received',
+                    prefixText: '₹ ',
+                    border: OutlineInputBorder(),
+                  ),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   value: paymentMode,
-                  decoration: const InputDecoration(labelText: 'Payment mode', border: OutlineInputBorder()),
+                  decoration: const InputDecoration(
+                    labelText: 'Payment mode',
+                    border: OutlineInputBorder(),
+                  ),
                   items: const ['Cash', 'UPI', 'Cheque', 'Bank Transfer']
-                      .map((mode) => DropdownMenuItem(value: mode, child: Text(mode)))
+                      .map(
+                        (mode) =>
+                            DropdownMenuItem(value: mode, child: Text(mode)),
+                      )
                       .toList(),
-                  onChanged: (value) => setDialogState(() => paymentMode = value ?? 'Cash'),
+                  onChanged: (value) =>
+                      setDialogState(() => paymentMode = value ?? 'Cash'),
                 ),
                 const SizedBox(height: 12),
                 OutlinedButton.icon(
                   onPressed: () async {
-                    final picked = await ImagePicker().pickImage(source: ImageSource.camera, imageQuality: 75);
-                    if (picked != null) setDialogState(() => paymentPhoto = picked);
+                    final picked = await ImagePicker().pickImage(
+                      source: ImageSource.camera,
+                      imageQuality: 75,
+                    );
+                    if (picked != null)
+                      setDialogState(() => paymentPhoto = picked);
                   },
                   icon: const Icon(Icons.add_a_photo_outlined),
-                  label: Text(paymentPhoto == null ? 'Attach payment proof' : 'Proof attached'),
+                  label: Text(
+                    paymentPhoto == null
+                        ? 'Attach payment proof'
+                        : 'Proof attached',
+                  ),
                 ),
               ],
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancel')),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Cancel'),
+            ),
             ElevatedButton(
               onPressed: () async {
-                final amount = double.tryParse(amountController.text.trim()) ?? 0;
-                final balance = ((selectedBill['balance_amount'] ?? selectedBill['BillAmount'] ?? 0) as num).toDouble();
+                final amount =
+                    double.tryParse(amountController.text.trim()) ?? 0;
+                final balance =
+                    ((selectedBill['balance_amount'] ??
+                                selectedBill['BillAmount'] ??
+                                0)
+                            as num)
+                        .toDouble();
                 if (amount <= 0 || amount > balance) return;
                 try {
                   await ApiService.collectOutstandingPayment({
@@ -7170,7 +7606,10 @@ class _DistributorDashboardEnhancedState
                 } catch (error) {
                   if (dialogContext.mounted) {
                     ScaffoldMessenger.of(dialogContext).showSnackBar(
-                      SnackBar(content: Text('$error'), backgroundColor: errorRed),
+                      SnackBar(
+                        content: Text('$error'),
+                        backgroundColor: errorRed,
+                      ),
                     );
                   }
                 }
@@ -7184,13 +7623,16 @@ class _DistributorDashboardEnhancedState
     amountController.dispose();
     if (saved == true) {
       await _loadAdminDeliveryLoads();
-      if (mounted) showSafeSnackBar(context, 'Payment recorded and outstanding updated', backgroundColor: successGreen);
+      if (mounted)
+        showSafeSnackBar(
+          context,
+          'Payment recorded and outstanding updated',
+          backgroundColor: successGreen,
+        );
     }
   }
 
-  Future<void> _showLoadReconciliationDialog(
-    Map<String, dynamic> load,
-  ) async {
+  Future<void> _showLoadReconciliationDialog(Map<String, dynamic> load) async {
     showDialog<void>(
       context: context,
       builder: (context) => const Center(child: CircularProgressIndicator()),
@@ -7202,7 +7644,9 @@ class _DistributorDashboardEnhancedState
       );
       if (!mounted) return;
       Navigator.pop(context);
-      final summary = Map<String, dynamic>.from(report['summary'] as Map? ?? {});
+      final summary = Map<String, dynamic>.from(
+        report['summary'] as Map? ?? {},
+      );
       final bills = (report['bills'] as List? ?? const [])
           .whereType<Map>()
           .map((value) => Map<String, dynamic>.from(value))
@@ -7241,7 +7685,10 @@ class _DistributorDashboardEnhancedState
                       Expanded(
                         child: Text(
                           'Load ${load['LoadSeries'] ?? ''}/${load['LoadNo'] ?? ''} Reconciliation',
-                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900),
+                          style: const TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.w900,
+                          ),
                         ),
                       ),
                       IconButton(
@@ -7263,12 +7710,36 @@ class _DistributorDashboardEnhancedState
                         mainAxisSpacing: 8,
                         crossAxisSpacing: 8,
                         children: [
-                          metric('Load Value', number('totalLoadAmount'), primaryBlue),
-                          metric('Received', number('totalReceived'), successGreen),
-                          metric('Remaining', number('totalRemaining'), errorRed),
-                          metric('Cash', number('cashReceived'), const Color(0xFF059669)),
-                          metric('Cheque', number('chequeReceived'), const Color(0xFF7C3AED)),
-                          metric('UPI', number('upiReceived'), const Color(0xFF2563EB)),
+                          metric(
+                            'Load Value',
+                            number('totalLoadAmount'),
+                            primaryBlue,
+                          ),
+                          metric(
+                            'Received',
+                            number('totalReceived'),
+                            successGreen,
+                          ),
+                          metric(
+                            'Remaining',
+                            number('totalRemaining'),
+                            errorRed,
+                          ),
+                          metric(
+                            'Cash',
+                            number('cashReceived'),
+                            const Color(0xFF059669),
+                          ),
+                          metric(
+                            'Cheque',
+                            number('chequeReceived'),
+                            const Color(0xFF7C3AED),
+                          ),
+                          metric(
+                            'UPI',
+                            number('upiReceived'),
+                            const Color(0xFF2563EB),
+                          ),
                         ],
                       ),
                       const SizedBox(height: 14),
@@ -7278,7 +7749,8 @@ class _DistributorDashboardEnhancedState
                       ),
                       const Divider(height: 28),
                       ...bills.map((bill) {
-                        final status = (bill['paymentStatus'] ?? 'unpaid').toString();
+                        final status = (bill['paymentStatus'] ?? 'unpaid')
+                            .toString();
                         final color = status == 'paid'
                             ? successGreen
                             : status == 'partial'
@@ -7287,32 +7759,45 @@ class _DistributorDashboardEnhancedState
                         return Card(
                           margin: const EdgeInsets.only(bottom: 8),
                           child: ExpansionTile(
-                            title: Text('${bill['TrnSeries'] ?? ''}/${bill['TrnNo'] ?? ''} • ${bill['AcName'] ?? bill['SysAcCode'] ?? ''}'),
+                            title: Text(
+                              '${bill['TrnSeries'] ?? ''}/${bill['TrnNo'] ?? ''} • ${bill['AcName'] ?? bill['SysAcCode'] ?? ''}',
+                            ),
                             subtitle: Text(
                               'Received ₹${((bill['received'] ?? 0) as num).toStringAsFixed(2)} • Remaining ₹${((bill['remaining'] ?? 0) as num).toStringAsFixed(2)}',
                             ),
                             trailing: Text(
                               status.toUpperCase(),
-                              style: TextStyle(color: color, fontWeight: FontWeight.w900),
+                              style: TextStyle(
+                                color: color,
+                                fontWeight: FontWeight.w900,
+                              ),
                             ),
                             children: (bill['payments'] as List? ?? const [])
                                 .whereType<Map>()
                                 .map((payment) {
-                                  final details = payment['payment_details'] is Map
-                                      ? Map<String, dynamic>.from(payment['payment_details'] as Map)
+                                  final details =
+                                      payment['payment_details'] is Map
+                                      ? Map<String, dynamic>.from(
+                                          payment['payment_details'] as Map,
+                                        )
                                       : <String, dynamic>{};
-                                  final collector = payment['collected_by'] is Map
-                                      ? Map<String, dynamic>.from(payment['collected_by'] as Map)
+                                  final collector =
+                                      payment['collected_by'] is Map
+                                      ? Map<String, dynamic>.from(
+                                          payment['collected_by'] as Map,
+                                        )
                                       : <String, dynamic>{};
-                                  final proof = (
-                                    details['payment_photo_path'] ??
-                                    details['photo_path'] ??
-                                    payment['photo_path'] ??
-                                    ''
-                                  ).toString();
+                                  final proof =
+                                      (details['payment_photo_path'] ??
+                                              details['photo_path'] ??
+                                              payment['photo_path'] ??
+                                              '')
+                                          .toString();
                                   return ListTile(
                                     dense: true,
-                                    leading: const Icon(Icons.payments_outlined),
+                                    leading: const Icon(
+                                      Icons.payments_outlined,
+                                    ),
                                     title: Text(
                                       '₹${((payment['amount_collected'] ?? 0) as num).toStringAsFixed(2)} • ${payment['payment_mode'] ?? ''}',
                                     ),
@@ -7325,9 +7810,12 @@ class _DistributorDashboardEnhancedState
                                             tooltip: 'View payment proof',
                                             onPressed: () => launchUrl(
                                               ApiService.uploadedFileUri(proof),
-                                              mode: LaunchMode.externalApplication,
+                                              mode: LaunchMode
+                                                  .externalApplication,
                                             ),
-                                            icon: const Icon(Icons.image_outlined),
+                                            icon: const Icon(
+                                              Icons.image_outlined,
+                                            ),
                                           ),
                                   );
                                 })
@@ -7751,6 +8239,7 @@ class _DistributorDashboardEnhancedState
             rate: item.rate,
             amount: item.netAmt,
             mrp: item.mrp,
+            freeQty: item.freeQty,
           );
         }).toList(),
         totalAmount: cartTotal,
@@ -8413,47 +8902,44 @@ class _DistributorDashboardEnhancedState
               setState(() => _isLoading = true);
               Navigator.pop(context);
 
-             final rawName = nameController.text.trim();
-final rawPhone = phoneController.text.trim();
+              final rawName = nameController.text.trim();
+              final rawPhone = phoneController.text.trim();
 
-// SAFE: same logic as before, but no fixed substring range.
-final namePrefix = rawName
-    .split('')
-    .take(3)
-    .join()
-    .toLowerCase();
+              // SAFE: same logic as before, but no fixed substring range.
+              final namePrefix = rawName.split('').take(3).join().toLowerCase();
 
-final phoneSuffix = rawPhone
-    .split('')
-    .reversed
-    .take(4)
-    .toList()
-    .reversed
-    .join();
+              final phoneSuffix = rawPhone
+                  .split('')
+                  .reversed
+                  .take(4)
+                  .toList()
+                  .reversed
+                  .join();
 
-final defaultPassword = '$namePrefix$phoneSuffix';
+              final defaultPassword = '$namePrefix$phoneSuffix';
 
-// SAFE salesman ID.
-// This keeps the same format: SM + last 5 digits of timestamp.
-final timestamp = DateTime.now().millisecondsSinceEpoch;
-final generatedSalesmanId =
-    'SM${(timestamp % 100000).toString().padLeft(5, '0')}';
+              // SAFE salesman ID.
+              // This keeps the same format: SM + last 5 digits of timestamp.
+              final timestamp = DateTime.now().millisecondsSinceEpoch;
+              final generatedSalesmanId =
+                  'SM${(timestamp % 100000).toString().padLeft(5, '0')}';
 
-final salesman = SalesmanModel(
-  id: 'salesman_$timestamp',
-  salesmanId: generatedSalesmanId,
-  name: rawName,
-  email: emailController.text.trim(),
-  phone: rawPhone,
-  distributorId: _currentDistributor.distributorId!,
-  createdBy: _currentDistributor.email,
-  createdAt: DateTime.now(),
-  updatedAt: DateTime.now(),
-  areaAssigned: areaController.text.trim(),
-  address: addressController.text.trim(),
-  targetAmount: double.tryParse(targetController.text.trim()) ?? 0,
-  joiningDate: DateTime.now(),
-);
+              final salesman = SalesmanModel(
+                id: 'salesman_$timestamp',
+                salesmanId: generatedSalesmanId,
+                name: rawName,
+                email: emailController.text.trim(),
+                phone: rawPhone,
+                distributorId: _currentDistributor.distributorId!,
+                createdBy: _currentDistributor.email,
+                createdAt: DateTime.now(),
+                updatedAt: DateTime.now(),
+                areaAssigned: areaController.text.trim(),
+                address: addressController.text.trim(),
+                targetAmount:
+                    double.tryParse(targetController.text.trim()) ?? 0,
+                joiningDate: DateTime.now(),
+              );
 
               final salesmanMap = salesman.toMap();
               salesmanMap['password'] = defaultPassword;
@@ -11856,12 +12342,18 @@ final salesman = SalesmanModel(
                 const Expanded(
                   child: Text(
                     'Load Assignment',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: primaryBlue),
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: primaryBlue,
+                    ),
                   ),
                 ),
                 IconButton(
                   tooltip: 'Refresh loads',
-                  onPressed: _isLoadingAdminLoads ? null : _loadAdminDeliveryLoads,
+                  onPressed: _isLoadingAdminLoads
+                      ? null
+                      : _loadAdminDeliveryLoads,
                   icon: const Icon(Icons.refresh, color: accentTeal),
                 ),
               ],
@@ -11874,7 +12366,11 @@ final salesman = SalesmanModel(
                     physics: AlwaysScrollableScrollPhysics(),
                     children: [
                       SizedBox(height: 140),
-                      Icon(Icons.local_shipping_outlined, size: 58, color: Colors.grey),
+                      Icon(
+                        Icons.local_shipping_outlined,
+                        size: 58,
+                        color: Colors.grey,
+                      ),
                       SizedBox(height: 12),
                       Center(child: Text('No uploaded loads available')),
                     ],
@@ -11885,22 +12381,34 @@ final salesman = SalesmanModel(
                     itemCount: _adminDeliveryLoads.length,
                     itemBuilder: (context, index) {
                       final load = _adminDeliveryLoads[index];
-                      final bills = load['bills'] is List ? load['bills'] as List : const [];
-                      final assignedName = (load['assignedSalesmanName'] ?? '').toString().trim();
-                      final grouping = (load['groupingMode'] ?? 'none').toString().replaceAll('_', ' + ');
+                      final bills = load['bills'] is List
+                          ? load['bills'] as List
+                          : const [];
+                      final assignedName = (load['assignedSalesmanName'] ?? '')
+                          .toString()
+                          .trim();
+                      final grouping = (load['groupingMode'] ?? 'none')
+                          .toString()
+                          .replaceAll('_', ' + ');
                       return Card(
                         margin: const EdgeInsets.only(bottom: 12),
                         child: ListTile(
-                          leading: const CircleAvatar(child: Icon(Icons.local_shipping_outlined)),
-                          title: Text('Load ${load['LoadSeries'] ?? ''}/${load['LoadNo'] ?? ''}'),
+                          leading: const CircleAvatar(
+                            child: Icon(Icons.local_shipping_outlined),
+                          ),
+                          title: Text(
+                            'Load ${load['LoadSeries'] ?? ''}/${load['LoadNo'] ?? ''}',
+                          ),
                           subtitle: Text(
                             '${bills.length} bills\n${assignedName.isEmpty ? 'Unassigned' : 'Assigned to $assignedName'} • Grouping: $grouping',
                           ),
                           isThreeLine: true,
                           trailing: PopupMenuButton<String>(
                             onSelected: (action) {
-                              if (action == 'assign') _showAssignLoadDialog(load);
-                              if (action == 'payment') _showAdminLoadPaymentDialog(load);
+                              if (action == 'assign')
+                                _showAssignLoadDialog(load);
+                              if (action == 'payment')
+                                _showAdminLoadPaymentDialog(load);
                               if (action == 'reconcile') {
                                 _showLoadReconciliationDialog(load);
                               }
@@ -11908,7 +12416,11 @@ final salesman = SalesmanModel(
                             itemBuilder: (context) => [
                               PopupMenuItem(
                                 value: 'assign',
-                                child: Text(assignedName.isEmpty ? 'Assign salesman' : 'Reassign salesman'),
+                                child: Text(
+                                  assignedName.isEmpty
+                                      ? 'Assign salesman'
+                                      : 'Reassign salesman',
+                                ),
                               ),
                               const PopupMenuItem(
                                 value: 'payment',
@@ -12006,200 +12518,162 @@ final salesman = SalesmanModel(
     );
   }
 
- Widget _buildSalesmanCard(SalesmanModel salesman) {
-  final orderCount = getSalesmanOrderCount(salesman.id);
-  final revenue = getSalesmanRevenue(salesman.id);
-  final collection = getSalesmanCollection(salesman.id);
-  final lastOrder = getLastOrderForSalesman(salesman.id);
+  Widget _buildSalesmanCard(SalesmanModel salesman) {
+    final orderCount = getSalesmanOrderCount(salesman.id);
+    final revenue = getSalesmanRevenue(salesman.id);
+    final collection = getSalesmanCollection(salesman.id);
+    final lastOrder = getLastOrderForSalesman(salesman.id);
 
-  final isActive = salesman.status.toLowerCase() == 'active';
+    final isActive = salesman.status.toLowerCase() == 'active';
 
-  Widget actionButton({
-    required IconData icon,
-    required String label,
-    required Color color,
-    required VoidCallback onPressed,
-  }) {
-    return SizedBox(
-      height: 34,
-      child: OutlinedButton.icon(
-        onPressed: onPressed,
-        icon: Icon(
-          icon,
-          size: 15,
-          color: color,
-        ),
-        label: Text(
-          label,
-          style: TextStyle(
-            color: color,
-            fontSize: 10,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-        style: OutlinedButton.styleFrom(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 9,
-          ),
-          side: BorderSide(
-            color: color.withOpacity(0.22),
-          ),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-          ),
-          visualDensity: VisualDensity.compact,
-        ),
-      ),
-    );
-  }
-
-  Widget detailRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(top: 7),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 75,
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 11,
-                color: Colors.grey.shade600,
-                fontWeight: FontWeight.w500,
-              ),
+    Widget actionButton({
+      required IconData icon,
+      required String label,
+      required Color color,
+      required VoidCallback onPressed,
+    }) {
+      return SizedBox(
+        height: 34,
+        child: OutlinedButton.icon(
+          onPressed: onPressed,
+          icon: Icon(icon, size: 15, color: color),
+          label: Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
             ),
           ),
-          Expanded(
-            child: Text(
-              value,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF1E293B),
-              ),
+          style: OutlinedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 9),
+            side: BorderSide(color: color.withOpacity(0.22)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  return Container(
-    margin: const EdgeInsets.only(bottom: 12),
-    decoration: BoxDecoration(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(14),
-      border: Border.all(
-        color: const Color(0xFFE7ECF3),
-      ),
-      boxShadow: [
-        BoxShadow(
-          color: Colors.black.withOpacity(0.035),
-          blurRadius: 10,
-          offset: const Offset(0, 3),
-        ),
-      ],
-    ),
-    clipBehavior: Clip.antiAlias,
-    child: Theme(
-      data: Theme.of(context).copyWith(
-        dividerColor: Colors.transparent,
-      ),
-      child: ExpansionTile(
-        tilePadding: const EdgeInsets.fromLTRB(
-          12,
-          8,
-          10,
-          8,
-        ),
-        childrenPadding: EdgeInsets.zero,
-
-        leading: CircleAvatar(
-          radius: 21,
-          backgroundColor: isActive
-              ? accentTeal.withOpacity(0.12)
-              : Colors.grey.withOpacity(0.12),
-          child: Icon(
-            Icons.person_outline,
-            size: 21,
-            color: isActive
-                ? accentTeal
-                : Colors.grey,
+            visualDensity: VisualDensity.compact,
           ),
         ),
+      );
+    }
 
-        // ------------------------------
-        // NAME + STATUS
-        // ------------------------------
-
-        title: Row(
+    Widget detailRow(String label, String value) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 7),
+        child: Row(
           children: [
-            Expanded(
+            SizedBox(
+              width: 75,
               child: Text(
-                salesman.name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF0F2D5C),
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey.shade600,
+                  fontWeight: FontWeight.w500,
                 ),
               ),
             ),
-
-            const SizedBox(width: 7),
-
-            Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 8,
-                vertical: 4,
-              ),
-              decoration: BoxDecoration(
-                color: isActive
-                    ? successGreen.withOpacity(0.10)
-                    : Colors.grey.withOpacity(0.10),
-                borderRadius: BorderRadius.circular(20),
-              ),
+            Expanded(
               child: Text(
-                isActive ? 'Active' : 'Inactive',
-                style: TextStyle(
-                  color: isActive
-                      ? successGreen
-                      : Colors.grey.shade600,
-                  fontSize: 9,
-                  fontWeight: FontWeight.w800,
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1E293B),
                 ),
               ),
             ),
           ],
         ),
+      );
+    }
 
-        // ------------------------------
-        // EMAIL + PHONE + ACTIONS
-        // ------------------------------
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE7ECF3)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.035),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
+          childrenPadding: EdgeInsets.zero,
 
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          leading: CircleAvatar(
+            radius: 21,
+            backgroundColor: isActive
+                ? accentTeal.withOpacity(0.12)
+                : Colors.grey.withOpacity(0.12),
+            child: Icon(
+              Icons.person_outline,
+              size: 21,
+              color: isActive ? accentTeal : Colors.grey,
+            ),
+          ),
+
+          // ------------------------------
+          // NAME + STATUS
+          // ------------------------------
+          title: Row(
             children: [
-              Text(
-                salesman.email,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  fontSize: 10,
-                  color: Color(0xFF64748B),
+              Expanded(
+                child: Text(
+                  salesman.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF0F2D5C),
+                  ),
                 ),
               ),
 
-              if (salesman.phone.trim().isNotEmpty) ...[
-                const SizedBox(height: 2),
+              const SizedBox(width: 7),
+
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: isActive
+                      ? successGreen.withOpacity(0.10)
+                      : Colors.grey.withOpacity(0.10),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  isActive ? 'Active' : 'Inactive',
+                  style: TextStyle(
+                    color: isActive ? successGreen : Colors.grey.shade600,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          // ------------------------------
+          // EMAIL + PHONE + ACTIONS
+          // ------------------------------
+          subtitle: Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Text(
-                  salesman.phone,
+                  salesman.email,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -12207,216 +12681,202 @@ final salesman = SalesmanModel(
                     color: Color(0xFF64748B),
                   ),
                 ),
-              ],
 
-              const SizedBox(height: 9),
-
-              // Wrap instead of Row.
-              // So mobile width will NEVER overflow.
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  actionButton(
-                    icon: Icons.security_outlined,
-                    label: 'Permission',
-                    color: primaryBlue,
-                    onPressed: () =>
-                        _showPermissionsDialog(salesman),
-                  ),
-
-                  actionButton(
-                    icon: Icons.edit_outlined,
-                    label: 'Edit',
-                    color: primaryBlue,
-                    onPressed: () =>
-                        _showEditSalesmanDialog(salesman),
-                  ),
-
-                  actionButton(
-                    icon: Icons.delete_outline,
-                    label: 'Deactivate',
-                    color: errorRed,
-                    onPressed: () =>
-                        _deleteSalesman(salesman),
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-
-        children: [
-          Container(
-            width: double.infinity,
-            decoration: const BoxDecoration(
-              color: Color(0xFFF8FAFC),
-              border: Border(
-                top: BorderSide(
-                  color: Color(0xFFE7ECF3),
-                ),
-              ),
-            ),
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              children: [
-                // ------------------------------
-                // LAST ORDER
-                // ------------------------------
-
-                if (lastOrder != null) ...[
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF8EB),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: warningOrange.withOpacity(0.15),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment:
-                          CrossAxisAlignment.start,
-                      children: [
-                        const Row(
-                          children: [
-                            Icon(
-                              Icons.shopping_bag_outlined,
-                              size: 16,
-                              color: warningOrange,
-                            ),
-                            SizedBox(width: 7),
-                            Text(
-                              'Last Order',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w800,
-                                color: warningOrange,
-                              ),
-                            ),
-                          ],
-                        ),
-
-                        const SizedBox(height: 5),
-
-                        detailRow(
-                          'Order',
-                          lastOrder.orderNumber,
-                        ),
-
-                        detailRow(
-                          'Customer',
-                          lastOrder.customerName,
-                        ),
-
-                        detailRow(
-                          'Amount',
-                          '₹${lastOrder.totalAmount.toStringAsFixed(0)}',
-                        ),
-
-                        detailRow(
-                          'Date',
-                          '${lastOrder.createdAt.day}/'
-                              '${lastOrder.createdAt.month}/'
-                              '${lastOrder.createdAt.year}',
-                        ),
-                      ],
+                if (salesman.phone.trim().isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    salesman.phone,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFF64748B),
                     ),
                   ),
-
-                  const SizedBox(height: 14),
                 ],
 
-                // ------------------------------
-                // PERFORMANCE
-                // ------------------------------
+                const SizedBox(height: 9),
 
-                Row(
+                // Wrap instead of Row.
+                // So mobile width will NEVER overflow.
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
                   children: [
-                    Expanded(
-                      child: _buildSalesmanStat(
-                        'Orders',
-                        '$orderCount',
-                        Icons.receipt_long_outlined,
-                      ),
+                    actionButton(
+                      icon: Icons.security_outlined,
+                      label: 'Permission',
+                      color: primaryBlue,
+                      onPressed: () => _showPermissionsDialog(salesman),
                     ),
 
-                    Container(
-                      height: 40,
-                      width: 1,
-                      color: const Color(0xFFE2E8F0),
+                    actionButton(
+                      icon: Icons.edit_outlined,
+                      label: 'Edit',
+                      color: primaryBlue,
+                      onPressed: () => _showEditSalesmanDialog(salesman),
                     ),
 
-                    Expanded(
-                      child: _buildSalesmanStat(
-                        'Revenue',
-                        '₹${(revenue / 1000).toStringAsFixed(1)}K',
-                        Icons.currency_rupee,
-                      ),
-                    ),
-
-                    Container(
-                      height: 40,
-                      width: 1,
-                      color: const Color(0xFFE2E8F0),
-                    ),
-
-                    Expanded(
-                      child: _buildSalesmanStat(
-                        'Collection',
-                        '₹${(collection / 1000).toStringAsFixed(1)}K',
-                        Icons.account_balance_wallet_outlined,
-                      ),
+                    actionButton(
+                      icon: Icons.delete_outline,
+                      label: 'Deactivate',
+                      color: errorRed,
+                      onPressed: () => _deleteSalesman(salesman),
                     ),
                   ],
                 ),
-
-                const SizedBox(height: 14),
-
-                SizedBox(
-                  width: double.infinity,
-                  height: 38,
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      setState(() {
-                        _selectedOrderSalesmanId =
-                            salesman.id;
-                        _selectedIndex = 5;
-                      });
-                    },
-                    icon: const Icon(
-                      Icons.visibility_outlined,
-                      size: 16,
-                    ),
-                    label: const Text(
-                      'View Salesman Orders',
-                    ),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: primaryBlue,
-                      side: BorderSide(
-                        color:
-                            primaryBlue.withOpacity(0.25),
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius.circular(9),
-                      ),
-                      textStyle: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                ),
               ],
             ),
           ),
-        ],
+
+          children: [
+            Container(
+              width: double.infinity,
+              decoration: const BoxDecoration(
+                color: Color(0xFFF8FAFC),
+                border: Border(top: BorderSide(color: Color(0xFFE7ECF3))),
+              ),
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                children: [
+                  // ------------------------------
+                  // LAST ORDER
+                  // ------------------------------
+                  if (lastOrder != null) ...[
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF8EB),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: warningOrange.withOpacity(0.15),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Row(
+                            children: [
+                              Icon(
+                                Icons.shopping_bag_outlined,
+                                size: 16,
+                                color: warningOrange,
+                              ),
+                              SizedBox(width: 7),
+                              Text(
+                                'Last Order',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
+                                  color: warningOrange,
+                                ),
+                              ),
+                            ],
+                          ),
+
+                          const SizedBox(height: 5),
+
+                          detailRow('Order', lastOrder.orderNumber),
+
+                          detailRow('Customer', lastOrder.customerName),
+
+                          detailRow(
+                            'Amount',
+                            '₹${lastOrder.totalAmount.toStringAsFixed(0)}',
+                          ),
+
+                          detailRow(
+                            'Date',
+                            '${lastOrder.createdAt.day}/'
+                                '${lastOrder.createdAt.month}/'
+                                '${lastOrder.createdAt.year}',
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 14),
+                  ],
+
+                  // ------------------------------
+                  // PERFORMANCE
+                  // ------------------------------
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildSalesmanStat(
+                          'Orders',
+                          '$orderCount',
+                          Icons.receipt_long_outlined,
+                        ),
+                      ),
+
+                      Container(
+                        height: 40,
+                        width: 1,
+                        color: const Color(0xFFE2E8F0),
+                      ),
+
+                      Expanded(
+                        child: _buildSalesmanStat(
+                          'Revenue',
+                          '₹${(revenue / 1000).toStringAsFixed(1)}K',
+                          Icons.currency_rupee,
+                        ),
+                      ),
+
+                      Container(
+                        height: 40,
+                        width: 1,
+                        color: const Color(0xFFE2E8F0),
+                      ),
+
+                      Expanded(
+                        child: _buildSalesmanStat(
+                          'Collection',
+                          '₹${(collection / 1000).toStringAsFixed(1)}K',
+                          Icons.account_balance_wallet_outlined,
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 14),
+
+                  SizedBox(
+                    width: double.infinity,
+                    height: 38,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _selectedOrderSalesmanId = salesman.id;
+                          _selectedIndex = 5;
+                        });
+                      },
+                      icon: const Icon(Icons.visibility_outlined, size: 16),
+                      label: const Text('View Salesman Orders'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: primaryBlue,
+                        side: BorderSide(color: primaryBlue.withOpacity(0.25)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                        textStyle: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget _buildSalesmanStat(String label, String value, IconData icon) {
     return Column(
@@ -13014,7 +13474,6 @@ final salesman = SalesmanModel(
       ),
     );
   }
-
 
   Widget _buildCreateOrderSection() {
     return SingleChildScrollView(
@@ -13657,6 +14116,7 @@ final salesman = SalesmanModel(
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: const Color(0xFFE1E8F2)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -13665,7 +14125,7 @@ final salesman = SalesmanModel(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    '${uniqueProductCount} unique products',
+                    '$uniqueProductCount unique products',
                     style: TextStyle(color: Colors.grey[600]),
                   ),
                   Text(
@@ -13680,7 +14140,7 @@ final salesman = SalesmanModel(
               ),
               const SizedBox(height: 8),
               Text(
-                'Total Quantity: ${cartItemCount}',
+                'Total Quantity: $cartItemCount',
                 style: const TextStyle(fontSize: 12, color: Colors.grey),
               ),
             ],
@@ -14255,6 +14715,11 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   int _selectedIndex = 0;
   int _paymentsSubTab = 0;
   bool _isSidebarOpen = false;
+
+  // Compact salesman header: the search field stays hidden until requested.
+  // This is UI-only state and does not change any existing data/API logic.
+  bool _isHeaderSearchVisible = false;
+
   bool _isLoading = true;
 
   late UserModel _currentSalesman;
@@ -14401,7 +14866,13 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   final TextEditingController _customerSearchController =
       TextEditingController();
   String _customerSearchQuery = '';
+  String? _selectedOrderCompany;
   String? _selectedOrderRoute;
+
+  // Create Order UI-only state. Business/API flow remains unchanged.
+  bool _showAllOrderCustomers = false;
+  String _orderProductFilter = 'all';
+  final Map<String, Future<double>> _orderOutstandingFutures = {};
 
   List<String> _banksList = [];
   List<String> _upiTypesList = [];
@@ -14420,8 +14891,81 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   // ==================== ADDED: Filtered customers for salesman create order ====================
   String _cleanText(String v) => v.trim().toLowerCase();
 
+  String _customerCompanyKey(CustomerModel customer) {
+    final sysCode = customer.sysCompCode?.trim() ?? '';
+    if (sysCode.isNotEmpty) return sysCode;
+    final companyCode = customer.companyCode?.trim() ?? '';
+    return companyCode.isNotEmpty ? companyCode : '__unmapped__';
+  }
+
+  bool _customerBelongsToCompany(CustomerModel customer, String companyKey) {
+    final wanted = _cleanText(companyKey);
+    if (_cleanText(_customerCompanyKey(customer)) == wanted) return true;
+    return customer.companies.any((company) {
+      final sysCode = (company['sysCompCode'] ?? '').toString();
+      final code = (company['companyCode'] ?? '').toString();
+      return _cleanText(sysCode) == wanted || _cleanText(code) == wanted;
+    });
+  }
+
+  String _productCompanyKey(ProductModel product) {
+    final sysCode = product.sysCompCode?.trim() ?? '';
+    if (sysCode.isNotEmpty) return sysCode;
+    final companyCode = product.companyCode?.trim() ?? '';
+    return companyCode.isNotEmpty ? companyCode : '__unmapped__';
+  }
+
+  Map<String, String> get orderCompanies {
+    final companies = <String, String>{};
+    for (final customer in _customers) {
+      for (final company in customer.companies) {
+        final key = (company['sysCompCode'] ?? company['companyCode'] ?? '')
+            .toString()
+            .trim();
+        if (key.isNotEmpty) {
+          companies[key] =
+              (company['companyName'] ?? company['companyCode'] ?? key)
+                  .toString()
+                  .trim();
+        }
+      }
+      final key = _customerCompanyKey(customer);
+      if (key.isNotEmpty) {
+        companies[key] = key == '__unmapped__'
+            ? 'Assigned Company'
+            : (customer.companyName?.trim().isNotEmpty ?? false)
+            ? customer.companyName!.trim()
+            : (customer.companyCode?.trim().isNotEmpty ?? false)
+            ? customer.companyCode!.trim()
+            : key;
+      }
+    }
+    for (final product in _products) {
+      final key = _productCompanyKey(product);
+      if (key.isNotEmpty) {
+        companies.putIfAbsent(
+          key,
+          () => key == '__unmapped__'
+              ? 'Assigned Company'
+              : (product.companyName?.trim().isNotEmpty ?? false)
+              ? product.companyName!.trim()
+              : (product.companyCode?.trim().isNotEmpty ?? false)
+              ? product.companyCode!.trim()
+              : key,
+        );
+      }
+    }
+    return Map.fromEntries(
+      companies.entries.toList()
+        ..sort((a, b) => a.value.toLowerCase().compareTo(b.value.toLowerCase())),
+    );
+  }
+
   List<String> get orderRoutes {
+    final company = _selectedOrderCompany;
+    if (company == null || company.trim().isEmpty) return [];
     final routes = _customers
+        .where((c) => _customerBelongsToCompany(c, company))
         .map(
           (c) => (c.route != null && c.route!.trim().isNotEmpty)
               ? c.route!.trim()
@@ -14443,6 +14987,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     final query = _cleanText(_customerSearchQuery);
 
     var customers = _customers.where((c) {
+      if (!_customerBelongsToCompany(c, _selectedOrderCompany ?? '')) {
+        return false;
+      }
       final customerRoute = (c.route != null && c.route!.trim().isNotEmpty)
           ? c.route!.trim()
           : c.area.trim();
@@ -14466,15 +15013,52 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   List<ProductModel> get orderFilteredProducts {
-    var products = _products.toList();
+    final selectedCompany = _selectedOrderCompany;
+    var products = selectedCompany == null || selectedCompany.trim().isEmpty
+        ? <ProductModel>[]
+        : _products
+              .where(
+                (p) =>
+                    _cleanText(_productCompanyKey(p)) ==
+                    _cleanText(selectedCompany),
+              )
+              .toList();
 
-    if (_productSearchQuery.trim().isNotEmpty) {
-      final query = _productSearchQuery.trim().toLowerCase();
-
+    final query = _productSearchQuery.trim().toLowerCase();
+    if (query.isNotEmpty) {
       products = products.where((p) {
         return p.name.toLowerCase().contains(query) ||
             p.sku.toLowerCase().contains(query) ||
             p.category.toLowerCase().contains(query);
+      }).toList();
+    }
+
+    if (_orderProductFilter == 'fast') {
+      products = products.where((p) {
+        final tags = p.tags.map((e) => e.toLowerCase()).toList();
+        return tags.any(
+          (tag) => tag.contains('fast') || tag.contains('moving'),
+        );
+      }).toList();
+    } else if (_orderProductFilter == 'offers') {
+      products = products.where((p) {
+        final tags = p.tags.map((e) => e.toLowerCase()).toList();
+        return tags.any(
+          (tag) =>
+              tag.contains('offer') ||
+              tag.contains('scheme') ||
+              tag.contains('discount'),
+        );
+      }).toList();
+    } else if (_orderProductFilter == 'favourites') {
+      products = products.where((p) {
+        final tags = p.tags.map((e) => e.toLowerCase()).toList();
+        return tags.any(
+          (tag) =>
+              tag.contains('favourite') ||
+              tag.contains('favorite') ||
+              tag.contains('fav'),
+        );
       }).toList();
     }
 
@@ -15098,28 +15682,38 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                 children: [
                                   OutlinedButton.icon(
                                     onPressed: () async {
-                                      final image = await ImagePicker().pickImage(
-                                        source: ImageSource.camera,
-                                        imageQuality: 75,
-                                      );
+                                      final image = await ImagePicker()
+                                          .pickImage(
+                                            source: ImageSource.camera,
+                                            imageQuality: 75,
+                                          );
                                       if (image != null) {
-                                        setDialogState(() => paymentPhoto = image);
+                                        setDialogState(
+                                          () => paymentPhoto = image,
+                                        );
                                       }
                                     },
-                                    icon: const Icon(Icons.photo_camera_outlined),
+                                    icon: const Icon(
+                                      Icons.photo_camera_outlined,
+                                    ),
                                     label: const Text('Take Photo'),
                                   ),
                                   OutlinedButton.icon(
                                     onPressed: () async {
-                                      final image = await ImagePicker().pickImage(
-                                        source: ImageSource.gallery,
-                                        imageQuality: 75,
-                                      );
+                                      final image = await ImagePicker()
+                                          .pickImage(
+                                            source: ImageSource.gallery,
+                                            imageQuality: 75,
+                                          );
                                       if (image != null) {
-                                        setDialogState(() => paymentPhoto = image);
+                                        setDialogState(
+                                          () => paymentPhoto = image,
+                                        );
                                       }
                                     },
-                                    icon: const Icon(Icons.photo_library_outlined),
+                                    icon: const Icon(
+                                      Icons.photo_library_outlined,
+                                    ),
                                     label: const Text('Gallery'),
                                   ),
                                   if (paymentPhoto != null)
@@ -15255,90 +15849,76 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                     setState(() => _isLoading = true);
 
                                     // FIXED: Send all required fields including distributorId, salesmanId, billNo, sysAcCode
-                                  // FIXED:
-// Send all required fields including
-// distributorId, salesmanId, loadSeries, loadNo,
-// billNo and sysAcCode.
-await ApiService.collectOutstandingPayment(
-  {
-    'distributorId':
-        _currentSalesman.distributorId ?? '',
+                                    // FIXED:
+                                    // Send all required fields including
+                                    // distributorId, salesmanId, loadSeries, loadNo,
+                                    // billNo and sysAcCode.
+                                    await ApiService.collectOutstandingPayment({
+                                      'distributorId':
+                                          _currentSalesman.distributorId ?? '',
 
-    'salesmanId':
-        _currentSalesman.salesmanId ??
-        _currentSalesman.id,
+                                      'salesmanId':
+                                          _currentSalesman.salesmanId ??
+                                          _currentSalesman.id,
 
-    'salesmanName':
-        _currentSalesman.name,
+                                      'salesmanName': _currentSalesman.name,
 
-    // LOAD DELIVERY DETAILS
-    'loadSeries':
-        bill['LoadSeries']?.toString() ?? '',
+                                      // LOAD DELIVERY DETAILS
+                                      'loadSeries':
+                                          bill['LoadSeries']?.toString() ?? '',
 
-    'loadNo':
-        bill['LoadNo']?.toString() ?? '',
+                                      'loadNo':
+                                          bill['LoadNo']?.toString() ?? '',
 
-    // BILL DETAILS
-    'billSeries':
-        bill['TrnSeries']?.toString() ?? '',
+                                      // BILL DETAILS
+                                      'billSeries':
+                                          bill['TrnSeries']?.toString() ?? '',
 
-    'billNo':
-        bill['TrnNo']?.toString() ?? '',
+                                      'billNo': bill['TrnNo']?.toString() ?? '',
 
-    'sysAcCode':
-        bill['SysAcCode']?.toString() ?? '',
+                                      'sysAcCode':
+                                          bill['SysAcCode']?.toString() ?? '',
 
-    'customerName':
-        bill['customer_name'] ??
-        bill['CustomerName'] ??
-        bill['AcName'] ??
-        '',
+                                      'customerName':
+                                          bill['customer_name'] ??
+                                          bill['CustomerName'] ??
+                                          bill['AcName'] ??
+                                          '',
 
-    'billAmount':
-        billAmount,
+                                      'billAmount': billAmount,
 
-    // OUTSTANDING DETAILS
-    'oldBalance':
-        balance,
+                                      // OUTSTANDING DETAILS
+                                      'oldBalance': balance,
 
-    'amountCollected':
-        amount,
+                                      'amountCollected': amount,
 
-    'balanceAfterPayment':
-        balance - amount,
+                                      'balanceAfterPayment': balance - amount,
 
-    // PAYMENT DETAILS
-    'paymentMode':
-        selectedMode,
+                                      // PAYMENT DETAILS
+                                      'paymentMode': selectedMode,
 
-    'cashAmount':
-        cashAmount,
+                                      'cashAmount': cashAmount,
 
-    'chequeAmount':
-        chequeAmount,
+                                      'chequeAmount': chequeAmount,
 
-    'chequeNumber':
-        chequeNoController.text.trim(),
+                                      'chequeNumber': chequeNoController.text
+                                          .trim(),
 
-    'chequeDate':
-        chequeDateController.text.trim(),
+                                      'chequeDate': chequeDateController.text
+                                          .trim(),
 
-    'bankName':
-        selectedBank,
+                                      'bankName': selectedBank,
 
-    'upiApp':
-        selectedUpiApp,
+                                      'upiApp': selectedUpiApp,
 
-    'transactionNumber':
-        transactionController.text.trim(),
+                                      'transactionNumber': transactionController
+                                          .text
+                                          .trim(),
 
-    'remark':
-        remarkController.text.trim(),
-  },
-  paymentPhoto: paymentPhoto,
-);
+                                      'remark': remarkController.text.trim(),
+                                    }, paymentPhoto: paymentPhoto);
 
-final newBalance = balance - amount;
+                                    final newBalance = balance - amount;
 
                                     setState(() {
                                       bill['Bamt'] = math.max(0, newBalance);
@@ -16002,6 +16582,14 @@ final newBalance = balance - amount;
     });
   }
 
+  void updateCartFreeQuantity(String productId, int freeQty) {
+    setState(() {
+      if (_cart.containsKey(productId)) {
+        _cart[productId]!.freeQty = freeQty < 0 ? 0 : freeQty;
+      }
+    });
+  }
+
   void updateCartRate(String productId, double rate) {
     setState(() {
       if (_cart.containsKey(productId)) {
@@ -16039,6 +16627,9 @@ final newBalance = balance - amount;
       // _selectedOrderRoute = null; // Comment this out if you want to keep route
       _customerSearchQuery = '';
       _customerSearchController.clear();
+      _showAllOrderCustomers = false;
+      _orderProductFilter = 'all';
+      _orderOutstandingFutures.clear();
       _orderStep = 1;
       _selectedPaymentMode = PaymentMode.credit;
       _orderNotes = '';
@@ -16924,6 +17515,7 @@ final newBalance = balance - amount;
             rate: item.rate,
             amount: item.netAmt,
             mrp: item.mrp,
+            freeQty: item.freeQty,
           );
         }).toList(),
         totalAmount: newTotalAmount,
@@ -17063,6 +17655,7 @@ final newBalance = balance - amount;
             rate: item.rate,
             amount: item.netAmt,
             mrp: item.mrp,
+            freeQty: item.freeQty,
           );
         }).toList(),
         totalAmount: cartTotal,
@@ -17093,6 +17686,9 @@ final newBalance = balance - amount;
         order,
         _currentSalesman.distributorId,
         _currentSalesman.salesmanId ?? _currentSalesman.id,
+        sysCompCode: customer.sysCompCode,
+        companyCode: customer.companyCode,
+        companyName: customer.companyName,
       );
 
       for (var entry in _cart.entries) {
@@ -17482,116 +18078,276 @@ final newBalance = balance - amount;
   }
 
   Widget _buildHeader() {
+    const headerBlue = Color(0xFF0B3478);
+
+    void closeHeaderSearch() {
+      setState(() {
+        _isHeaderSearchVisible = false;
+
+        // When the user explicitly closes the compact header search,
+        // remove only the two filters that this header itself controls.
+        // No backend, navigation, order, payment, or collection logic changes.
+        _productSearchQuery = '';
+        _customerSearchQuery = '';
+      });
+    }
+
     return Container(
-      padding: const EdgeInsets.fromLTRB(24, 48, 24, 18),
+      width: double.infinity,
       decoration: const BoxDecoration(
-        color: Color(0xFF0B3478),
+        color: headerBlue,
         borderRadius: BorderRadius.only(
           bottomLeft: Radius.circular(0),
           bottomRight: Radius.circular(0),
         ),
       ),
-      child: Column(
-        children: [
-          Row(
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(
+            10,
+            6,
+            10,
+            _isHeaderSearchVisible ? 9 : 7,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              CircleAvatar(
-                radius: 29,
-                backgroundColor: Colors.white,
-                child: Text(
-                  _currentSalesman.name.isNotEmpty
-                      ? _currentSalesman.name.substring(0, 1).toUpperCase()
-                      : 'S',
-                  style: const TextStyle(
-                    color: Color(0xFF0B3478),
-                    fontWeight: FontWeight.w800,
-                    fontSize: 24,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              SizedBox(
+                height: 48,
+                child: Row(
                   children: [
-                    Text(
-                      _currentSalesman.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                    IconButton(
+                      tooltip: _isSidebarOpen ? 'Close Menu' : 'Menu',
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 36,
+                        height: 36,
+                      ),
+                      icon: Icon(
+                        _isSidebarOpen ? Icons.close : Icons.menu,
                         color: Colors.white,
-                        fontSize: 21,
-                        fontWeight: FontWeight.w800,
+                        size: 25,
+                      ),
+                      onPressed: () =>
+                          setState(() => _isSidebarOpen = !_isSidebarOpen),
+                    ),
+                    const SizedBox(width: 5),
+                    CircleAvatar(
+                      radius: 19,
+                      backgroundColor: Colors.white,
+                      child: Text(
+                        _currentSalesman.name.isNotEmpty
+                            ? _currentSalesman.name
+                                  .substring(0, 1)
+                                  .toUpperCase()
+                            : 'S',
+                        style: const TextStyle(
+                          color: headerBlue,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 17,
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 3),
-                    const Text(
-                      'Salesman Portal',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
+                    const SizedBox(width: 9),
+                    Expanded(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _currentSalesman.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                              height: 1.05,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          const Text(
+                            'Salesman Portal',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w500,
+                              height: 1,
+                            ),
+                          ),
+                        ],
                       ),
+                    ),
+                    IconButton(
+                      tooltip: _isHeaderSearchVisible
+                          ? 'Close Search'
+                          : 'Search',
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 36,
+                        height: 36,
+                      ),
+                      onPressed: () {
+                        if (_isHeaderSearchVisible) {
+                          closeHeaderSearch();
+                        } else {
+                          setState(() => _isHeaderSearchVisible = true);
+                        }
+                      },
+                      icon: Icon(
+                        _isHeaderSearchVisible ? Icons.close : Icons.search,
+                        color: Colors.white,
+                        size: 23,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Cart',
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 36,
+                        height: 36,
+                      ),
+                      onPressed: _showCartDialog,
+                      icon: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          const Icon(
+                            Icons.shopping_cart_outlined,
+                            color: Colors.white,
+                            size: 23,
+                          ),
+                          if (uniqueProductCount > 0)
+                            Positioned(
+                              right: -6,
+                              top: -7,
+                              child: Container(
+                                constraints: const BoxConstraints(
+                                  minWidth: 15,
+                                  minHeight: 15,
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 3,
+                                ),
+                                alignment: Alignment.center,
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFFE53935),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Text(
+                                  uniqueProductCount > 99
+                                      ? '99+'
+                                      : '$uniqueProductCount',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 7.5,
+                                    fontWeight: FontWeight.w900,
+                                    height: 1,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Logout',
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.compact,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 36,
+                        height: 36,
+                      ),
+                      icon: const Icon(
+                        Icons.logout,
+                        color: Colors.white,
+                        size: 23,
+                      ),
+                      onPressed: _logout,
                     ),
                   ],
                 ),
               ),
-              IconButton(
-                icon: const Icon(
-                  Icons.shopping_cart_outlined,
-                  color: Colors.white,
-                  size: 30,
-                ),
-                onPressed: _showCartDialog,
-              ),
-              IconButton(
-                icon: const Icon(Icons.logout, color: Colors.white, size: 30),
-                onPressed: _logout,
+
+              // Search is optional and appears only when the search icon is tapped.
+              // Keeping it in the same shared header makes this behavior consistent
+              // on every salesman-side screen.
+              AnimatedSize(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                alignment: Alignment.topCenter,
+                child: _isHeaderSearchVisible
+                    ? Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: SizedBox(
+                          height: 41,
+                          child: TextField(
+                            autofocus: true,
+                            textInputAction: TextInputAction.search,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                            ),
+                            decoration: InputDecoration(
+                              hintText: 'Search products, customers...',
+                              hintStyle: const TextStyle(
+                                color: Colors.white60,
+                                fontSize: 12,
+                              ),
+                              prefixIcon: const Icon(
+                                Icons.search,
+                                color: Colors.white70,
+                                size: 20,
+                              ),
+                              suffixIcon: IconButton(
+                                tooltip: 'Close Search',
+                                onPressed: closeHeaderSearch,
+                                icon: const Icon(
+                                  Icons.close,
+                                  color: Colors.white70,
+                                  size: 19,
+                                ),
+                              ),
+                              filled: true,
+                              fillColor: Colors.white.withOpacity(0.16),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 0,
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(22),
+                                borderSide: BorderSide.none,
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(22),
+                                borderSide: BorderSide.none,
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(22),
+                                borderSide: BorderSide(
+                                  color: Colors.white.withOpacity(0.35),
+                                ),
+                              ),
+                            ),
+                            onChanged: (value) {
+                              setState(() {
+                                _productSearchQuery = value;
+                                _customerSearchQuery = value;
+                              });
+                            },
+                          ),
+                        ),
+                      )
+                    : const SizedBox.shrink(),
               ),
             ],
           ),
-          const SizedBox(height: 22),
-          Row(
-            children: [
-              IconButton(
-                padding: EdgeInsets.zero,
-                icon: Icon(
-                  _isSidebarOpen ? Icons.close : Icons.menu,
-                  color: Colors.white,
-                  size: 31,
-                ),
-                onPressed: () =>
-                    setState(() => _isSidebarOpen = !_isSidebarOpen),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Container(
-                  height: 55,
-                  padding: const EdgeInsets.symmetric(horizontal: 18),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.18),
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                  child: TextField(
-                    style: const TextStyle(color: Colors.white, fontSize: 15),
-                    decoration: const InputDecoration(
-                      hintText: 'Search products, customers...',
-                      hintStyle: TextStyle(color: Colors.white60),
-                      border: InputBorder.none,
-                      icon: Icon(Icons.search, color: Colors.white70, size: 27),
-                    ),
-                    onChanged: (value) {
-                      setState(() {
-                        _productSearchQuery = value;
-                        _customerSearchQuery = value;
-                      });
-                    },
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -18463,7 +19219,8 @@ final newBalance = balance - amount;
   }
 
   Widget _buildBottomNavItem(IconData icon, String label, int index) {
-    final bool isSelected = _selectedIndex == index;
+    final bool isSelected =
+        _selectedIndex == index || (_selectedIndex == 2 && index == 1);
 
     return Expanded(
       child: InkWell(
@@ -20388,340 +21145,819 @@ Thank you.
     );
   }
 
-  Widget _buildRedesignedCustomerSelectionStep() {
-    final routeSelected =
-        _selectedOrderRoute != null && _selectedOrderRoute!.isNotEmpty;
+  String _orderInitials(String name) {
+    final parts = name
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((e) => e.isNotEmpty)
+        .toList();
 
-    InputDecoration outlinedFieldDecoration({
-      required String label,
-      required IconData icon,
-      String? hint,
-    }) {
-      return InputDecoration(
-        labelText: label,
-        hintText: hint,
-        prefixIcon: Icon(icon, color: primaryBlue),
-        filled: true,
-        fillColor: Colors.white,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: Color(0xFFD5DEEA)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-          borderSide: const BorderSide(color: Color(0xFF2563EB), width: 1.5),
-        ),
-      );
+    if (parts.isEmpty) return 'C';
+    if (parts.length == 1) {
+      final value = parts.first;
+      return value.length >= 2
+          ? value.substring(0, 2).toUpperCase()
+          : value.substring(0, 1).toUpperCase();
     }
 
-    return Column(
-      children: [
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFFE3EAF4)),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x0A0F172A),
-                blurRadius: 18,
-                offset: Offset(0, 7),
-              ),
-            ],
+    return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
+  }
+
+  String _orderCompanyLabel() {
+    final selected = _selectedOrderCompany;
+    if (selected == null || selected.isEmpty) return 'Select Company';
+    return orderCompanies[selected] ?? selected;
+  }
+
+  String _customerGstStatus(CustomerModel customer) {
+    final value = customer.gstStatus?.trim() ?? '';
+    return value.isEmpty ? 'UR' : value.toUpperCase();
+  }
+
+  String _customerGstNumber(CustomerModel customer) {
+    return customer.gstNo?.trim() ?? '';
+  }
+
+  String _customerCreditLabel(CustomerModel customer) {
+    final value = customer.creditStatus?.trim().toLowerCase() ?? '';
+    if (value.contains('overdue')) return 'Overdue';
+    return 'Credit OK';
+  }
+
+  Future<double> _orderCustomerOutstanding(CustomerModel customer) {
+    return _orderOutstandingFutures.putIfAbsent(
+      customer.id,
+      () => ApiService.getCustomerOutstanding(customer.id),
+    );
+  }
+
+  Widget _orderCard({
+    required Widget child,
+    EdgeInsetsGeometry padding = const EdgeInsets.all(12),
+    Color color = Colors.white,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: padding,
+      decoration: BoxDecoration(
+        color: color,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFDCE6F4)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0B0F2A52),
+            blurRadius: 12,
+            offset: Offset(0, 4),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Order Details',
-                style: TextStyle(
-                  color: primaryBlue,
-                  fontSize: 19,
-                  fontWeight: FontWeight.w900,
-                ),
+        ],
+      ),
+      child: child,
+    );
+  }
+
+  Widget _orderPill({
+    required String text,
+    required Color foreground,
+    required Color background,
+    EdgeInsetsGeometry padding =
+        const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+  }) {
+    return Container(
+      padding: padding,
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: foreground,
+          fontSize: 9.5,
+          height: 1,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCustomerGstLine(CustomerModel customer) {
+    final gstStatus = _customerGstStatus(customer);
+    final gstNo = _customerGstNumber(customer);
+
+    return Row(
+      children: [
+        const Text(
+          'GST Status: ',
+          style: TextStyle(
+            color: Color(0xFF536B9D),
+            fontSize: 9.5,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        Text(
+          gstStatus,
+          style: const TextStyle(
+            color: Color(0xFF17356F),
+            fontSize: 9.5,
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+        if (gstNo.isNotEmpty) ...[
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 6),
+            child: Text(
+              '|',
+              style: TextStyle(color: Color(0xFF9AAAC4), fontSize: 10),
+            ),
+          ),
+          const Text(
+            'GST No: ',
+            style: TextStyle(
+              color: Color(0xFF536B9D),
+              fontSize: 9.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              gstNo,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Color(0xFF17356F),
+                fontSize: 9.5,
+                fontWeight: FontWeight.w800,
               ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                initialValue: _persistedSelectedRoute ?? _selectedOrderRoute,
-                isExpanded: true,
-                decoration: outlinedFieldDecoration(
-                  label: 'Select Route',
-                  icon: Icons.location_on,
-                ),
-                selectedItemBuilder: (context) => orderRoutes
-                    .map(
-                      (route) => Text(
-                        route,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    )
-                    .toList(),
-                items: orderRoutes
-                    .map(
-                      (route) => DropdownMenuItem<String>(
-                        value: route,
-                        child: Text(route, overflow: TextOverflow.ellipsis),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (value) {
-                  setState(() {
-                    _persistedSelectedRoute = value;
-                    _selectedOrderRoute = value;
-                    _selectedCustomerId = null;
-                    _customerSearchQuery = '';
-                    _customerSearchController.clear();
-                  });
-                },
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildSelectedCustomerCompactCard(
+    CustomerModel customer, {
+    bool showChevron = true,
+  }) {
+    return _orderCard(
+      padding: const EdgeInsets.fromLTRB(10, 9, 8, 9),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: const Color(0xFFE7F2FF),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Text(
+              _orderInitials(customer.name),
+              style: const TextStyle(
+                color: Color(0xFF0A61E8),
+                fontSize: 17,
+                fontWeight: FontWeight.w900,
               ),
-              if (routeSelected) ...[
-                const SizedBox(height: 14),
+            ),
+          ),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Row(
                   children: [
                     Expanded(
-                      child: _buildOrderDetailChip(
-                        icon: Icons.location_on,
-                        text: 'Area: ${_selectedOrderRoute!.toUpperCase()}',
-                        foreground: primaryBlue,
-                        background: const Color(0xFFF0F6FF),
+                      child: Text(
+                        customer.name.toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF132C67),
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _buildOrderDetailChip(
-                        icon: Icons.account_balance_wallet,
-                        text: 'Credit ₹25,000',
-                        foreground: successGreen,
-                        background: const Color(0xFFF0FAF2),
-                      ),
+                    const SizedBox(width: 4),
+                    Builder(
+                      builder: (context) {
+                        final creditLabel = _customerCreditLabel(customer);
+                        final isOverdue = creditLabel == 'Overdue';
+                        return _orderPill(
+                          text: creditLabel,
+                          foreground: isOverdue
+                              ? const Color(0xFFD64545)
+                              : const Color(0xFF16853B),
+                          background: isOverdue
+                              ? const Color(0xFFFFECEC)
+                              : const Color(0xFFE7F8E9),
+                        );
+                      },
                     ),
                   ],
                 ),
+                const SizedBox(height: 2),
+                Text(
+                  'Code: ${customer.customerId ?? customer.id}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFF57709E),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                _buildCustomerGstLine(customer),
               ],
+            ),
+          ),
+          if (showChevron)
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+              onPressed: () => setState(() => _orderStep = 1),
+              icon: const Icon(
+                Icons.chevron_right_rounded,
+                size: 22,
+                color: Color(0xFF0A61E8),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOrderSearchBox({
+    required TextEditingController controller,
+    required String hint,
+    required ValueChanged<String> onChanged,
+    bool enabled = true,
+    Widget? trailing,
+  }) {
+    return SizedBox(
+      height: 42,
+      child: TextField(
+        controller: controller,
+        enabled: enabled,
+        onChanged: onChanged,
+        style: const TextStyle(
+          color: Color(0xFF17356F),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: const TextStyle(
+            color: Color(0xFF8AA0C5),
+            fontSize: 11.5,
+          ),
+          prefixIcon: const Icon(
+            Icons.search_rounded,
+            size: 20,
+            color: Color(0xFF476AAB),
+          ),
+          suffixIcon: trailing,
+          filled: true,
+          fillColor: Colors.white,
+          contentPadding: const EdgeInsets.symmetric(vertical: 9),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(7),
+            borderSide: const BorderSide(color: Color(0xFFD7E1F0)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(7),
+            borderSide: const BorderSide(color: Color(0xFFD7E1F0)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(7),
+            borderSide: const BorderSide(
+              color: Color(0xFF0865EA),
+              width: 1.4,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _orderFilterChip(String label, String value) {
+    final selected = _orderProductFilter == value;
+    return InkWell(
+      borderRadius: BorderRadius.circular(6),
+      onTap: () => setState(() => _orderProductFilter = value),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        height: 30,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 7),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF0668F3) : const Color(0xFFF8FAFE),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: selected
+                ? const Color(0xFF0668F3)
+                : const Color(0xFFDCE5F1),
+          ),
+        ),
+        child: Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: selected ? Colors.white : const Color(0xFF294A84),
+            fontSize: 9.4,
+            height: 1,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // -----------------------------------------------------------------------------
+  // 5) REPLACE _buildCreateOrderSection(), _buildStepIndicator(),
+  //    _buildStepCircle() and _buildStepLine() with these
+  // -----------------------------------------------------------------------------
+
+  Widget _buildRedesignedCustomerSelectionStep() {
+    final routeSelected =
+        _selectedOrderRoute != null && _selectedOrderRoute!.trim().isNotEmpty;
+
+    final customers = orderFilteredCustomers;
+    final visibleCustomers =
+        (_showAllOrderCustomers || _customerSearchQuery.trim().isNotEmpty)
+            ? customers
+            : customers.take(5).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // COMPANY
+        Container(
+          height: 54,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: const Color(0xFFDCE6F3)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x080F2A52),
+                blurRadius: 8,
+                offset: Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.apartment_rounded,
+                color: Color(0xFF0A65E7),
+                size: 23,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _selectedOrderCompany,
+                    isExpanded: true,
+                    hint: const Text(
+                      'Select Company',
+                      style: TextStyle(
+                        color: Color(0xFF142D67),
+                        fontSize: 12.2,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    items: orderCompanies.entries
+                        .map(
+                          (entry) => DropdownMenuItem<String>(
+                            value: entry.key,
+                            child: Text(
+                              entry.value,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      setState(() {
+                        _selectedOrderCompany = value;
+                        _selectedOrderRoute = null;
+                        _persistedSelectedRoute = null;
+                        _selectedCustomerId = null;
+                        _cart.clear();
+                        _showAllOrderCustomers = false;
+                        _customerSearchQuery = '';
+                        _customerSearchController.clear();
+                        _productSearchQuery = '';
+                        _productSearchController.clear();
+                      });
+                    },
+                  ),
+                ),
+              ),
             ],
           ),
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 7),
+
+        // ROUTE
         Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(16),
+          height: 54,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: const Color(0xFFE3EAF4)),
+            borderRadius: BorderRadius.circular(9),
+            border: Border.all(color: const Color(0xFFDCE6F3)),
             boxShadow: const [
               BoxShadow(
-                color: Color(0x0A0F172A),
-                blurRadius: 18,
-                offset: Offset(0, 7),
+                color: Color(0x080F2A52),
+                blurRadius: 8,
+                offset: Offset(0, 3),
               ),
             ],
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: Row(
             children: [
-              const Text(
-                'Choose Customer',
-                style: TextStyle(
-                  color: primaryBlue,
-                  fontSize: 19,
-                  fontWeight: FontWeight.w900,
-                ),
+              const Icon(
+                Icons.location_on_rounded,
+                color: Color(0xFF18A43F),
+                size: 24,
               ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: _customerSearchController,
-                enabled: routeSelected,
-                decoration: outlinedFieldDecoration(
-                  label: 'Search customers',
-                  icon: Icons.search,
-                  hint: 'Name, code or address',
-                ),
-                onChanged: (value) =>
-                    setState(() => _customerSearchQuery = value),
-              ),
-              const SizedBox(height: 12),
-              if (!routeSelected)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 36),
-                  child: Center(
-                    child: Text(
-                      'Select a route to load customers',
-                      style: TextStyle(color: Color(0xFF64748B)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _selectedOrderRoute,
+                    isExpanded: true,
+                    disabledHint: const Text('Select company first'),
+                    icon: const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      color: Color(0xFF254B8B),
+                      size: 22,
                     ),
-                  ),
-                )
-              else if (orderFilteredCustomers.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 36),
-                  child: Center(
-                    child: Text(
-                      'No customers found for selected route',
-                      style: TextStyle(color: Color(0xFF64748B)),
-                    ),
-                  ),
-                )
-              else
-                ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: orderFilteredCustomers.length,
-                  separatorBuilder: (_, __) =>
-                      const Divider(height: 1, color: Color(0xFFE8EDF4)),
-                  itemBuilder: (context, index) {
-                    final customer = orderFilteredCustomers[index];
-                    final selected = _selectedCustomerId == customer.id;
-                    final address = customer.address?.trim().isNotEmpty == true
-                        ? customer.address!.trim()
-                        : customer.area;
-                    final code = customer.customerId?.trim().isNotEmpty == true
-                        ? customer.customerId!.trim()
-                        : customer.id;
-                    return InkWell(
-                      borderRadius: BorderRadius.circular(14),
-                      onTap: () =>
-                          setState(() => _selectedCustomerId = customer.id),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 160),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 13,
-                        ),
-                        decoration: BoxDecoration(
-                          color: selected
-                              ? const Color(0xFFEEF5FF)
-                              : Colors.transparent,
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                            color: selected
-                                ? const Color(0xFFBFD6FF)
-                                : Colors.transparent,
+                    hint: const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Route',
+                          style: TextStyle(
+                            color: Color(0xFF6077A7),
+                            fontSize: 9.5,
+                            height: 1.05,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
-                        child: Row(
-                          children: [
-                            Icon(
-                              selected
-                                  ? Icons.radio_button_checked
-                                  : Icons.radio_button_off,
-                              color: selected
-                                  ? const Color(0xFF2563EB)
-                                  : const Color(0xFF94A3B8),
-                            ),
-                            const SizedBox(width: 10),
-                            CircleAvatar(
-                              radius: 21,
-                              backgroundColor: selected
-                                  ? const Color(0xFFDCEAFF)
-                                  : const Color(0xFFF0F4F9),
-                              child: Text(
-                                customer.name.isEmpty
-                                    ? 'C'
-                                    : customer.name[0].toUpperCase(),
+                        SizedBox(height: 2),
+                        Text(
+                          'Select Route',
+                          style: TextStyle(
+                            color: Color(0xFF142D67),
+                            fontSize: 12.2,
+                            height: 1.05,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ],
+                    ),
+                    selectedItemBuilder: (context) => orderRoutes
+                        .map(
+                          (route) => Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Route',
+                                style: TextStyle(
+                                  color: Color(0xFF6077A7),
+                                  fontSize: 9.5,
+                                  height: 1.05,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                route,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                  color: primaryBlue,
+                                  color: Color(0xFF142D67),
+                                  fontSize: 12.2,
+                                  height: 1.05,
                                   fontWeight: FontWeight.w900,
                                 ),
                               ),
+                            ],
+                          ),
+                        )
+                        .toList(),
+                    items: orderRoutes
+                        .map(
+                          (route) => DropdownMenuItem<String>(
+                            value: route,
+                            child: Text(
+                              route,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    customer.name,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Color(0xFF0F172A),
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 3),
-                                  Text(
-                                    address,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Color(0xFF64748B),
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                                  Text(
-                                    code,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Color(0xFF94A3B8),
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
+                          ),
+                        )
+                        .toList(),
+                    onChanged: _selectedOrderCompany == null
+                        ? null
+                        : (value) {
+                            setState(() {
+                              _persistedSelectedRoute = value;
+                              _selectedOrderRoute = value;
+                              _selectedCustomerId = null;
+                              _showAllOrderCustomers = false;
+                              _customerSearchQuery = '';
+                              _customerSearchController.clear();
+                            });
+                          },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 7),
+        _buildOrderSearchBox(
+          controller: _customerSearchController,
+          hint: 'Search customer by name, code...',
+          enabled: routeSelected,
+          onChanged: (value) => setState(() => _customerSearchQuery = value),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Recent Customers',
+                style: TextStyle(
+                  color: Color(0xFF17356F),
+                  fontSize: 12.1,
+                  height: 1,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            if (routeSelected && customers.length > 5)
+              TextButton(
+                onPressed: () => setState(
+                  () => _showAllOrderCustomers = !_showAllOrderCustomers,
+                ),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  minimumSize: const Size(0, 26),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: Text(
+                  _showAllOrderCustomers ? 'Show Less' : 'See All',
+                  style: const TextStyle(
+                    color: Color(0xFF0865EA),
+                    fontSize: 10.4,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        if (!routeSelected)
+          _orderCard(
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 18),
+              child: Center(
+                child: Text(
+                  'Select a route to load customers',
+                  style: TextStyle(
+                    color: Color(0xFF7183A4),
+                    fontSize: 10.8,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          )
+        else if (visibleCustomers.isEmpty)
+          _orderCard(
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 18),
+              child: Center(
+                child: Text(
+                  'No customers found',
+                  style: TextStyle(
+                    color: Color(0xFF7183A4),
+                    fontSize: 10.8,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          )
+        else
+          ...visibleCustomers.map((customer) {
+            final selected = _selectedCustomerId == customer.id;
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: FutureBuilder<double>(
+                future: _orderCustomerOutstanding(customer),
+                builder: (context, snapshot) {
+                  final outstanding = snapshot.data ?? 0.0;
+                  final creditLabel = _customerCreditLabel(customer);
+                  final isOverdue = creditLabel == 'Overdue';
+
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(9),
+                    onTap: () => setState(
+                      () => _selectedCustomerId = customer.id,
+                    ),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 120),
+                      constraints: const BoxConstraints(
+                        minHeight: 67,
+                      ),
+                      padding: const EdgeInsets.fromLTRB(8, 8, 5, 8),
+                      decoration: BoxDecoration(
+                        color: selected
+                            ? const Color(0xFFF1F7FF)
+                            : Colors.white,
+                        borderRadius: BorderRadius.circular(9),
+                        border: Border.all(
+                          color: selected
+                              ? const Color(0xFF7FB2FF)
+                              : const Color(0xFFE0E8F3),
+                          width: selected ? 1.25 : 1,
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x070F2A52),
+                            blurRadius: 7,
+                            offset: Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 43,
+                            height: 43,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFE8F3FF),
+                              borderRadius: BorderRadius.circular(11),
+                            ),
+                            child: Text(
+                              _orderInitials(customer.name),
+                              style: const TextStyle(
+                                color: Color(0xFF0865EA),
+                                fontSize: 16,
+                                height: 1,
+                                fontWeight: FontWeight.w900,
                               ),
                             ),
-                            const SizedBox(width: 8),
-                            const Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
                               children: [
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        customer.name.toUpperCase(),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Color(0xFF17356F),
+                                          fontSize: 10.6,
+                                          height: 1.05,
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    _orderPill(
+                                      text: creditLabel,
+                                      foreground: isOverdue
+                                          ? const Color(0xFFD64545)
+                                          : const Color(0xFF16853B),
+                                      background: isOverdue
+                                          ? const Color(0xFFFFECEC)
+                                          : const Color(0xFFE7F8E9),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 2),
                                 Text(
-                                  'Credit',
-                                  style: TextStyle(
-                                    color: Color(0xFF64748B),
-                                    fontSize: 10,
+                                  'Code: ${customer.customerId ?? customer.id}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Color(0xFF58709E),
+                                    fontSize: 9.4,
+                                    height: 1.05,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
-                                Text(
-                                  '₹25,000',
+                                const SizedBox(height: 4),
+                                _buildCustomerGstLine(customer),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          SizedBox(
+                            width: 72,
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                const Text(
+                                  'Outstanding',
                                   style: TextStyle(
-                                    color: successGreen,
+                                    color: Color(0xFF7185AA),
+                                    fontSize: 8.5,
+                                    height: 1,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 3),
+                                Text(
+                                  '₹ ${outstanding.toStringAsFixed(0)}',
+                                  maxLines: 1,
+                                  style: TextStyle(
+                                    color: outstanding > 0.005
+                                        ? const Color(0xFF15346F)
+                                        : const Color(0xFF12853A),
+                                    fontSize: 11.7,
+                                    height: 1,
                                     fontWeight: FontWeight.w900,
                                   ),
                                 ),
                               ],
                             ),
-                          ],
-                        ),
+                          ),
+                          const SizedBox(width: 1),
+                          const Icon(
+                            Icons.chevron_right_rounded,
+                            color: Color(0xFF0A65E7),
+                            size: 20,
+                          ),
+                        ],
                       ),
-                    );
-                  },
-                ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
+                    ),
+                  );
+                },
+              ),
+            );
+          }),
+        const SizedBox(height: 7),
         SizedBox(
           width: double.infinity,
-          height: 52,
-          child: ElevatedButton.icon(
+          height: 43,
+          child: ElevatedButton(
             onPressed: _selectedCustomerId == null
                 ? null
                 : () {
                     FocusScope.of(context).unfocus();
                     setState(() => _orderStep = 2);
                   },
-            iconAlignment: IconAlignment.end,
-            icon: const Icon(Icons.arrow_forward),
-            label: const Text(
-              'Continue to Products',
-              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
-            ),
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF2563EB),
+              backgroundColor: const Color(0xFF075FE4),
               foregroundColor: Colors.white,
-              disabledBackgroundColor: const Color(0xFFCBD5E1),
+              disabledBackgroundColor: const Color(0xFFBFCBDD),
               disabledForegroundColor: Colors.white,
               elevation: 0,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(6),
               ),
+            ),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  'Next: Select Products',
+                  style: TextStyle(
+                    fontSize: 11.8,
+                    height: 1,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                SizedBox(width: 10),
+                Icon(Icons.arrow_forward_rounded, size: 19),
+              ],
             ),
           ),
         ),
@@ -20762,120 +21998,145 @@ Thank you.
       ),
     );
   }
+
   Widget _buildCreateOrderSection() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 110),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Create Order',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
-                    color: primaryBlue,
-                  ),
-                ),
+    return Container(
+      width: double.infinity,
+      decoration: const BoxDecoration(
+        color: Color(0xFFF8FBFF),
+        borderRadius: BorderRadius.only(
+          topLeft: Radius.circular(12),
+          topRight: Radius.circular(12),
+        ),
+      ),
+      child: SingleChildScrollView(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        padding: const EdgeInsets.fromLTRB(12, 7, 12, 112),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Create Order',
+              style: TextStyle(
+                fontSize: 19,
+                height: 1.02,
+                fontWeight: FontWeight.w900,
+                color: Color(0xFF10245A),
+                letterSpacing: -0.25,
               ),
-              ElevatedButton.icon(
-                onPressed: () async {
-                  await _loadData();
-                  if (mounted) {
-                    showSafeSnackBar(
-                      context,
-                      'Data synced successfully',
-                      backgroundColor: successGreen,
-                    );
-                  }
-                },
-                icon: const Icon(Icons.sync, size: 18),
-                label: const Text('Sync'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: successGreen,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 11,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              _orderStep == 1
+                  ? 'Step 1 of 4 • Select Customer'
+                  : _orderStep == 2
+                      ? 'Step 2 of 4 • Add Products'
+                      : _orderStep == 3
+                          ? 'Step 3 of 4 • Review Order'
+                          : 'Step 4 of 4 • Confirm & Submit',
+              style: const TextStyle(
+                color: Color(0xFF4866A0),
+                fontSize: 12.1,
+                height: 1.05,
+                fontWeight: FontWeight.w500,
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _buildStepIndicator(),
-          const SizedBox(height: 18),
-          if (_orderStep == 1) _buildRedesignedCustomerSelectionStep(),
-          if (_orderStep == 2) _buildProductSelectionStepWithScheme(),
-          if (_orderStep == 3) _buildReviewStep(),
-        ],
+            ),
+            const SizedBox(height: 8),
+            _buildStepIndicator(),
+            const SizedBox(height: 9),
+            if (_orderStep == 1) _buildRedesignedCustomerSelectionStep(),
+            if (_orderStep == 2) _buildProductSelectionStepWithScheme(),
+            if (_orderStep == 3) _buildSalesmanOrderReviewStep(),
+            if (_orderStep == 4) _buildConfirmOrderStep(),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildStepIndicator() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.04),
-            blurRadius: 14,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          _buildStepCircle(1, 'Customer'),
-          _buildStepLine(1),
-          _buildStepCircle(2, 'Products'),
-          _buildStepLine(2),
-          _buildStepCircle(3, 'Review'),
-        ],
-      ),
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildStepCircle(1, 'Customer'),
+        _buildStepLine(1),
+        _buildStepCircle(2, 'Products'),
+        _buildStepLine(2),
+        _buildStepCircle(3, 'Review'),
+        _buildStepLine(3),
+        _buildStepCircle(4, 'Confirm'),
+      ],
     );
   }
 
   Widget _buildStepCircle(int step, String label) {
-    final isActive = _orderStep >= step;
-    final isCurrent = _orderStep == step;
+    final completed = _orderStep > step || (_orderStep == 4 && step == 4);
+    final current = _orderStep == step && !completed;
 
-    return Expanded(
+    return SizedBox(
+      width: 55,
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 42,
-            height: 42,
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            width: 24,
+            height: 24,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: isActive ? accentTeal : Colors.grey.shade200,
+              color: completed
+                  ? const Color(0xFF16A34A)
+                  : current
+                      ? const Color(0xFF0B65E8)
+                      : Colors.white,
               shape: BoxShape.circle,
-            ),
-            child: Center(
-              child: Text(
-                '$step',
-                style: TextStyle(
-                  color: isActive ? Colors.white : Colors.grey.shade600,
-                  fontWeight: FontWeight.w800,
-                ),
+              border: Border.all(
+                width: 1.35,
+                color: completed
+                    ? const Color(0xFF16A34A)
+                    : current
+                        ? const Color(0xFF0B65E8)
+                        : const Color(0xFF8BA0CA),
               ),
+              boxShadow: current
+                  ? const [
+                      BoxShadow(
+                        color: Color(0x220B65E8),
+                        blurRadius: 5,
+                        offset: Offset(0, 2),
+                      ),
+                    ]
+                  : null,
             ),
+            child: completed
+                ? const Icon(
+                    Icons.check_rounded,
+                    color: Colors.white,
+                    size: 15,
+                  )
+                : Text(
+                    '$step',
+                    style: TextStyle(
+                      color: current
+                          ? Colors.white
+                          : const Color(0xFF3B568C),
+                      fontSize: 10.2,
+                      height: 1,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
           Text(
             label,
             textAlign: TextAlign.center,
             style: TextStyle(
-              fontSize: 12,
-              color: isCurrent ? primaryBlue : Colors.grey.shade600,
-              fontWeight: isCurrent ? FontWeight.w800 : FontWeight.w500,
+              color: current
+                  ? const Color(0xFF10245A)
+                  : const Color(0xFF526B9E),
+              fontSize: 8.9,
+              height: 1,
+              fontWeight: current ? FontWeight.w900 : FontWeight.w600,
             ),
           ),
         ],
@@ -20886,13 +22147,998 @@ Thank you.
   Widget _buildStepLine(int afterStep) {
     return Expanded(
       child: Container(
-        height: 2,
-        color: _orderStep > afterStep ? accentTeal : Colors.grey[300],
+        height: 1.35,
+        margin: const EdgeInsets.only(top: 11.5),
+        color: _orderStep > afterStep
+            ? const Color(0xFF20A946)
+            : const Color(0xFFC9D5E8),
       ),
     );
   }
 
+  Future<void> _showCreateOrderProductSheet(ProductModel product) async {
+    final existing = _cart[product.id];
+
+    final rateController = TextEditingController(
+      text: (existing?.rate ?? product.price).toStringAsFixed(0),
+    );
+    final quantityController = TextEditingController(
+      text: (existing?.quantity ?? 1).toString(),
+    );
+
+    final freeQtyController = TextEditingController(
+      text: (existing?.freeQty ?? 0).toString(),
+    );
+
+    final schemeController = TextEditingController(
+      text: (existing?.schPer ?? 0).toStringAsFixed(0),
+    );
+
+    bool schemeAsPercent = true;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black54,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            final qty = int.tryParse(quantityController.text.trim()) ?? 0;
+            final rate = double.tryParse(rateController.text.trim()) ?? 0;
+            final gross = qty * rate;
+            final schemeInput =
+                double.tryParse(schemeController.text.trim()) ?? 0;
+
+            Widget fieldBox({
+              required String label,
+              required TextEditingController controller,
+              bool readOnly = false,
+              bool decimal = false,
+            }) {
+              return Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        color: Color(0xFF405F96),
+                        fontSize: 9.7,
+                        height: 1,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 5),
+                    SizedBox(
+                      height: 42,
+                      child: TextField(
+                        controller: controller,
+                        readOnly: readOnly,
+                        keyboardType: decimal
+                            ? const TextInputType.numberWithOptions(
+                                decimal: true,
+                              )
+                            : TextInputType.number,
+                        onChanged: (_) => setSheetState(() {}),
+                        style: const TextStyle(
+                          color: Color(0xFF17356F),
+                          fontSize: 12.3,
+                          fontWeight: FontWeight.w900,
+                        ),
+                        decoration: InputDecoration(
+                          filled: true,
+                          fillColor: readOnly
+                              ? const Color(0xFFF8FAFD)
+                              : Colors.white,
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 12,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(7),
+                            borderSide: const BorderSide(
+                              color: Color(0xFFD5E0EF),
+                            ),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(7),
+                            borderSide: const BorderSide(
+                              color: Color(0xFFD5E0EF),
+                            ),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(7),
+                            borderSide: const BorderSide(
+                              color: Color(0xFF0865EA),
+                              width: 1.35,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+              ),
+              child: Align(
+                alignment: Alignment.bottomCenter,
+                child: Container(
+                  width: double.infinity,
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.77,
+                  ),
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.vertical(
+                      top: Radius.circular(24),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Color(0x22000000),
+                        blurRadius: 24,
+                        offset: Offset(0, -5),
+                      ),
+                    ],
+                  ),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(18, 8, 18, 18),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Center(
+                          child: Container(
+                            width: 40,
+                            height: 4,
+                            margin: const EdgeInsets.only(bottom: 9),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFC8D2E1),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                'Add Product',
+                                style: TextStyle(
+                                  color: Color(0xFF10245A),
+                                  fontSize: 17.5,
+                                  height: 1,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: -0.2,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(
+                                minWidth: 30,
+                                minHeight: 30,
+                              ),
+                              onPressed: () => Navigator.pop(sheetContext),
+                              icon: const Icon(
+                                Icons.close_rounded,
+                                color: Color(0xFF21447F),
+                                size: 23,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 9),
+                        Text(
+                          product.name,
+                          style: const TextStyle(
+                            color: Color(0xFF17356F),
+                            fontSize: 14.2,
+                            height: 1,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          'Code: ${product.sku}  |  Pack: ${product.category.isEmpty ? '-' : product.category}',
+                          style: const TextStyle(
+                            color: Color(0xFF58709E),
+                            fontSize: 10.2,
+                            height: 1,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: product.stock > 0
+                                ? const Color(0xFFEAFBEA)
+                                : const Color(0xFFFFEFEF),
+                            borderRadius: BorderRadius.circular(7),
+                            border: Border.all(
+                              color: product.stock > 0
+                                  ? const Color(0xFFC8EECD)
+                                  : const Color(0xFFFFD0D0),
+                            ),
+                          ),
+                          child: Text(
+                            'Available Stock: ${product.stock} pcs',
+                            style: TextStyle(
+                              color: product.stock > 0
+                                  ? const Color(0xFF16853B)
+                                  : const Color(0xFFD14343),
+                              fontSize: 10.8,
+                              height: 1,
+                              fontWeight: FontWeight.w900,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 13),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            fieldBox(
+                              label: 'Rate (₹)',
+                              controller: rateController,
+                              decimal: true,
+                            ),
+                            const SizedBox(width: 8),
+                            fieldBox(
+                              label: 'Quantity',
+                              controller: quantityController,
+                            ),
+                            const SizedBox(width: 8),
+                            fieldBox(
+                              label: 'Free Qty',
+                              controller: freeQtyController,
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 13),
+                        const Text(
+                          'Scheme Discount',
+                          style: TextStyle(
+                            color: Color(0xFF405F96),
+                            fontSize: 9.8,
+                            height: 1,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: SizedBox(
+                                height: 42,
+                                child: TextField(
+                                  controller: schemeController,
+                                  keyboardType:
+                                      const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                                  onChanged: (_) => setSheetState(() {}),
+                                  style: const TextStyle(
+                                    color: Color(0xFF17356F),
+                                    fontSize: 12.3,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                  decoration: InputDecoration(
+                                    filled: true,
+                                    fillColor: Colors.white,
+                                    isDense: true,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 12,
+                                    ),
+                                    border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(7),
+                                      borderSide: const BorderSide(
+                                        color: Color(0xFFD5E0EF),
+                                      ),
+                                    ),
+                                    enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(7),
+                                      borderSide: const BorderSide(
+                                        color: Color(0xFFD5E0EF),
+                                      ),
+                                    ),
+                                    focusedBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(7),
+                                      borderSide: const BorderSide(
+                                        color: Color(0xFF0865EA),
+                                        width: 1.35,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 7),
+                            Container(
+                              height: 42,
+                              decoration: BoxDecoration(
+                                border: Border.all(
+                                  color: const Color(0xFFD8E2F0),
+                                ),
+                                borderRadius: BorderRadius.circular(7),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  InkWell(
+                                    onTap: () => setSheetState(
+                                      () => schemeAsPercent = true,
+                                    ),
+                                    borderRadius: const BorderRadius.only(
+                                      topLeft: Radius.circular(6),
+                                      bottomLeft: Radius.circular(6),
+                                    ),
+                                    child: Container(
+                                      width: 55,
+                                      height: 40,
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: schemeAsPercent
+                                            ? const Color(0xFF0865EA)
+                                            : Colors.white,
+                                        borderRadius: const BorderRadius.only(
+                                          topLeft: Radius.circular(6),
+                                          bottomLeft: Radius.circular(6),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        '%',
+                                        style: TextStyle(
+                                          color: schemeAsPercent
+                                              ? Colors.white
+                                              : const Color(0xFF47608F),
+                                          fontSize: 15,
+                                          height: 1,
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Container(
+                                    width: 1,
+                                    height: 27,
+                                    color: const Color(0xFFD8E2F0),
+                                  ),
+                                  InkWell(
+                                    onTap: () => setSheetState(
+                                      () => schemeAsPercent = false,
+                                    ),
+                                    borderRadius: const BorderRadius.only(
+                                      topRight: Radius.circular(6),
+                                      bottomRight: Radius.circular(6),
+                                    ),
+                                    child: Container(
+                                      width: 55,
+                                      height: 40,
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: !schemeAsPercent
+                                            ? const Color(0xFF0865EA)
+                                            : Colors.white,
+                                        borderRadius: const BorderRadius.only(
+                                          topRight: Radius.circular(6),
+                                          bottomRight: Radius.circular(6),
+                                        ),
+                                      ),
+                                      child: Text(
+                                        '₹',
+                                        style: TextStyle(
+                                          color: !schemeAsPercent
+                                              ? Colors.white
+                                              : const Color(0xFF47608F),
+                                          fontSize: 15,
+                                          height: 1,
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 9),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 9,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEFF7FF),
+                            borderRadius: BorderRadius.circular(7),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Icon(
+                                Icons.info_rounded,
+                                color: Color(0xFF4D91DF),
+                                size: 16,
+                              ),
+                              const SizedBox(width: 7),
+                              Expanded(
+                                child: Text(
+                                  schemeAsPercent
+                                      ? '${schemeInput.toStringAsFixed(0)}% will be calculated on this product amount (₹ ${gross.toStringAsFixed(0)})'
+                                      : '₹${schemeInput.toStringAsFixed(0)} discount will be applied on this product amount (₹ ${gross.toStringAsFixed(0)})',
+                                  style: const TextStyle(
+                                    color: Color(0xFF4D6898),
+                                    fontSize: 9.5,
+                                    height: 1.35,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 15),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: SizedBox(
+                                height: 44,
+                                child: OutlinedButton(
+                                  onPressed: () => Navigator.pop(sheetContext),
+                                  style: OutlinedButton.styleFrom(
+                                    side: const BorderSide(
+                                      color: Color(0xFF0865EA),
+                                    ),
+                                    foregroundColor: const Color(0xFF0865EA),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(7),
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    'Cancel',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: SizedBox(
+                                height: 44,
+                                child: ElevatedButton(
+                                  onPressed: product.stock <= 0
+                                      ? null
+                                      : () {
+                                          final quantity = int.tryParse(
+                                                quantityController.text.trim(),
+                                              ) ??
+                                              0;
+                                          final rate = double.tryParse(
+                                                rateController.text.trim(),
+                                              ) ??
+                                              0;
+                                          final enteredScheme = double.tryParse(
+                                                schemeController.text.trim(),
+                                              ) ??
+                                              0;
+                                          final freeQty = int.tryParse(
+                                                freeQtyController.text.trim(),
+                                              ) ??
+                                              -1;
+
+                                          if (quantity <= 0 || rate <= 0) {
+                                            showSafeSnackBar(
+                                              sheetContext,
+                                              'Enter a valid rate and quantity',
+                                              backgroundColor: warningOrange,
+                                            );
+                                            return;
+                                          }
+
+                                          if (freeQty < 0 || enteredScheme < 0) {
+                                            showSafeSnackBar(
+                                              sheetContext,
+                                              'Free quantity and scheme discount cannot be negative',
+                                              backgroundColor: warningOrange,
+                                            );
+                                            return;
+                                          }
+
+                                          final grossAmount = quantity * rate;
+                                          final double schemePercent =
+                                              schemeAsPercent
+                                                  ? enteredScheme
+                                                  : (grossAmount > 0
+                                                      ? (enteredScheme /
+                                                              grossAmount) *
+                                                          100.0
+                                                      : 0.0);
+
+                                          if (schemePercent > 100) {
+                                            showSafeSnackBar(
+                                              sheetContext,
+                                              'Scheme discount cannot exceed the product amount',
+                                              backgroundColor: warningOrange,
+                                            );
+                                            return;
+                                          }
+
+                                          if (!_cart.containsKey(product.id)) {
+                                            addToCart(
+                                              product.id,
+                                              product.name,
+                                              product.sku,
+                                              rate,
+                                              product.stock,
+                                            );
+                                          }
+
+                                          updateCartQuantity(
+                                            product.id,
+                                            quantity,
+                                          );
+                                          updateCartRate(product.id, rate);
+                                          updateCartFreeQuantity(product.id, freeQty);
+                                          updateCartScheme(
+                                            product.id,
+                                            schemePercent,
+                                          );
+
+                                          final shouldEnableScheme =
+                                              schemePercent > 0;
+                                          if (_cart[product.id]?.schEnabled !=
+                                              shouldEnableScheme) {
+                                            toggleCartScheme(product.id);
+                                          }
+
+                                          Navigator.pop(sheetContext);
+                                        },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF0865EA),
+                                    foregroundColor: Colors.white,
+                                    disabledBackgroundColor:
+                                        const Color(0xFFBAC7D9),
+                                    elevation: 0,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(7),
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    'Add to Order',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    rateController.dispose();
+    quantityController.dispose();
+    freeQtyController.dispose();
+    schemeController.dispose();
+  }
+
   Widget _buildProductSelectionStepWithScheme() {
+    if (_selectedCustomerId == null) return const SizedBox.shrink();
+
+    final customer = _customers.firstWhere(
+      (item) => item.id == _selectedCustomerId,
+    );
+    final products = orderFilteredProducts;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSelectedCustomerCompactCard(customer),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _buildOrderSearchBox(
+                controller: _productSearchController,
+                hint: 'Search product by name or code...',
+                onChanged: (value) =>
+                    setState(() => _productSearchQuery = value),
+              ),
+            ),
+            const SizedBox(width: 7),
+            InkWell(
+              borderRadius: BorderRadius.circular(7),
+              onTap: () {
+                showSafeSnackBar(
+                  context,
+                  'Barcode scanner UI is ready. Keep your existing scanner logic here.',
+                  backgroundColor: primaryBlue,
+                );
+              },
+              child: Container(
+                width: 42,
+                height: 42,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(color: const Color(0xFFD7E1F0)),
+                ),
+                child: const Icon(
+                  Icons.qr_code_scanner_rounded,
+                  size: 21,
+                  color: Color(0xFF173F82),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(child: _orderFilterChip('All', 'all')),
+            const SizedBox(width: 6),
+            Expanded(flex: 2, child: _orderFilterChip('Fast Moving', 'fast')),
+            const SizedBox(width: 6),
+            Expanded(child: _orderFilterChip('Offers', 'offers')),
+            const SizedBox(width: 6),
+            Expanded(
+              flex: 2,
+              child: _orderFilterChip('Favourites', 'favourites'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (products.isEmpty)
+          _orderCard(
+            child: const Padding(
+              padding: EdgeInsets.symmetric(vertical: 22),
+              child: Center(
+                child: Text(
+                  'No products found',
+                  style: TextStyle(
+                    color: Color(0xFF7183A4),
+                    fontSize: 10.8,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          )
+        else
+          ...products.map((product) {
+            final cartItem = _cart[product.id];
+            final inCart = cartItem != null;
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE0E8F3)),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x050F2A52),
+                    blurRadius: 6,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          product.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFF17356F),
+                            fontSize: 11.4,
+                            height: 1,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                'Code: ${product.sku}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xFF58709E),
+                                  fontSize: 9.2,
+                                  height: 1,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 5),
+                              child: Text(
+                                '|',
+                                style: TextStyle(
+                                  color: Color(0xFF9CAECC),
+                                  fontSize: 9,
+                                  height: 1,
+                                ),
+                              ),
+                            ),
+                            Flexible(
+                              child: Text(
+                                'Pack: ${product.category.isEmpty ? '-' : product.category}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xFF58709E),
+                                  fontSize: 9.2,
+                                  height: 1,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            Text(
+                              'Stock: ${product.stock} pcs',
+                              style: TextStyle(
+                                color: product.stock > 0
+                                    ? const Color(0xFF16933C)
+                                    : const Color(0xFFE33C3C),
+                                fontSize: 9.7,
+                                height: 1,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Text(
+                              'Rate: ₹ ${product.price.toStringAsFixed(0)}',
+                              style: const TextStyle(
+                                color: Color(0xFF17356F),
+                                fontSize: 9.7,
+                                height: 1,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 7),
+                  if (!inCart)
+                    SizedBox(
+                      height: 34,
+                      child: OutlinedButton(
+                        onPressed: product.stock > 0
+                            ? () => _showCreateOrderProductSheet(product)
+                            : null,
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 14),
+                          side: BorderSide(
+                            color: product.stock > 0
+                                ? const Color(0xFF0865EA)
+                                : const Color(0xFFD7DEE8),
+                          ),
+                          foregroundColor: const Color(0xFF0865EA),
+                          disabledForegroundColor: const Color(0xFF8190A9),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                        ),
+                        child: Text(
+                          product.stock > 0 ? 'Add' : 'Out of Stock',
+                          style: const TextStyle(
+                            fontSize: 10.3,
+                            height: 1,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                    )
+                  else
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          height: 32,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF1F6FC),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: const Color(0xFFDCE5F0),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              InkWell(
+                                onTap: () => updateCartQuantity(
+                                  product.id,
+                                  cartItem.quantity - 1,
+                                ),
+                                child: const SizedBox(
+                                  width: 29,
+                                  height: 30,
+                                  child: Icon(
+                                    Icons.remove_rounded,
+                                    size: 16,
+                                    color: Color(0xFF0865EA),
+                                  ),
+                                ),
+                              ),
+                              Container(
+                                width: 38,
+                                height: 30,
+                                alignment: Alignment.center,
+                                decoration: const BoxDecoration(
+                                  color: Colors.white,
+                                  border: Border.symmetric(
+                                    vertical: BorderSide(
+                                      color: Color(0xFFDCE5F0),
+                                    ),
+                                  ),
+                                ),
+                                child: Text(
+                                  '${cartItem.quantity}',
+                                  style: const TextStyle(
+                                    color: Color(0xFF17356F),
+                                    fontSize: 10.8,
+                                    height: 1,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                              InkWell(
+                                onTap: () => updateCartQuantity(
+                                  product.id,
+                                  cartItem.quantity + 1,
+                                ),
+                                child: const SizedBox(
+                                  width: 29,
+                                  height: 30,
+                                  child: Icon(
+                                    Icons.add_rounded,
+                                    size: 16,
+                                    color: Color(0xFF0865EA),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.only(left: 2),
+                          constraints: const BoxConstraints(
+                            minWidth: 27,
+                            minHeight: 30,
+                          ),
+                          onPressed: () => removeFromCart(product.id),
+                          icon: const Icon(
+                            Icons.delete_outline_rounded,
+                            size: 17,
+                            color: Color(0xFF657A9E),
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            );
+          }),
+        const SizedBox(height: 5),
+        Container(
+          height: 46,
+          padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border.all(color: const Color(0xFFDCE6F3)),
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x080F2A52),
+                blurRadius: 8,
+                offset: Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              const Icon(
+                Icons.shopping_cart_outlined,
+                color: Color(0xFF0A61E8),
+                size: 21,
+              ),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  '$uniqueProductCount Items  |  ₹ ${cartTotal.toStringAsFixed(0)}',
+                  style: const TextStyle(
+                    color: Color(0xFF17356F),
+                    fontSize: 11.4,
+                    height: 1,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ),
+              SizedBox(
+                height: 36,
+                child: ElevatedButton(
+                  onPressed: _cart.isEmpty
+                      ? null
+                      : () => setState(() => _orderStep = 3),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF075FE4),
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: const Color(0xFFBFCBDD),
+                    disabledForegroundColor: Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(horizontal: 15),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Next',
+                        style: TextStyle(
+                          fontSize: 10.4,
+                          height: 1,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      SizedBox(width: 7),
+                      Icon(Icons.arrow_forward_rounded, size: 17),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLegacyProductSelectionStepWithScheme() {
     final Map<String, TextEditingController> quantityControllers = {};
     final Map<String, TextEditingController> rateControllers = {};
     final Map<String, TextEditingController> schemeControllers = {};
@@ -21643,9 +23889,763 @@ Thank you.
             const SizedBox(width: 12),
             Expanded(
               child: ElevatedButton(
-                onPressed: submitOrder,
-                style: ElevatedButton.styleFrom(backgroundColor: accentTeal),
-                child: const Text('Submit ✅'),
+                onPressed: () => setState(() => _orderStep = 4),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF075FE4),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Next: Confirm  →'),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSalesmanOrderReviewStep() {
+    if (_selectedCustomerId == null) return const SizedBox.shrink();
+
+    final customer = _customers.firstWhere(
+      (item) => item.id == _selectedCustomerId,
+    );
+
+    final grossTotal = _cart.values.fold<double>(
+      0,
+      (sum, item) => sum + item.grossAmt,
+    );
+    final discountTotal = _cart.values.fold<double>(
+      0,
+      (sum, item) => sum + item.schAmt,
+    );
+
+    Widget summaryRow(
+      String label,
+      String value, {
+      Color? color,
+      bool bold = false,
+    }) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 1.6),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: const Color(0xFF58709E),
+                  fontSize: bold ? 11.2 : 9.8,
+                  height: 1.05,
+                  fontWeight: bold ? FontWeight.w900 : FontWeight.w600,
+                ),
+              ),
+            ),
+            Text(
+              value,
+              style: TextStyle(
+                color: color ?? const Color(0xFF17356F),
+                fontSize: bold ? 16.5 : 10.2,
+                height: 1.05,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildSelectedCustomerCompactCard(customer),
+        const SizedBox(height: 8),
+        _orderCard(
+          padding: const EdgeInsets.fromLTRB(10, 9, 10, 8),
+          child: Column(
+            children: [
+              const Row(
+                children: [
+                  Expanded(
+                    flex: 34,
+                    child: Text(
+                      'Product',
+                      style: TextStyle(
+                        color: Color(0xFF536B98),
+                        fontSize: 9,
+                        height: 1,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    flex: 14,
+                    child: Text(
+                      'Rate',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Color(0xFF536B98),
+                        fontSize: 9,
+                        height: 1,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    flex: 14,
+                    child: Text(
+                      'Qty',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Color(0xFF536B98),
+                        fontSize: 9,
+                        height: 1,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    flex: 20,
+                    child: Text(
+                      'Amount',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(
+                        color: Color(0xFF536B98),
+                        fontSize: 9,
+                        height: 1,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const Divider(height: 12, color: Color(0xFFE5EBF3)),
+              ..._cart.values.map((item) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        flex: 34,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              item.productName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Color(0xFF17356F),
+                                fontSize: 10.1,
+                                height: 1.05,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                            if (item.schEnabled && item.schPer > 0) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                'Sch: ${item.schPer.toStringAsFixed(item.schPer % 1 == 0 ? 0 : 1)}%',
+                                style: const TextStyle(
+                                  color: Color(0xFF58709E),
+                                  fontSize: 8.5,
+                                  height: 1,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        flex: 14,
+                        child: Text(
+                          '₹ ${item.rate.toStringAsFixed(0)}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Color(0xFF17356F),
+                            fontSize: 9.3,
+                            height: 1.05,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        flex: 14,
+                        child: Text(
+                          '${item.quantity}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Color(0xFF17356F),
+                            fontSize: 9.4,
+                            height: 1.05,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        flex: 20,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              '₹ ${item.grossAmt.toStringAsFixed(0)}',
+                              style: const TextStyle(
+                                color: Color(0xFF17356F),
+                                fontSize: 9.3,
+                                height: 1,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            if (item.schAmt > 0) ...[
+                              const SizedBox(height: 2),
+                              Text(
+                                '- ₹ ${item.schAmt.toStringAsFixed(0)}',
+                                style: const TextStyle(
+                                  color: Color(0xFFD43F3F),
+                                  fontSize: 8.6,
+                                  height: 1,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 2),
+                            Text(
+                              '₹ ${item.netAmt.toStringAsFixed(0)}',
+                              style: const TextStyle(
+                                color: Color(0xFF17356F),
+                                fontSize: 9.7,
+                                height: 1,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+              const Divider(height: 12, color: Color(0xFFE5EBF3)),
+              SizedBox(
+                width: double.infinity,
+                height: 34,
+                child: OutlinedButton.icon(
+                  onPressed: () => setState(() => _orderStep = 2),
+                  icon: const Icon(Icons.add_rounded, size: 16),
+                  label: const Text(
+                    'Add More Products',
+                    style: TextStyle(
+                      fontSize: 9.9,
+                      height: 1,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(
+                      color: Color(0xFF0A65E7),
+                      width: 1,
+                    ),
+                    foregroundColor: const Color(0xFF0A65E7),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        _orderCard(
+          padding: const EdgeInsets.all(10),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 29,
+                    height: 29,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE4F8E8),
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: const Icon(
+                      Icons.receipt_long_rounded,
+                      color: Color(0xFF1E9A42),
+                      size: 18,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Order Summary',
+                      style: TextStyle(
+                        color: Color(0xFF17356F),
+                        fontSize: 11.2,
+                        height: 1,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              summaryRow('Total Items', '$uniqueProductCount'),
+              summaryRow('Total Qty (Main)', '$cartItemCount'),
+              summaryRow('Total Free Qty', '0'),
+              summaryRow(
+                'Gross Amount',
+                '₹ ${grossTotal.toStringAsFixed(0)}',
+              ),
+              summaryRow(
+                'Total Discount',
+                '- ₹ ${discountTotal.toStringAsFixed(0)}',
+                color: const Color(0xFFD43F3F),
+              ),
+              const Divider(height: 10, color: Color(0xFFE5EBF3)),
+              summaryRow(
+                'Net Amount',
+                '₹ ${cartTotal.toStringAsFixed(0)}',
+                color: const Color(0xFF168B39),
+                bold: true,
+              ),
+              const SizedBox(height: 7),
+              Row(
+                children: [
+                  const Text(
+                    'Payment',
+                    style: TextStyle(
+                      color: Color(0xFF58709E),
+                      fontSize: 9.6,
+                      height: 1,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const Spacer(),
+                  Container(
+                    height: 30,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF7FAFE),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: const Color(0xFFDCE5F1)),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<PaymentMode>(
+                        value: _selectedPaymentMode,
+                        isDense: true,
+                        iconSize: 18,
+                        style: const TextStyle(
+                          color: Color(0xFF17356F),
+                          fontSize: 9.8,
+                          fontWeight: FontWeight.w900,
+                        ),
+                        items: const [
+                          PaymentMode.credit,
+                          PaymentMode.cash,
+                          PaymentMode.upi,
+                          PaymentMode.cheque,
+                        ].map((mode) {
+                          return DropdownMenuItem<PaymentMode>(
+                            value: mode,
+                            child: Text(mode.name.toUpperCase()),
+                          );
+                        }).toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() => _selectedPaymentMode = value);
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 9),
+        Row(
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 42,
+                child: OutlinedButton(
+                  onPressed: () => setState(() => _orderStep = 2),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFFD8E2EF)),
+                    foregroundColor: const Color(0xFF21447F),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  child: const Text(
+                    'Back',
+                    style: TextStyle(
+                      fontSize: 10.4,
+                      height: 1,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 2,
+              child: SizedBox(
+                height: 42,
+                child: ElevatedButton(
+                  onPressed: () => setState(() => _orderStep = 4),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF075FE4),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Next: Confirm',
+                        style: TextStyle(
+                          fontSize: 10.4,
+                          height: 1,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      SizedBox(width: 8),
+                      Icon(Icons.arrow_forward_rounded, size: 17),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildConfirmOrderStep() {
+    if (_selectedCustomerId == null) return const SizedBox.shrink();
+
+    final customer = _customers.firstWhere(
+      (item) => item.id == _selectedCustomerId,
+    );
+
+    final gstStatus = _customerGstStatus(customer);
+    final gstNo = _customerGstNumber(customer);
+
+    Widget detailRow(String label, String value) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2.4),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 76,
+              child: Text(
+                label,
+                style: const TextStyle(
+                  color: Color(0xFF58709E),
+                  fontSize: 9.6,
+                  height: 1.15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                value,
+                style: const TextStyle(
+                  color: Color(0xFF17356F),
+                  fontSize: 9.9,
+                  height: 1.15,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 11),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF0FFF2),
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Column(
+            children: [
+              SizedBox(
+                height: 58,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Container(
+                      width: 54,
+                      height: 54,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE5F0FF),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: const Icon(
+                        Icons.receipt_long_rounded,
+                        size: 34,
+                        color: Color(0xFF3D71E6),
+                      ),
+                    ),
+                    const Positioned(
+                      left: 38,
+                      top: 8,
+                      child: Icon(
+                        Icons.auto_awesome_rounded,
+                        size: 10,
+                        color: Color(0xFFF5B400),
+                      ),
+                    ),
+                    const Positioned(
+                      right: 38,
+                      top: 5,
+                      child: Icon(
+                        Icons.star_rounded,
+                        size: 12,
+                        color: Color(0xFFF5B400),
+                      ),
+                    ),
+                    const Positioned(
+                      left: 53,
+                      bottom: 7,
+                      child: Icon(
+                        Icons.circle,
+                        size: 6,
+                        color: Color(0xFF16A34A),
+                      ),
+                    ),
+                    const Positioned(
+                      right: 54,
+                      bottom: 10,
+                      child: Icon(
+                        Icons.circle,
+                        size: 5,
+                        color: Color(0xFF7C3AED),
+                      ),
+                    ),
+                    Transform.translate(
+                      offset: const Offset(20, 18),
+                      child: Container(
+                        width: 25,
+                        height: 25,
+                        alignment: Alignment.center,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF18A546),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.check_rounded,
+                          color: Colors.white,
+                          size: 17,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Order Ready',
+                style: TextStyle(
+                  color: Color(0xFF16813A),
+                  fontSize: 16.8,
+                  height: 1,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const SizedBox(height: 3),
+              const Text(
+                'Please review the details before placing the order',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Color(0xFF3C8A50),
+                  fontSize: 9.3,
+                  height: 1,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        _orderCard(
+          padding: const EdgeInsets.fromLTRB(11, 8, 11, 8),
+          child: Column(
+            children: [
+              detailRow('Customer', customer.name.toUpperCase()),
+              detailRow('Code', customer.customerId ?? customer.id),
+              detailRow('Company', _orderCompanyLabel()),
+              detailRow(
+                'Route',
+                _selectedOrderRoute ?? customer.route ?? customer.area,
+              ),
+              detailRow('GST Status', gstStatus),
+              if (gstNo.isNotEmpty) detailRow('GST No', gstNo),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+          decoration: BoxDecoration(
+            color: const Color(0xFFEAFBEA),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: const Color(0xFFCDEFD1)),
+          ),
+          child: Row(
+            children: [
+              const Text(
+                'Net Amount',
+                style: TextStyle(
+                  color: Color(0xFF16813A),
+                  fontSize: 11.8,
+                  height: 1,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '₹ ${cartTotal.toStringAsFixed(0)}',
+                style: const TextStyle(
+                  color: Color(0xFF16813A),
+                  fontSize: 21,
+                  height: 1,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'Additional Notes (Optional)',
+          style: TextStyle(
+            color: Color(0xFF49669A),
+            fontSize: 9.6,
+            height: 1,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 5),
+        TextFormField(
+          initialValue: _orderNotes,
+          minLines: 2,
+          maxLines: 3,
+          onChanged: (value) => _orderNotes = value,
+          style: const TextStyle(
+            color: Color(0xFF17356F),
+            fontSize: 10.8,
+          ),
+          decoration: InputDecoration(
+            hintText: 'Enter any special instructions...',
+            hintStyle: const TextStyle(
+              color: Color(0xFF9AAAC4),
+              fontSize: 9.8,
+            ),
+            filled: true,
+            fillColor: Colors.white,
+            contentPadding: const EdgeInsets.all(10),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(7),
+              borderSide: const BorderSide(color: Color(0xFFD7E1F0)),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(7),
+              borderSide: const BorderSide(color: Color(0xFFD7E1F0)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(7),
+              borderSide: const BorderSide(
+                color: Color(0xFF0865EA),
+                width: 1.4,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: SizedBox(
+                height: 42,
+                child: OutlinedButton(
+                  onPressed: _isLoading
+                      ? null
+                      : () => setState(() => _orderStep = 3),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFF0865EA)),
+                    foregroundColor: const Color(0xFF0865EA),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                  child: const Text(
+                    'Back',
+                    style: TextStyle(
+                      fontSize: 10.4,
+                      height: 1,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 2,
+              child: SizedBox(
+                height: 42,
+                child: ElevatedButton.icon(
+                  onPressed: _isLoading ? null : submitOrder,
+                  icon: _isLoading
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(
+                          Icons.send_rounded,
+                          size: 17,
+                        ),
+                  label: Text(
+                    _isLoading ? 'Placing...' : 'Place Order',
+                    style: const TextStyle(
+                      fontSize: 10.4,
+                      height: 1,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF075FE4),
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: const Color(0xFFBFCBDD),
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                  ),
+                ),
               ),
             ),
           ],
@@ -22865,9 +25865,7 @@ Thank you.
         .whereType<Map>()
         .map((bill) => Map<String, dynamic>.from(bill))
         .where((bill) {
-          final series = _deliveryText(bill, const [
-            'LoadSeries',
-          ]);
+          final series = _deliveryText(bill, const ['LoadSeries']);
           final loadNo = _deliveryText(bill, const ['LoadNo']);
           if (_activeLoadSeries != null &&
               series.toLowerCase() != _activeLoadSeries!.toLowerCase()) {
@@ -22888,15 +25886,21 @@ Thank you.
     if (bills.isEmpty) return bills;
     final mode = (bills.first['groupingMode'] ?? 'none').toString();
     String groupingValue(Map<String, dynamic> bill) {
-      final company = (bill['CompanyName'] ?? bill['CompanyId'] ?? '').toString();
+      final company = (bill['CompanyName'] ?? bill['CompanyId'] ?? '')
+          .toString();
       final route = (bill['RouteName'] ?? bill['RouteId'] ?? '').toString();
       if (mode == 'company') return company;
       if (mode == 'route') return route;
       if (mode == 'company_route') return '$company|$route';
       return '';
     }
+
     if (mode != 'none') {
-      bills.sort((a, b) => groupingValue(a).toLowerCase().compareTo(groupingValue(b).toLowerCase()));
+      bills.sort(
+        (a, b) => groupingValue(
+          a,
+        ).toLowerCase().compareTo(groupingValue(b).toLowerCase()),
+      );
     }
     return bills;
   }
@@ -23080,7 +26084,9 @@ Thank you.
                           );
                           if (startError != null) {
                             if (dialogContext.mounted) {
-                              setDialogState(() => validationMessage = startError);
+                              setDialogState(
+                                () => validationMessage = startError,
+                              );
                             }
                             return;
                           }
@@ -23135,9 +26141,9 @@ Thank you.
         totalDistance += _routeDistanceKm(route[i - 1], route[i]);
       }
     }
-    final estimatedMinutes = _deliveryRoadDurationMinutes ?? (route.isEmpty
-        ? 0
-        : math.max(15, (totalDistance / 25 * 60).round()));
+    final estimatedMinutes =
+        _deliveryRoadDurationMinutes ??
+        (route.isEmpty ? 0 : math.max(15, (totalDistance / 25 * 60).round()));
 
     return ColoredBox(
       color: const Color(0xFFF4F7FB),
@@ -24587,7 +27593,9 @@ Thank you.
   Future<Position> _requestSalesmanLocation() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      throw Exception('Turn on GPS/location services before starting delivery.');
+      throw Exception(
+        'Turn on GPS/location services before starting delivery.',
+      );
     }
 
     var permission = await Geolocator.checkPermission();
@@ -24611,331 +27619,309 @@ Thank you.
     );
   }
 
-Future<String?> _prepareDeliveryStart(
-  String series,
-  String loadNo,
-) async {
-  try {
-    final normalizedSeries = series.trim().toLowerCase();
-    final normalizedLoadNo = loadNo.trim();
+  Future<String?> _prepareDeliveryStart(String series, String loadNo) async {
+    try {
+      final normalizedSeries = series.trim().toLowerCase();
+      final normalizedLoadNo = loadNo.trim();
 
-    // ============================================================
-    // 1. FIRST FIND THE EXACT LOAD SELECTED BY THE SALESMAN
-    // ============================================================
-    final loadBills = _deliveryBills
-        .whereType<Map>()
-        .map((bill) => Map<String, dynamic>.from(bill))
-        .where((bill) {
-          final billSeries =
-              _deliveryText(bill, const ['LoadSeries']).trim().toLowerCase();
+      // ============================================================
+      // 1. FIRST FIND THE EXACT LOAD SELECTED BY THE SALESMAN
+      // ============================================================
+      final loadBills = _deliveryBills
+          .whereType<Map>()
+          .map((bill) => Map<String, dynamic>.from(bill))
+          .where((bill) {
+            final billSeries = _deliveryText(bill, const [
+              'LoadSeries',
+            ]).trim().toLowerCase();
 
-          final billLoadNo =
-              _deliveryText(bill, const ['LoadNo']).trim();
+            final billLoadNo = _deliveryText(bill, const ['LoadNo']).trim();
 
-          return billSeries == normalizedSeries &&
-              billLoadNo == normalizedLoadNo;
-        })
-        .toList();
+            return billSeries == normalizedSeries &&
+                billLoadNo == normalizedLoadNo;
+          })
+          .toList();
 
-    // Selected load does not exist / not assigned to salesman
-    if (loadBills.isEmpty) {
-      return series.trim().isEmpty
-          ? 'Load No. $normalizedLoadNo is not assigned to you.'
-          : 'Load ${series.trim()} / $normalizedLoadNo is not assigned to you.';
-    }
-
-    // ============================================================
-    // 2. GET ONLY PENDING DELIVERY BILLS
-    // ============================================================
-    final pendingBills = loadBills
-        .where((bill) => !_isDeliveryCompleted(bill))
-        .toList();
-
-    if (pendingBills.isEmpty) {
-      return 'All bills in this load are already delivered.';
-    }
-
-    // ============================================================
-    // 3. GET SALESMAN CURRENT LOCATION
-    // ============================================================
-    final position = await _requestSalesmanLocation();
-
-    if (!mounted) {
-      return 'Unable to start delivery.';
-    }
-
-    // ============================================================
-    // IMPORTANT FIX:
-    // ACTIVATE THE SELECTED LOAD BEFORE CALLING ROUTE API.
-    //
-    // Previously this happened only AFTER route API succeeded.
-    // Therefore if Google route API failed, second load never became
-    // active and previous load remained selected.
-    // ============================================================
-    setState(() {
-      _selectedLoadSeries = series;
-      _activeLoadSeries = series;
-      _activeLoadNumber = normalizedLoadNo;
-
-      _salesmanPosition = position;
-      _lastDeliveryRouteOrigin = position;
-
-      // Clear previous load route
-      _deliveryRoadRoute = const [];
-      _deliveryRoadDistanceKm = null;
-      _deliveryRoadDurationMinutes = null;
-    });
-
-    // ============================================================
-    // 4. ROUTE API SHOULD ONLY RECEIVE BILLS HAVING VALID LOCATION
-    // ============================================================
-    final routeBills = pendingBills
-        .where(_hasValidDeliveryLocation)
-        .toList();
-
-    // ============================================================
-    // 5. GOOGLE ROUTE IS OPTIONAL FOR STARTING THE LOAD
-    //
-    // If Google Routes API fails, the load MUST still open.
-    // Bill delivery/payment functionality is not dependent on it.
-    // ============================================================
-    if (routeBills.isNotEmpty) {
-      try {
-        await _updateDeliveryRoadRoute(
-          position,
-          routeBills,
-        );
-      } catch (routeError) {
-        debugPrint(
-          'Google route unavailable for '
-          '${series.isEmpty ? "(blank)" : series}/$normalizedLoadNo: '
-          '$routeError',
-        );
-
-        // Do NOT cancel load start because of Google route failure.
-        if (mounted) {
-          setState(() {
-            _deliveryRoadRoute = const [];
-            _deliveryRoadDistanceKm = null;
-            _deliveryRoadDurationMinutes = null;
-            _lastDeliveryRouteOrigin = position;
-          });
-        }
+      // Selected load does not exist / not assigned to salesman
+      if (loadBills.isEmpty) {
+        return series.trim().isEmpty
+            ? 'Load No. $normalizedLoadNo is not assigned to you.'
+            : 'Load ${series.trim()} / $normalizedLoadNo is not assigned to you.';
       }
-    } else {
-      debugPrint(
-        'Load ${series.isEmpty ? "(blank)" : series}/$normalizedLoadNo '
-        'started without route because no valid customer coordinates exist.',
-      );
+
+      // ============================================================
+      // 2. GET ONLY PENDING DELIVERY BILLS
+      // ============================================================
+      final pendingBills = loadBills
+          .where((bill) => !_isDeliveryCompleted(bill))
+          .toList();
+
+      if (pendingBills.isEmpty) {
+        return 'All bills in this load are already delivered.';
+      }
+
+      // ============================================================
+      // 3. GET SALESMAN CURRENT LOCATION
+      // ============================================================
+      final position = await _requestSalesmanLocation();
+
+      if (!mounted) {
+        return 'Unable to start delivery.';
+      }
+
+      // ============================================================
+      // IMPORTANT FIX:
+      // ACTIVATE THE SELECTED LOAD BEFORE CALLING ROUTE API.
+      //
+      // Previously this happened only AFTER route API succeeded.
+      // Therefore if Google route API failed, second load never became
+      // active and previous load remained selected.
+      // ============================================================
+      setState(() {
+        _selectedLoadSeries = series;
+        _activeLoadSeries = series;
+        _activeLoadNumber = normalizedLoadNo;
+
+        _salesmanPosition = position;
+        _lastDeliveryRouteOrigin = position;
+
+        // Clear previous load route
+        _deliveryRoadRoute = const [];
+        _deliveryRoadDistanceKm = null;
+        _deliveryRoadDurationMinutes = null;
+      });
+
+      // ============================================================
+      // 4. ROUTE API SHOULD ONLY RECEIVE BILLS HAVING VALID LOCATION
+      // ============================================================
+      final routeBills = pendingBills.where(_hasValidDeliveryLocation).toList();
+
+      // ============================================================
+      // 5. GOOGLE ROUTE IS OPTIONAL FOR STARTING THE LOAD
+      //
+      // If Google Routes API fails, the load MUST still open.
+      // Bill delivery/payment functionality is not dependent on it.
+      // ============================================================
+      if (routeBills.isNotEmpty) {
+        try {
+          await _updateDeliveryRoadRoute(position, routeBills);
+        } catch (routeError) {
+          debugPrint(
+            'Google route unavailable for '
+            '${series.isEmpty ? "(blank)" : series}/$normalizedLoadNo: '
+            '$routeError',
+          );
+
+          // Do NOT cancel load start because of Google route failure.
+          if (mounted) {
+            setState(() {
+              _deliveryRoadRoute = const [];
+              _deliveryRoadDistanceKm = null;
+              _deliveryRoadDurationMinutes = null;
+              _lastDeliveryRouteOrigin = position;
+            });
+          }
+        }
+      } else {
+        debugPrint(
+          'Load ${series.isEmpty ? "(blank)" : series}/$normalizedLoadNo '
+          'started without route because no valid customer coordinates exist.',
+        );
+      }
+
+      // ============================================================
+      // 6. START LIVE LOCATION TRACKING
+      // ============================================================
+      await _startDeliveryLocationTracking();
+
+      return null;
+    } catch (error) {
+      return error.toString().replaceFirst('Exception: ', '');
+    }
+  }
+
+  Future<void> _updateDeliveryRoadRoute(
+    Position position,
+    List<Map<String, dynamic>> pendingBills,
+  ) async {
+    if (pendingBills.isEmpty) return;
+
+    // ============================================================
+    // 1. KEEP YOUR EXISTING ROUTE OPTIMIZATION
+    // ============================================================
+    final orderedBills = _optimizedDeliveryRoute(pendingBills);
+
+    // ============================================================
+    // 2. REMOVE DUPLICATE CUSTOMER LOCATIONS
+    //
+    // Example:
+    // Same customer may have 3 bills.
+    // Google Route should receive that outlet only once.
+    //
+    // Bill records themselves are NOT removed anywhere.
+    // This affects route coordinates only.
+    // ============================================================
+    final routeStops = <LatLng>[];
+    final seenLocations = <String>{};
+
+    for (final bill in orderedBills) {
+      final latitude = _getBillLatitude(bill);
+      final longitude = _getBillLongitude(bill);
+
+      if (latitude == null || longitude == null) {
+        continue;
+      }
+
+      if (latitude < -90 ||
+          latitude > 90 ||
+          longitude < -180 ||
+          longitude > 180 ||
+          (latitude == 0 && longitude == 0)) {
+        continue;
+      }
+
+      // 6 decimals is accurate enough for identifying same outlet location.
+      final locationKey =
+          '${latitude.toStringAsFixed(6)}|'
+          '${longitude.toStringAsFixed(6)}';
+
+      if (seenLocations.add(locationKey)) {
+        routeStops.add(LatLng(latitude, longitude));
+      }
+    }
+
+    if (routeStops.isEmpty) {
+      return;
     }
 
     // ============================================================
-    // 6. START LIVE LOCATION TRACKING
+    // 3. GOOGLE ROUTES BACKEND ALLOWS MAXIMUM 25 STOPS PER REQUEST
+    //
+    // Therefore split large delivery loads into chunks.
+    // This prevents Route API error when a load contains many outlets.
     // ============================================================
-    await _startDeliveryLocationTracking();
+    const int maxStopsPerRequest = 25;
 
-    return null;
-  } catch (error) {
-    return error.toString().replaceFirst('Exception: ', '');
-  }
-}
+    final completeRoadRoute = <LatLng>[];
 
- Future<void> _updateDeliveryRoadRoute(
-  Position position,
-  List<Map<String, dynamic>> pendingBills,
-) async {
-  if (pendingBills.isEmpty) return;
+    double totalDistanceMeters = 0;
+    double totalDurationSeconds = 0;
 
-  // ============================================================
-  // 1. KEEP YOUR EXISTING ROUTE OPTIMIZATION
-  // ============================================================
-  final orderedBills = _optimizedDeliveryRoute(pendingBills);
+    double currentOriginLatitude = position.latitude;
+    double currentOriginLongitude = position.longitude;
 
-  // ============================================================
-  // 2. REMOVE DUPLICATE CUSTOMER LOCATIONS
-  //
-  // Example:
-  // Same customer may have 3 bills.
-  // Google Route should receive that outlet only once.
-  //
-  // Bill records themselves are NOT removed anywhere.
-  // This affects route coordinates only.
-  // ============================================================
-  final routeStops = <LatLng>[];
-  final seenLocations = <String>{};
-
-  for (final bill in orderedBills) {
-    final latitude = _getBillLatitude(bill);
-    final longitude = _getBillLongitude(bill);
-
-    if (latitude == null || longitude == null) {
-      continue;
-    }
-
-    if (latitude < -90 ||
-        latitude > 90 ||
-        longitude < -180 ||
-        longitude > 180 ||
-        (latitude == 0 && longitude == 0)) {
-      continue;
-    }
-
-    // 6 decimals is accurate enough for identifying same outlet location.
-    final locationKey =
-        '${latitude.toStringAsFixed(6)}|'
-        '${longitude.toStringAsFixed(6)}';
-
-    if (seenLocations.add(locationKey)) {
-      routeStops.add(
-        LatLng(latitude, longitude),
+    for (
+      int startIndex = 0;
+      startIndex < routeStops.length;
+      startIndex += maxStopsPerRequest
+    ) {
+      final int endIndex = math.min(
+        startIndex + maxStopsPerRequest,
+        routeStops.length,
       );
-    }
-  }
 
-  if (routeStops.isEmpty) {
-    return;
-  }
+      final chunk = routeStops.sublist(startIndex, endIndex);
 
-  // ============================================================
-  // 3. GOOGLE ROUTES BACKEND ALLOWS MAXIMUM 25 STOPS PER REQUEST
-  //
-  // Therefore split large delivery loads into chunks.
-  // This prevents Route API error when a load contains many outlets.
-  // ============================================================
-  const int maxStopsPerRequest = 25;
+      if (chunk.isEmpty) {
+        continue;
+      }
 
-  final completeRoadRoute = <LatLng>[];
+      final response = await ApiService.getDeliveryRoute(
+        originLatitude: currentOriginLatitude,
+        originLongitude: currentOriginLongitude,
+        stops: chunk,
+      );
 
-  double totalDistanceMeters = 0;
-  double totalDurationSeconds = 0;
+      // ------------------------------------------------------------
+      // Polyline
+      // ------------------------------------------------------------
+      final encoded = response['encodedPolyline']?.toString() ?? '';
 
-  double currentOriginLatitude = position.latitude;
-  double currentOriginLongitude = position.longitude;
+      if (encoded.isNotEmpty) {
+        final decodedRoute = decodeGooglePolyline(encoded);
 
-  for (
-    int startIndex = 0;
-    startIndex < routeStops.length;
-    startIndex += maxStopsPerRequest
-  ) {
-    final int endIndex = math.min(
-      startIndex + maxStopsPerRequest,
-      routeStops.length,
-    );
+        if (decodedRoute.isNotEmpty) {
+          if (completeRoadRoute.isNotEmpty) {
+            final previousPoint = completeRoadRoute.last;
+            final firstNewPoint = decodedRoute.first;
 
-    final chunk = routeStops.sublist(
-      startIndex,
-      endIndex,
-    );
+            final samePoint =
+                (previousPoint.latitude - firstNewPoint.latitude).abs() <
+                    0.000001 &&
+                (previousPoint.longitude - firstNewPoint.longitude).abs() <
+                    0.000001;
 
-    if (chunk.isEmpty) {
-      continue;
-    }
-
-    final response = await ApiService.getDeliveryRoute(
-      originLatitude: currentOriginLatitude,
-      originLongitude: currentOriginLongitude,
-      stops: chunk,
-    );
-
-    // ------------------------------------------------------------
-    // Polyline
-    // ------------------------------------------------------------
-    final encoded =
-        response['encodedPolyline']?.toString() ?? '';
-
-    if (encoded.isNotEmpty) {
-      final decodedRoute = decodeGooglePolyline(encoded);
-
-      if (decodedRoute.isNotEmpty) {
-        if (completeRoadRoute.isNotEmpty) {
-          final previousPoint = completeRoadRoute.last;
-          final firstNewPoint = decodedRoute.first;
-
-          final samePoint =
-              (previousPoint.latitude - firstNewPoint.latitude).abs() <
-                      0.000001 &&
-                  (previousPoint.longitude -
-                              firstNewPoint.longitude)
-                          .abs() <
-                      0.000001;
-
-          if (samePoint) {
-            completeRoadRoute.addAll(
-              decodedRoute.skip(1),
-            );
+            if (samePoint) {
+              completeRoadRoute.addAll(decodedRoute.skip(1));
+            } else {
+              completeRoadRoute.addAll(decodedRoute);
+            }
           } else {
             completeRoadRoute.addAll(decodedRoute);
           }
-        } else {
-          completeRoadRoute.addAll(decodedRoute);
         }
       }
+
+      // ------------------------------------------------------------
+      // Distance
+      // ------------------------------------------------------------
+      final distanceValue = response['distanceMeters'];
+
+      if (distanceValue is num) {
+        totalDistanceMeters += distanceValue.toDouble();
+      }
+
+      // ------------------------------------------------------------
+      // Duration
+      // ------------------------------------------------------------
+      final durationValue = response['durationSeconds'];
+
+      if (durationValue is num) {
+        totalDurationSeconds += durationValue.toDouble();
+      }
+
+      // Next chunk must start from previous chunk's final customer.
+      final lastStop = chunk.last;
+
+      currentOriginLatitude = lastStop.latitude;
+      currentOriginLongitude = lastStop.longitude;
     }
 
-    // ------------------------------------------------------------
-    // Distance
-    // ------------------------------------------------------------
-    final distanceValue = response['distanceMeters'];
+    if (!mounted) return;
 
-    if (distanceValue is num) {
-      totalDistanceMeters += distanceValue.toDouble();
-    }
+    // ============================================================
+    // 4. UPDATE ROUTE FOR CURRENT SELECTED LOAD
+    // ============================================================
+    setState(() {
+      _salesmanPosition = position;
+      _lastDeliveryRouteOrigin = position;
 
-    // ------------------------------------------------------------
-    // Duration
-    // ------------------------------------------------------------
-    final durationValue = response['durationSeconds'];
+      _deliveryRoadRoute = completeRoadRoute;
 
-    if (durationValue is num) {
-      totalDurationSeconds += durationValue.toDouble();
-    }
+      _deliveryRoadDistanceKm = totalDistanceMeters > 0
+          ? totalDistanceMeters / 1000
+          : null;
 
-    // Next chunk must start from previous chunk's final customer.
-    final lastStop = chunk.last;
-
-    currentOriginLatitude = lastStop.latitude;
-    currentOriginLongitude = lastStop.longitude;
+      _deliveryRoadDurationMinutes = totalDurationSeconds > 0
+          ? math.max(1, (totalDurationSeconds / 60).ceil())
+          : null;
+    });
   }
-
-  if (!mounted) return;
-
-  // ============================================================
-  // 4. UPDATE ROUTE FOR CURRENT SELECTED LOAD
-  // ============================================================
-  setState(() {
-    _salesmanPosition = position;
-    _lastDeliveryRouteOrigin = position;
-
-    _deliveryRoadRoute = completeRoadRoute;
-
-    _deliveryRoadDistanceKm =
-        totalDistanceMeters > 0
-            ? totalDistanceMeters / 1000
-            : null;
-
-    _deliveryRoadDurationMinutes =
-        totalDurationSeconds > 0
-            ? math.max(
-                1,
-                (totalDurationSeconds / 60).ceil(),
-              )
-            : null;
-  });
-}
 
   Future<void> _startDeliveryLocationTracking() async {
     await _deliveryPositionSubscription?.cancel();
-    _deliveryPositionSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 100,
-      ),
-    ).listen(
-      _handleDeliveryPositionUpdate,
-      onError: (Object error) {
-        debugPrint('Delivery location update failed: $error');
-      },
-    );
+    _deliveryPositionSubscription =
+        Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 100,
+          ),
+        ).listen(
+          _handleDeliveryPositionUpdate,
+          onError: (Object error) {
+            debugPrint('Delivery location update failed: $error');
+          },
+        );
   }
 
   void _handleDeliveryPositionUpdate(Position position) {
@@ -24964,8 +27950,7 @@ Future<String?> _prepareDeliveryStart(
       final pendingBills = _activeDeliveryBills()
           .where(
             (bill) =>
-                !_isDeliveryCompleted(bill) &&
-                _hasValidDeliveryLocation(bill),
+                !_isDeliveryCompleted(bill) && _hasValidDeliveryLocation(bill),
           )
           .toList();
       if (pendingBills.isEmpty) return;
@@ -25966,7 +28951,8 @@ Future<String?> _prepareDeliveryStart(
 
     final params = <String, String>{
       'api': '1',
-      'origin': '${_salesmanPosition!.latitude},${_salesmanPosition!.longitude}',
+      'origin':
+          '${_salesmanPosition!.latitude},${_salesmanPosition!.longitude}',
       'destination': coordinates.last,
       'travelmode': 'driving',
     };
@@ -25976,7 +28962,9 @@ Future<String?> _prepareDeliveryStart(
     final uri = Uri.https('www.google.com', '/maps/dir/', params);
     final opened = await launchUrl(
       uri,
-      mode: kIsWeb ? LaunchMode.platformDefault : LaunchMode.externalApplication,
+      mode: kIsWeb
+          ? LaunchMode.platformDefault
+          : LaunchMode.externalApplication,
     );
     if (!opened && mounted) {
       showSafeSnackBar(
@@ -26567,7 +29555,10 @@ Future<String?> _prepareDeliveryStart(
                 TextButton.icon(
                   onPressed: () => setState(() => _paymentsSubTab = 0),
                   icon: const Icon(Icons.history, size: 18, color: primaryBlue),
-                  label: const Text('History', style: TextStyle(color: primaryBlue)),
+                  label: const Text(
+                    'History',
+                    style: TextStyle(color: primaryBlue),
+                  ),
                 ),
               ],
             ),
@@ -26839,8 +29830,7 @@ class DeliveryGoogleRouteMap extends StatefulWidget {
   });
 
   @override
-  State<DeliveryGoogleRouteMap> createState() =>
-      _DeliveryGoogleRouteMapState();
+  State<DeliveryGoogleRouteMap> createState() => _DeliveryGoogleRouteMapState();
 }
 
 class _DeliveryGoogleRouteMapState extends State<DeliveryGoogleRouteMap> {
@@ -26903,7 +29893,8 @@ class _DeliveryGoogleRouteMapState extends State<DeliveryGoogleRouteMap> {
       for (final stop in widget.stops) {
         final shortName = _shortOutletName(stop.name);
         final cacheKey = '${stop.sequence}|$shortName';
-        final icon = _markerCache[cacheKey] ??
+        final icon =
+            _markerCache[cacheKey] ??
             await _createMarkerIcon(stop.sequence, shortName);
         _markerCache[cacheKey] = icon;
         markers.add(
@@ -26938,10 +29929,7 @@ class _DeliveryGoogleRouteMapState extends State<DeliveryGoogleRouteMap> {
     return '${clean.substring(0, 21)}…';
   }
 
-  Future<BitmapDescriptor> _createMarkerIcon(
-    int sequence,
-    String label,
-  ) async {
+  Future<BitmapDescriptor> _createMarkerIcon(int sequence, String label) async {
     const pixelRatio = 2.0;
     const height = 44.0;
     final labelPainter = TextPainter(
@@ -27004,9 +29992,9 @@ class _DeliveryGoogleRouteMapState extends State<DeliveryGoogleRouteMap> {
     canvas.drawPath(pin, Paint()..color = Colors.white);
 
     final image = await recorder.endRecording().toImage(
-          (width * pixelRatio).ceil(),
-          (height * pixelRatio).ceil(),
-        );
+      (width * pixelRatio).ceil(),
+      (height * pixelRatio).ceil(),
+    );
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     if (data == null) throw StateError('Could not create marker image');
     final bytes = Uint8List.view(data.buffer);
@@ -27067,7 +30055,10 @@ class _DeliveryGoogleRouteMapState extends State<DeliveryGoogleRouteMap> {
                 _markerError!,
                 style: const TextStyle(color: Color(0xFF667085)),
               ),
-              TextButton(onPressed: _prepareMarkers, child: const Text('Retry')),
+              TextButton(
+                onPressed: _prepareMarkers,
+                child: const Text('Retry'),
+              ),
             ],
           ),
         ),
@@ -27193,7 +30184,7 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _errorMessage;
   String? _successMessage;
 
-  static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
+   static const String _remoteBaseUrl = 'https://totalmobileapp.onrender.com/api';
  // static const String _remoteBaseUrl = 'http://localhost:3000/api';
 
   static String get apiUrl {
