@@ -109,13 +109,33 @@ async function connectToMongoDB() {
         console.log(`Database: ${DB_NAME}`);
         
         await collections.register.createIndex({ email: 1, role: 1 }, { unique: true });
+        // A customer can be mapped to more than one company/area. The old
+        // customer_id + distributor_id unique index collapsed those mappings.
+        const customerIndexes = await collections.customer.indexes();
+        if (customerIndexes.some(index => index.name === 'customer_id_1_distributor_id_1')) {
+            await collections.customer.dropIndex('customer_id_1_distributor_id_1');
+        }
         await collections.customer.createIndex(
-  { customer_id: 1, distributor_id: 1 },
-{ unique: true }
-);
+            { customer_company_key: 1, distributor_id: 1 },
+            {
+                unique: true,
+                partialFilterExpression: {
+                    customer_company_key: { $type: 'string' }
+                }
+            }
+        );
+        await collections.customer.createIndex({ customer_id: 1, distributor_id: 1 });
         await collections.customer.createIndex({ distributor_id: 1 });
-        await collections.product.createIndex({ sku: 1 }, { unique: true });
+        const productIndexes = await collections.product.indexes();
+        if (productIndexes.some(index => index.name === 'sku_1')) {
+            await collections.product.dropIndex('sku_1');
+        }
+        await collections.product.createIndex(
+            { sku: 1, distributorId: 1, sysCompCode: 1 },
+            { unique: true }
+        );
         await collections.product.createIndex({ distributorId: 1 });
+        await collections.product.createIndex({ distributorId: 1, sysCompCode: 1 });
         await collections.salesman.createIndex({ salesman_id: 1 }, { unique: true });
         await collections.salesman.createIndex({ distributor_id: 1 });
         await collections.salesman.createIndex({ email: 1 });
@@ -1010,6 +1030,7 @@ app.get('/api/collection-history/reconcile/:distributorId', async (req, res) => 
 app.post('/api/import/customers', excelUpload.single('file'), async (req, res) => {
     try {
         const { distributorId, createdBy, updateExisting } = req.body;
+        const shouldUpdate = String(updateExisting).trim().toLowerCase() === 'true';
         
         console.log('Import customers request received');
         console.log('Distributor ID:', distributorId);
@@ -1049,13 +1070,25 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
             try {
-               const customerCode = (row['Customer Code'] || row['customer_code'] || row['CustomerCode'] || row['Customer code'] || '').trim();
+               const customerCode = String(row['Customer Code'] || row['customer_code'] || row['CustomerCode'] || row['Customer code'] || '').trim();
                 const customerName = row['Customer Name'] || row['customer_name'] || row['CustomerName'] || row['Customer name'] || '';
                 const area = row['Area'] || row['area'] || '';
                 const route = row['Route'] || row['route'] || '';
                 const address = row['Address'] || row['address'] || '';
                 const phone = row['Phone'] || row['phone'] || row['Mobile'] || row['mobile'] || '';
                 const distributorIdFromExcel = row['Distributor id'] || row['distributor_id'] || row['DistributorId'] || row['Distributor Id'] || distributorId;
+                const sysAcCode = row['SysAcCode'] ?? row['sysAcCode'] ?? '';
+                const geoLatitude = row['GeoLatitude'] ?? row['geoLatitude'] ?? null;
+                const geoLongitude = row['GeoLongitude'] ?? row['geoLongitude'] ?? null;
+                const sysCompCode = row['SysCompCode'] ?? row['sysCompCode'] ?? '';
+                const companyCode = row['Company Code'] ?? row['companyCode'] ?? '';
+                const companyName = row['Company Name'] ?? row['companyName'] ?? '';
+                const areaCode = row['Area Code'] ?? row['areaCode'] ?? '';
+                const erpRouteCode = row['ERP Route Code'] ?? row['erpRouteCode'] ?? '';
+                const town = row['Town'] ?? row['town'] ?? '';
+                const gstType = row['GST Type'] ?? row['gstType'] ?? '';
+                const gstNo = row['GST No'] ?? row['gstNo'] ?? '';
+                const suppliedCustomerCompanyKey = row['Customer Company Key'] ?? row['customerCompanyKey'] ?? '';
                 
                 console.log(`Processing row ${i + 1}: Name=${customerName}, Area=${area}, Code=${customerCode}`);
                 
@@ -1079,21 +1112,51 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const trimmedAddress = address ? address.toString().trim() : null;
                 const trimmedPhone = phone ? phone.toString().trim() : '';
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
+                const trimmedSysCompCode = String(sysCompCode).trim();
+                const customerCompanyKey = String(suppliedCustomerCompanyKey).trim() ||
+                    [String(sysAcCode).trim(), trimmedSysCompCode, String(areaCode).trim()].filter(Boolean).join('_');
+                const customerLookup = customerCompanyKey
+                    ? { customer_company_key: customerCompanyKey, distributor_id: trimmedDistributorId }
+                    : { customer_id: customerCode, distributor_id: trimmedDistributorId };
+                const mappedFields = {
+                    SysAcCode: String(sysAcCode).trim(),
+                    sys_ac_code: String(sysAcCode).trim(),
+                    GeoLatitude: geoLatitude === null || geoLatitude === '' ? null : geoLatitude,
+                    GeoLongitude: geoLongitude === null || geoLongitude === '' ? null : geoLongitude,
+                    geo_latitude: geoLatitude === null || geoLatitude === '' ? null : geoLatitude,
+                    geo_longitude: geoLongitude === null || geoLongitude === '' ? null : geoLongitude,
+                    SysCompCode: trimmedSysCompCode,
+                    sys_comp_code: trimmedSysCompCode,
+                    sysCompCode: trimmedSysCompCode,
+                    'Company Code': String(companyCode).trim(),
+                    company_code: String(companyCode).trim(),
+                    companyCode: String(companyCode).trim(),
+                    'Company Name': String(companyName).trim(),
+                    company_name: String(companyName).trim(),
+                    companyName: String(companyName).trim(),
+                    'Area Code': String(areaCode).trim(),
+                    area_code: String(areaCode).trim(),
+                    'ERP Route Code': String(erpRouteCode).trim(),
+                    erp_route_code: String(erpRouteCode).trim(),
+                    town: String(town).trim(),
+                    'GST Type': String(gstType).trim(),
+                    gst_type: String(gstType).trim(),
+                    'GST No': String(gstNo).trim(),
+                    gst_no: String(gstNo).trim(),
+                    ...(customerCompanyKey ? {
+                        'Customer Company Key': customerCompanyKey,
+                        customer_company_key: customerCompanyKey
+                    } : {})
+                };
                 
-              const existingCustomer = await collections.customer.findOne({
-    customer_id: customerCode ? customerCode.toString().trim() : null,
-    distributor_id: trimmedDistributorId
-});
+              const existingCustomer = await collections.customer.findOne(customerLookup);
 
 if (existingCustomer) {
 
-    if (updateExisting === 'true') {
+    if (shouldUpdate) {
 
         const updateResult = await collections.customer.updateOne(
-           {
-    customer_id: customerCode ? customerCode.toString().trim() : null,
-    distributor_id: trimmedDistributorId
-  },
+           customerLookup,
   {
     $set: {
       name: trimmedCustomerName,
@@ -1101,6 +1164,7 @@ if (existingCustomer) {
       area: trimmedArea,
       route: trimmedRoute,
       address: trimmedAddress,
+      ...mappedFields,
       updated_at: new Date().toISOString(),
       updated_by: createdBy || 'import'
     }
@@ -1138,7 +1202,8 @@ if (existingCustomer) {
                     updated_at: new Date().toISOString(),
                     status: 'active',
                     created_by: createdBy || 'import',
-                    distributor_id: trimmedDistributorId
+                    distributor_id: trimmedDistributorId,
+                    ...mappedFields
                 };
                 
                 await collections.customer.insertOne(customer);
@@ -1157,8 +1222,19 @@ if (existingCustomer) {
         }
         
         console.log(`Import completed: ${importedCount} imported, ${updatedCount} updated, ${skippedCount} skipped`);
+
+        if (importedCount + updatedCount === 0 && skippedCount > 0) {
+            return res.status(422).json({
+                success: false,
+                message: `No customers were imported or updated. ${skippedCount} rows were skipped.`,
+                importedCount,
+                updatedCount,
+                skippedCount,
+                errors: errors.slice(0, 10)
+            });
+        }
         
-        res.json({
+        return res.json({
             success: true,
             message: `Imported ${importedCount} customers, updated ${updatedCount} customers successfully. Skipped ${skippedCount} entries.`,
             importedCount: importedCount,
@@ -1184,6 +1260,7 @@ if (existingCustomer) {
 app.post('/api/import/products', excelUpload.single('file'), async (req, res) => {
     try {
         const { distributorId, createdBy, updateExisting } = req.body;
+        const shouldUpdate = String(updateExisting).trim().toLowerCase() === 'true';
         
         console.log('Import products request received');
         console.log('Distributor ID:', distributorId);
@@ -1231,6 +1308,9 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 const stockQuantity = parseInt(row['Stock Quantity'] || row['stock_quantity'] || row['Stock'] || row['stock'] || 0);
                 const description = row['Description'] || row['description'] || '';
                 const distributorIdFromExcel = row['Distirbutor Id'] || row['distributor_id'] || row['DistributorId'] || row['Distributor Id'] || distributorId;
+                const sysCompCode = row['SysCompCode'] ?? row['sysCompCode'] ?? '';
+                const companyCode = row['Company Code'] ?? row['companyCode'] ?? '';
+                const companyName = row['Company Name'] ?? row['companyName'] ?? '';
                 
                 console.log(`Processing row ${i + 1}: Name=${productName}, Code=${productCode}, Price=${price}`);
                 
@@ -1262,16 +1342,26 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 const validMRP = isNaN(mrp) || mrp <= 0 ? price : mrp;
                 const validStock = isNaN(stockQuantity) ? 0 : stockQuantity;
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
+                const mappedCompanyFields = {
+                    SysCompCode: String(sysCompCode).trim(),
+                    sysCompCode: String(sysCompCode).trim(),
+                    sys_comp_code: String(sysCompCode).trim(),
+                    'Company Code': String(companyCode).trim(),
+                    companyCode: String(companyCode).trim(),
+                    company_code: String(companyCode).trim(),
+                    'Company Name': String(companyName).trim(),
+                    companyName: String(companyName).trim(),
+                    company_name: String(companyName).trim()
+                };
                 
-                const existingProduct = await collections.product.findOne({ 
-                    $or: [
-                        { productName: trimmedProductName, distributorId: trimmedDistributorId },
-                        { sku: trimmedProductCode }
-                    ]
+                const existingProduct = await collections.product.findOne({
+                    sku: trimmedProductCode,
+                    distributorId: trimmedDistributorId,
+                    sysCompCode: String(sysCompCode).trim()
                 });
                 
                 if (existingProduct) {
-                    if (updateExisting === 'true') {
+                    if (shouldUpdate) {
                         const updateResult = await collections.product.updateOne(
                             { _id: existingProduct._id },
                             {
@@ -1283,6 +1373,7 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                                     stock: validStock,
                                     stockQuantity: validStock,
                                     description: trimmedDescription,
+                                    ...mappedCompanyFields,
                                     updatedAt: new Date().toISOString(),
                                     updatedBy: createdBy || 'import'
                                 }
@@ -1311,6 +1402,7 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                     updatedAt: new Date().toISOString(),
                     createdBy: createdBy || 'import',
                     distributorId: trimmedDistributorId,
+                    ...mappedCompanyFields,
                     isActive: true,
                     images: [],
                     tags: []
@@ -1332,8 +1424,19 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
         }
         
         console.log(`Import completed: ${importedCount} imported, ${updatedCount} updated, ${skippedCount} skipped`);
+
+        if (importedCount + updatedCount === 0 && skippedCount > 0) {
+            return res.status(422).json({
+                success: false,
+                message: `No products were imported or updated. ${skippedCount} rows were skipped.`,
+                importedCount,
+                updatedCount,
+                skippedCount,
+                errors: errors.slice(0, 10)
+            });
+        }
         
-        res.json({
+        return res.json({
             success: true,
             message: `Imported ${importedCount} products, updated ${updatedCount} products successfully. Skipped ${skippedCount} entries.`,
             importedCount: importedCount,
