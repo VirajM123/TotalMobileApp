@@ -1089,6 +1089,13 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const gstType = row['GST Type'] ?? row['gstType'] ?? '';
                 const gstNo = row['GST No'] ?? row['gstNo'] ?? '';
                 const suppliedCustomerCompanyKey = row['Customer Company Key'] ?? row['customerCompanyKey'] ?? '';
+                let companies = [];
+                try {
+                    const rawCompanies = row['Companies'] ?? row['companies'] ?? '[]';
+                    companies = Array.isArray(rawCompanies) ? rawCompanies : JSON.parse(String(rawCompanies));
+                } catch (_) {
+                    companies = [];
+                }
                 
                 console.log(`Processing row ${i + 1}: Name=${customerName}, Area=${area}, Code=${customerCode}`);
                 
@@ -1115,25 +1122,23 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const trimmedSysCompCode = String(sysCompCode).trim();
                 const customerCompanyKey = String(suppliedCustomerCompanyKey).trim() ||
                     [String(sysAcCode).trim(), trimmedSysCompCode, String(areaCode).trim()].filter(Boolean).join('_');
-                const customerLookup = customerCompanyKey
-                    ? { customer_company_key: customerCompanyKey, distributor_id: trimmedDistributorId }
-                    : { customer_id: customerCode, distributor_id: trimmedDistributorId };
+                const customerLookup = { customer_id: customerCode, distributor_id: trimmedDistributorId };
+                const normalizedCompanies = (companies.length ? companies : [{
+                    sysCompCode: trimmedSysCompCode,
+                    companyCode: String(companyCode).trim(),
+                    companyName: String(companyName).trim(),
+                    areaCode: String(areaCode).trim(),
+                    area: trimmedArea,
+                    route: trimmedRoute,
+                    erpRouteCode: String(erpRouteCode).trim()
+                }]).filter(company => String(company.sysCompCode ?? company.companyCode ?? '').trim());
                 const mappedFields = {
-                    SysAcCode: String(sysAcCode).trim(),
-                    sys_ac_code: String(sysAcCode).trim(),
+                    sysAcCode: String(sysAcCode).trim(),
                     GeoLatitude: geoLatitude === null || geoLatitude === '' ? null : geoLatitude,
                     GeoLongitude: geoLongitude === null || geoLongitude === '' ? null : geoLongitude,
                     geo_latitude: geoLatitude === null || geoLatitude === '' ? null : geoLatitude,
                     geo_longitude: geoLongitude === null || geoLongitude === '' ? null : geoLongitude,
-                    SysCompCode: trimmedSysCompCode,
-                    sys_comp_code: trimmedSysCompCode,
-                    sysCompCode: trimmedSysCompCode,
-                    'Company Code': String(companyCode).trim(),
-                    company_code: String(companyCode).trim(),
-                    companyCode: String(companyCode).trim(),
-                    'Company Name': String(companyName).trim(),
-                    company_name: String(companyName).trim(),
-                    companyName: String(companyName).trim(),
+                    companies: normalizedCompanies,
                     'Area Code': String(areaCode).trim(),
                     area_code: String(areaCode).trim(),
                     'ERP Route Code': String(erpRouteCode).trim(),
@@ -1143,10 +1148,7 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                     gst_type: String(gstType).trim(),
                     'GST No': String(gstNo).trim(),
                     gst_no: String(gstNo).trim(),
-                    ...(customerCompanyKey ? {
-                        'Customer Company Key': customerCompanyKey,
-                        customer_company_key: customerCompanyKey
-                    } : {})
+                    customerCompanyKey: customerCompanyKey
                 };
                 
               const existingCustomer = await collections.customer.findOne(customerLookup);
@@ -1167,12 +1169,21 @@ if (existingCustomer) {
       ...mappedFields,
       updated_at: new Date().toISOString(),
       updated_by: createdBy || 'import'
+    },
+    $unset: {
+      SysAcCode: '', sys_ac_code: '', SysCompCode: '', sys_comp_code: '',
+      'Company Code': '', company_code: '', 'Company Name': '', company_name: '',
+      'Customer Company Key': '', customer_company_key: ''
     }
   },
   { upsert: true }
 );
 
         updatedCount++;
+        await collections.customer.deleteMany({
+            ...customerLookup,
+            _id: { $ne: existingCustomer._id }
+        });
         console.log(`Updated customer ${updatedCount}: ${trimmedCustomerName}`);
 
     } else {
@@ -1343,15 +1354,9 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 const validStock = isNaN(stockQuantity) ? 0 : stockQuantity;
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
                 const mappedCompanyFields = {
-                    SysCompCode: String(sysCompCode).trim(),
                     sysCompCode: String(sysCompCode).trim(),
-                    sys_comp_code: String(sysCompCode).trim(),
-                    'Company Code': String(companyCode).trim(),
                     companyCode: String(companyCode).trim(),
-                    company_code: String(companyCode).trim(),
-                    'Company Name': String(companyName).trim(),
-                    companyName: String(companyName).trim(),
-                    company_name: String(companyName).trim()
+                    companyName: String(companyName).trim()
                 };
                 
                 const existingProduct = await collections.product.findOne({
@@ -1376,6 +1381,11 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                                     ...mappedCompanyFields,
                                     updatedAt: new Date().toISOString(),
                                     updatedBy: createdBy || 'import'
+                                },
+                                $unset: {
+                                    SysCompCode: '', sys_comp_code: '',
+                                    'Company Code': '', company_code: '',
+                                    'Company Name': '', company_name: ''
                                 }
                             }
                         );
