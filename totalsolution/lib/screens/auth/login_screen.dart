@@ -598,6 +598,10 @@ class OrderItemModel {
   final double amount;
   final double? mrp;
   final int freeQty;
+  final double schPer;
+  final double schAmt;
+  final double grossAmt;
+  final double netAmt;
 
   OrderItemModel({
     required this.id,
@@ -609,6 +613,10 @@ class OrderItemModel {
     required this.amount,
     this.mrp,
     this.freeQty = 0,
+    this.schPer = 0,
+    this.schAmt = 0,
+    this.grossAmt = 0,
+    this.netAmt = 0,
   });
 }
 
@@ -2568,6 +2576,10 @@ class OrderService {
                     freeQty: (item['freeQty'] ?? item['free_qty'] ?? 0) is num
                         ? (item['freeQty'] ?? item['free_qty'] ?? 0).toInt()
                         : int.tryParse((item['freeQty'] ?? item['free_qty'] ?? '0').toString()) ?? 0,
+                    schPer: (item['schPer'] ?? 0).toDouble(),
+                    schAmt: (item['schAmt'] ?? 0).toDouble(),
+                    grossAmt: (item['grossAmt'] ?? 0).toDouble(),
+                    netAmt: (item['netAmt'] ?? item['amount'] ?? 0).toDouble(),
                   ),
                 )
                 .toList() ??
@@ -2677,6 +2689,10 @@ class OrderService {
                 'amount': item.amount,
                 'mrp': item.mrp != null && item.mrp! > 0 ? item.mrp : item.rate,
                 'freeQty': item.freeQty,
+                'schPer': item.schPer,
+                'schAmt': item.schAmt,
+                'grossAmt': item.grossAmt,
+                'netAmt': item.netAmt,
               },
             )
             .toList(),
@@ -2734,6 +2750,10 @@ class OrderService {
                 'amount': item.amount,
                 'mrp': item.mrp != null && item.mrp! > 0 ? item.mrp : item.rate,
                 'freeQty': item.freeQty,
+                'schPer': item.schPer,
+                'schAmt': item.schAmt,
+                'grossAmt': item.grossAmt,
+                'netAmt': item.netAmt,
               },
             )
             .toList(),
@@ -6608,7 +6628,9 @@ class _DistributorDashboardEnhancedState
           rate: item.rate,
           mrp: item.mrp ?? item.rate,
           stock: product.stock,
-          schEnabled: false,
+          schPer: item.schPer,
+          schEnabled: item.schPer > 0,
+          freeQty: item.freeQty,
         );
         _editCart[item.productId]!.calculate();
       }
@@ -6920,6 +6942,10 @@ class _DistributorDashboardEnhancedState
             amount: item.netAmt,
             mrp: item.mrp,
             freeQty: item.freeQty,
+            schPer: item.schPer,
+            schAmt: item.schAmt,
+            grossAmt: item.grossAmt,
+            netAmt: item.netAmt,
           );
         }).toList(),
         totalAmount: newTotalAmount,
@@ -8240,6 +8266,10 @@ class _DistributorDashboardEnhancedState
             amount: item.netAmt,
             mrp: item.mrp,
             freeQty: item.freeQty,
+            schPer: item.schPer,
+            schAmt: item.schAmt,
+            grossAmt: item.grossAmt,
+            netAmt: item.netAmt,
           );
         }).toList(),
         totalAmount: cartTotal,
@@ -16673,7 +16703,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
           rate: item.rate,
           mrp: item.mrp ?? item.rate,
           stock: product!.stock,
-          schEnabled: false,
+          schPer: item.schPer,
+          schEnabled: item.schPer > 0,
+          freeQty: item.freeQty,
         );
         _editCart[item.productId]!.calculate();
       }
@@ -17516,6 +17548,10 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             amount: item.netAmt,
             mrp: item.mrp,
             freeQty: item.freeQty,
+            schPer: item.schPer,
+            schAmt: item.schAmt,
+            grossAmt: item.grossAmt,
+            netAmt: item.netAmt,
           );
         }).toList(),
         totalAmount: newTotalAmount,
@@ -17656,6 +17692,10 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             amount: item.netAmt,
             mrp: item.mrp,
             freeQty: item.freeQty,
+            schPer: item.schPer,
+            schAmt: item.schAmt,
+            grossAmt: item.grossAmt,
+            netAmt: item.netAmt,
           );
         }).toList(),
         totalAmount: cartTotal,
