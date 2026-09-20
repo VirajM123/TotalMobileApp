@@ -14741,6 +14741,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   static const Color errorRed = Color(0xFFE53935);
   static const Color successGreen = Color(0xFF4CAF50);
   static const Color warningOrange = Color(0xFFFF9800);
+  static const double _deliveryCompletionRadiusMeters = 150;
 
   int _selectedIndex = 0;
   int _paymentsSubTab = 0;
@@ -15126,6 +15127,62 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     _loadData();
     _loadBankAndUpiLists();
     _loadCollectionHistory();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _ensureGpsReadyAfterLogin();
+    });
+  }
+
+  Future<void> _ensureGpsReadyAfterLogin() async {
+    if (!mounted) return;
+
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Turn on GPS'),
+          content: const Text(
+            'GPS must be enabled to verify your location when completing deliveries.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                await Geolocator.openLocationSettings();
+              },
+              child: const Text('Open Settings'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                if (await Geolocator.isLocationServiceEnabled()) {
+                  if (dialogContext.mounted) Navigator.pop(dialogContext);
+                  await _ensureGpsReadyAfterLogin();
+                } else if (mounted) {
+                  showSafeSnackBar(
+                    context,
+                    'GPS is still off. Turn it on and tap Retry.',
+                    backgroundColor: errorRed,
+                  );
+                }
+              },
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    try {
+      _salesmanPosition = await _requestSalesmanLocation();
+    } catch (error) {
+      if (!mounted) return;
+      showSafeSnackBar(
+        context,
+        error.toString().replaceFirst('Exception: ', ''),
+        backgroundColor: errorRed,
+      );
+    }
   }
 
   // ==================== ADD HELPER METHOD HERE ====================
@@ -21218,12 +21275,6 @@ Thank you.
     return customer.gstNo?.trim() ?? '';
   }
 
-  String _customerCreditLabel(CustomerModel customer) {
-    final value = customer.creditStatus?.trim().toLowerCase() ?? '';
-    if (value.contains('overdue')) return 'Overdue';
-    return 'Credit OK';
-  }
-
   Future<double> _orderCustomerOutstanding(CustomerModel customer) {
     return _orderOutstandingFutures.putIfAbsent(
       customer.id,
@@ -21255,84 +21306,54 @@ Thank you.
     );
   }
 
-  Widget _orderPill({
-    required String text,
-    required Color foreground,
-    required Color background,
-    EdgeInsetsGeometry padding =
-        const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-  }) {
-    return Container(
-      padding: padding,
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Text(
-        text,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: TextStyle(
-          color: foreground,
-          fontSize: 9.5,
-          height: 1,
-          fontWeight: FontWeight.w800,
-        ),
-      ),
-    );
-  }
-
   Widget _buildCustomerGstLine(CustomerModel customer) {
     final gstStatus = _customerGstStatus(customer);
     final gstNo = _customerGstNumber(customer);
 
-    return Row(
+    return Wrap(
+      spacing: 6,
+      runSpacing: 2,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        const Text(
-          'GST Status: ',
-          style: TextStyle(
+        Text.rich(
+          TextSpan(
+            children: [
+              const TextSpan(text: 'GST Status: '),
+              TextSpan(
+                text: gstStatus,
+                style: const TextStyle(
+                  color: Color(0xFF17356F),
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+          style: const TextStyle(
             color: Color(0xFF536B9D),
             fontSize: 9.5,
             fontWeight: FontWeight.w600,
           ),
         ),
-        Text(
-          gstStatus,
-          style: const TextStyle(
-            color: Color(0xFF17356F),
-            fontSize: 9.5,
-            fontWeight: FontWeight.w900,
-          ),
-        ),
-        if (gstNo.isNotEmpty) ...[
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 6),
-            child: Text(
-              '|',
-              style: TextStyle(color: Color(0xFF9AAAC4), fontSize: 10),
+        if (gstNo.isNotEmpty)
+          Text.rich(
+            TextSpan(
+              children: [
+                const TextSpan(text: 'GST No: '),
+                TextSpan(
+                  text: gstNo,
+                  style: const TextStyle(
+                    color: Color(0xFF17356F),
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
             ),
-          ),
-          const Text(
-            'GST No: ',
-            style: TextStyle(
+            style: const TextStyle(
               color: Color(0xFF536B9D),
               fontSize: 9.5,
               fontWeight: FontWeight.w600,
             ),
           ),
-          Expanded(
-            child: Text(
-              gstNo,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Color(0xFF17356F),
-                fontSize: 9.5,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-          ),
-        ],
       ],
     );
   }
@@ -21381,29 +21402,11 @@ Thank you.
                         ),
                       ),
                     ),
-                    const SizedBox(width: 4),
-                    Builder(
-                      builder: (context) {
-                        final creditLabel = _customerCreditLabel(customer);
-                        final isOverdue = creditLabel == 'Overdue';
-                        return _orderPill(
-                          text: creditLabel,
-                          foreground: isOverdue
-                              ? const Color(0xFFD64545)
-                              : const Color(0xFF16853B),
-                          background: isOverdue
-                              ? const Color(0xFFFFECEC)
-                              : const Color(0xFFE7F8E9),
-                        );
-                      },
-                    ),
                   ],
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'Code: ${customer.customerId ?? customer.id}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  'Address: ${(customer.address?.trim().isNotEmpty ?? false) ? customer.address!.trim() : '-'}',
                   style: const TextStyle(
                     color: Color(0xFF57709E),
                     fontSize: 10,
@@ -21814,14 +21817,13 @@ Thank you.
                 future: _orderCustomerOutstanding(customer),
                 builder: (context, snapshot) {
                   final outstanding = snapshot.data ?? 0.0;
-                  final creditLabel = _customerCreditLabel(customer);
-                  final isOverdue = creditLabel == 'Overdue';
 
                   return InkWell(
                     borderRadius: BorderRadius.circular(9),
-                    onTap: () => setState(
-                      () => _selectedCustomerId = customer.id,
-                    ),
+                    onTap: () => setState(() {
+                      _selectedCustomerId = customer.id;
+                      _orderStep = 2;
+                    }),
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 120),
                       constraints: const BoxConstraints(
@@ -21888,23 +21890,11 @@ Thank you.
                                         ),
                                       ),
                                     ),
-                                    const SizedBox(width: 4),
-                                    _orderPill(
-                                      text: creditLabel,
-                                      foreground: isOverdue
-                                          ? const Color(0xFFD64545)
-                                          : const Color(0xFF16853B),
-                                      background: isOverdue
-                                          ? const Color(0xFFFFECEC)
-                                          : const Color(0xFFE7F8E9),
-                                    ),
                                   ],
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
-                                  'Code: ${customer.customerId ?? customer.id}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                                  'Address: ${(customer.address?.trim().isNotEmpty ?? false) ? customer.address!.trim() : '-'}',
                                   style: const TextStyle(
                                     color: Color(0xFF58709E),
                                     fontSize: 9.4,
@@ -22049,21 +22039,42 @@ Thank you.
           topRight: Radius.circular(12),
         ),
       ),
-      child: SingleChildScrollView(
-        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-        padding: const EdgeInsets.fromLTRB(12, 7, 12, 112),
-        child: Column(
+      child: Stack(
+        children: [
+          SingleChildScrollView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.fromLTRB(12, 7, 12, 112),
+            child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Create Order',
-              style: TextStyle(
-                fontSize: 19,
-                height: 1.02,
-                fontWeight: FontWeight.w900,
-                color: Color(0xFF10245A),
-                letterSpacing: -0.25,
-              ),
+            Row(
+              children: [
+                if (_orderStep > 1)
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 30,
+                      minHeight: 30,
+                    ),
+                    onPressed: () => setState(() => _orderStep--),
+                    icon: const Icon(
+                      Icons.arrow_back_rounded,
+                      size: 21,
+                      color: Color(0xFF10245A),
+                    ),
+                  ),
+                const Text(
+                  'Create Order',
+                  style: TextStyle(
+                    fontSize: 19,
+                    height: 1.02,
+                    fontWeight: FontWeight.w900,
+                    color: Color(0xFF10245A),
+                    letterSpacing: -0.25,
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 3),
             Text(
@@ -22088,8 +22099,17 @@ Thank you.
             if (_orderStep == 2) _buildProductSelectionStepWithScheme(),
             if (_orderStep == 3) _buildSalesmanOrderReviewStep(),
             if (_orderStep == 4) _buildConfirmOrderStep(),
-          ],
-        ),
+              ],
+            ),
+          ),
+          if (_orderStep == 2)
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: _buildProductStepFooter(),
+            ),
+        ],
       ),
     );
   }
@@ -22106,6 +22126,83 @@ Thank you.
         _buildStepLine(3),
         _buildStepCircle(4, 'Confirm'),
       ],
+    );
+  }
+
+  Widget _buildProductStepFooter() {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        height: 46,
+        padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: const Color(0xFFDCE6F3)),
+          borderRadius: BorderRadius.circular(8),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x180F2A52),
+              blurRadius: 10,
+              offset: Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            const Icon(
+              Icons.shopping_cart_outlined,
+              color: Color(0xFF0A61E8),
+              size: 21,
+            ),
+            const SizedBox(width: 7),
+            Expanded(
+              child: Text(
+                '$uniqueProductCount Items  |  â‚¹ ${cartTotal.toStringAsFixed(0)}',
+                style: const TextStyle(
+                  color: Color(0xFF17356F),
+                  fontSize: 11.4,
+                  height: 1,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ),
+            SizedBox(
+              height: 36,
+              child: ElevatedButton(
+                onPressed: _cart.isEmpty
+                    ? null
+                    : () => setState(() => _orderStep = 3),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF075FE4),
+                  foregroundColor: Colors.white,
+                  disabledBackgroundColor: const Color(0xFFBFCBDD),
+                  disabledForegroundColor: Colors.white,
+                  elevation: 0,
+                  padding: const EdgeInsets.symmetric(horizontal: 15),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Next',
+                      style: TextStyle(
+                        fontSize: 10.4,
+                        height: 1,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                    SizedBox(width: 7),
+                    Icon(Icons.arrow_forward_rounded, size: 17),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -23103,7 +23200,8 @@ Thank you.
             );
           }),
         const SizedBox(height: 5),
-        Container(
+        if (_orderStep != 2)
+          Container(
           height: 46,
           padding: const EdgeInsets.fromLTRB(10, 4, 6, 4),
           decoration: BoxDecoration(
@@ -24060,8 +24158,23 @@ Thank you.
               ),
               const Divider(height: 12, color: Color(0xFFE5EBF3)),
               ..._cart.values.map((item) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
+                final productIndex = _products.indexWhere(
+                  (product) => product.id == item.productId,
+                );
+                final product = productIndex >= 0
+                    ? _products[productIndex]
+                    : null;
+
+                return InkWell(
+                  onTap: product == null
+                      ? null
+                      : () => _showCreateOrderProductSheet(product),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 3,
+                      vertical: 5,
+                    ),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -24070,16 +24183,31 @@ Thank you.
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              item.productName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Color(0xFF17356F),
-                                fontSize: 10.1,
-                                height: 1.05,
-                                fontWeight: FontWeight.w900,
-                              ),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    item.productName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Color(0xFF17356F),
+                                      fontSize: 10.1,
+                                      height: 1.05,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ),
+                                if (product != null)
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 3),
+                                    child: Icon(
+                                      Icons.edit_outlined,
+                                      size: 12,
+                                      color: Color(0xFF0A65E7),
+                                    ),
+                                  ),
+                              ],
                             ),
                             if (item.schEnabled && item.schPer > 0) ...[
                               const SizedBox(height: 2),
@@ -24162,6 +24290,7 @@ Thank you.
                         ),
                       ),
                     ],
+                  ),
                   ),
                 );
               }),
@@ -25756,6 +25885,53 @@ Thank you.
 
   Future<bool> _markDeliveryCompleted(Map<String, dynamic> bill) async {
     if (_isDeliveryCompleted(bill)) return true;
+
+    final storeLatitude = _getBillLatitude(bill);
+    final storeLongitude = _getBillLongitude(bill);
+    if (!_hasValidDeliveryLocation(bill) ||
+        storeLatitude == null ||
+        storeLongitude == null) {
+      showSafeSnackBar(
+        context,
+        'This store does not have a valid location. Delivery cannot be completed.',
+        backgroundColor: errorRed,
+      );
+      return false;
+    }
+
+    Position currentPosition;
+    try {
+      currentPosition = await _requestSalesmanLocation();
+      _salesmanPosition = currentPosition;
+    } catch (error) {
+      if (mounted) {
+        showSafeSnackBar(
+          context,
+          error.toString().replaceFirst('Exception: ', ''),
+          backgroundColor: errorRed,
+        );
+      }
+      return false;
+    }
+
+    final distanceMeters = Geolocator.distanceBetween(
+      currentPosition.latitude,
+      currentPosition.longitude,
+      storeLatitude,
+      storeLongitude,
+    );
+    if (distanceMeters > _deliveryCompletionRadiusMeters) {
+      if (mounted) {
+        showSafeSnackBar(
+          context,
+          'You are ${distanceMeters.toStringAsFixed(0)} m away from the store. '
+          'Move within ${_deliveryCompletionRadiusMeters.toStringAsFixed(0)} m to mark it delivered.',
+          backgroundColor: errorRed,
+        );
+      }
+      return false;
+    }
+
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -25787,6 +25963,10 @@ Thank you.
         'billSeries': _deliveryText(bill, const ['TrnSeries']),
         'billNo': _deliveryText(bill, const ['TrnNo']),
         'sysAcCode': _deliveryText(bill, const ['SysAcCode', 'customer_id']),
+        'deliveryLatitude': currentPosition.latitude,
+        'deliveryLongitude': currentPosition.longitude,
+        'deliveryAccuracy': currentPosition.accuracy,
+        'distanceFromStoreMeters': distanceMeters,
       });
       if (!mounted) return true;
       setState(() {
