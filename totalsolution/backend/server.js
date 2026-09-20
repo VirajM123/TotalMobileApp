@@ -361,7 +361,7 @@ async function processOrderItems(items) {
         const quantity = parseInt(item.quantity) || 0;
         const rate = parseFloat(item.rate) || parseFloat(item.price) || 0;
 // No rounding - keep as is
-        const amount = (quantity * rate) || item.amount || 0;
+        const amount = item.amount ?? (quantity * rate);
         
         processedItems.push({
             productId: item.productId,
@@ -371,6 +371,11 @@ async function processOrderItems(items) {
             rate: rate,
             amount: amount,
             mrp: mrpValue,
+            freeQty: parseInt(item.freeQty ?? item.free_qty) || 0,
+            schPer: parseFloat(item.schPer) || 0,
+            schAmt: parseFloat(item.schAmt) || 0,
+            grossAmt: parseFloat(item.grossAmt) || (quantity * rate),
+            netAmt: parseFloat(item.netAmt) || amount,
             price: rate, // For backward compatibility
             product_id: item.productId // For backward compatibility
         });
