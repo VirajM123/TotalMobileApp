@@ -9915,22 +9915,76 @@ app.post('/api/load-delivery/route', async (req, res) => {
 
 app.put('/api/load-delivery/delivery-status', async (req, res) => {
     try {
+        const DELIVERY_COMPLETION_RADIUS_METERS = 150;
         const distributorId = String(req.body?.distributorId ?? '').trim();
         const loadDocumentId = String(req.body?.loadDocumentId ?? '').trim();
         const trnSeries = String(req.body?.billSeries ?? '').trim();
         const trnNo = Number(req.body?.billNo);
         const sysAcCode = String(req.body?.sysAcCode ?? '').trim();
+        const deliveryLatitude = Number(req.body?.deliveryLatitude);
+        const deliveryLongitude = Number(req.body?.deliveryLongitude);
+        const deliveryAccuracy = Number(req.body?.deliveryAccuracy);
 
         if (
             !distributorId ||
             !ObjectId.isValid(loadDocumentId) ||
             !trnSeries ||
             !Number.isInteger(trnNo) ||
-            !sysAcCode
+            !sysAcCode ||
+            !Number.isFinite(deliveryLatitude) ||
+            deliveryLatitude < -90 ||
+            deliveryLatitude > 90 ||
+            !Number.isFinite(deliveryLongitude) ||
+            deliveryLongitude < -180 ||
+            deliveryLongitude > 180
         ) {
             return res.status(400).json({
                 success: false,
                 message: 'Valid load and bill details are required'
+            });
+        }
+
+        const load = await db.collection('Mas_Delivery').findOne({
+            _id: new ObjectId(loadDocumentId),
+            distributorId
+        });
+        const bill = load?.bills?.find((item) =>
+            String(item?.TrnSeries ?? '').trim() === trnSeries &&
+            Number(item?.TrnNo) === trnNo &&
+            String(item?.SysAcCode ?? '').trim() === sysAcCode
+        );
+        if (!bill) {
+            return res.status(404).json({ success: false, message: 'Load delivery bill not found' });
+        }
+
+        const storeLatitude = Number(
+            bill.GeoLatitude ?? bill.geoLatitude ?? bill.latitude ?? bill.Latitude ?? bill.lat
+        );
+        const storeLongitude = Number(
+            bill.GeoLongitude ?? bill.geoLongitude ?? bill.longitude ?? bill.Longitude ?? bill.lng ?? bill.lon
+        );
+        if (
+            !Number.isFinite(storeLatitude) || storeLatitude < -90 || storeLatitude > 90 ||
+            !Number.isFinite(storeLongitude) || storeLongitude < -180 || storeLongitude > 180 ||
+            (storeLatitude === 0 && storeLongitude === 0)
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: 'This store does not have a valid location. Delivery cannot be completed.'
+            });
+        }
+
+        const toRadians = (degrees) => degrees * Math.PI / 180;
+        const latitudeDelta = toRadians(storeLatitude - deliveryLatitude);
+        const longitudeDelta = toRadians(storeLongitude - deliveryLongitude);
+        const a = Math.sin(latitudeDelta / 2) ** 2 +
+            Math.cos(toRadians(deliveryLatitude)) * Math.cos(toRadians(storeLatitude)) *
+            Math.sin(longitudeDelta / 2) ** 2;
+        const distanceFromStoreMeters = 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        if (distanceFromStoreMeters > DELIVERY_COMPLETION_RADIUS_METERS) {
+            return res.status(403).json({
+                success: false,
+                message: `You are ${Math.round(distanceFromStoreMeters)} m away from the store. Move within ${DELIVERY_COMPLETION_RADIUS_METERS} m to mark it delivered.`
             });
         }
 
@@ -9950,7 +10004,11 @@ app.put('/api/load-delivery/delivery-status', async (req, res) => {
             {
                 $set: {
                     'bills.$.delivery_status': 'completed',
-                    'bills.$.delivered_at': deliveredAt
+                    'bills.$.delivered_at': deliveredAt,
+                    'bills.$.delivery_latitude': deliveryLatitude,
+                    'bills.$.delivery_longitude': deliveryLongitude,
+                    'bills.$.delivery_accuracy': Number.isFinite(deliveryAccuracy) ? deliveryAccuracy : null,
+                    'bills.$.distance_from_store_meters': distanceFromStoreMeters
                 }
             }
         );
