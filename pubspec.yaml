@@ -4,7 +4,7 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-   sdk: '>=3.0.0 <4.0.0'
+  sdk: ^3.10.8
 
 dependencies:
   flutter:
@@ -33,25 +33,36 @@ dependencies:
   
   # For file picking (CSV/Excel import)
   csv: ^6.0.0
-  excel: ^2.1.0
-  permission_handler: ^11.3.0
   
-
-
   # For PDF generation and sharing
   pdf: ^3.10.8
-  share_plus: ^7.2.2
+  share_plus: ^12.0.2
   printing: ^5.12.0
-  path_provider: ^2.1.2
+  path_provider: ^2.1.5
   http: ^1.6.0
+    # Launch WhatsApp / Phone / Browser
+  url_launcher: ^6.3.1
+  excel: ^4.0.6
+  permission_handler: ^12.0.1
+  geolocator: ^14.0.2
+  google_maps_flutter: ^2.18.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "resources/icon.png"
+  remove_alpha_ios: true
 
 flutter:
   uses-material-design: true
   assets:
     - assets/images/TotalSolution.png
+    - assets/images/Map.png
+    - assets/images/LoginBack.png
 
