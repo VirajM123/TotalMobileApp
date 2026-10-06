@@ -126,6 +126,7 @@ async function connectToMongoDB() {
         );
         await collections.customer.createIndex({ customer_id: 1, distributor_id: 1 });
         await collections.customer.createIndex({ distributor_id: 1 });
+        await collections.customer.createIndex({ distributor_id: 1, created_at: -1 });
         const productIndexes = await collections.product.indexes();
         if (productIndexes.some(index => index.name === 'sku_1')) {
             await collections.product.dropIndex('sku_1');
@@ -136,6 +137,7 @@ async function connectToMongoDB() {
         );
         await collections.product.createIndex({ distributorId: 1 });
         await collections.product.createIndex({ distributorId: 1, sysCompCode: 1 });
+        await collections.product.createIndex({ distributorId: 1, isActive: 1, createdAt: -1 });
         await collections.salesman.createIndex({ salesman_id: 1 }, { unique: true });
         await collections.salesman.createIndex({ distributor_id: 1 });
         await collections.salesman.createIndex({ email: 1 });
@@ -148,6 +150,9 @@ async function connectToMongoDB() {
         await collections.order.createIndex({ customerName: 1 });
         await collections.order.createIndex({ order_date: 1 });
         await collections.order.createIndex({ status: 1 }); // Added index for status field
+        await collections.order.createIndex({ distributor_id: 1, createdAt: -1 });
+        await collections.order.createIndex({ salesman_id: 1, createdAt: -1 });
+        await collections.order.createIndex({ distributor_id: 1, salesman_id: 1, createdAt: -1 });
         await collections.payment.createIndex({ collection_id: 1 }, { unique: true });
         await collections.payment.createIndex({ customer_id: 1 });
         await collections.payment.createIndex({ 'collected_by.id': 1 });
@@ -158,6 +163,8 @@ async function connectToMongoDB() {
         await collections.collectionHistory.createIndex({ distributor_id: 1 });
         await collections.collectionHistory.createIndex({ salesman_id: 1 });
         await collections.collectionHistory.createIndex({ created_at: -1 });
+        await collections.collectionHistory.createIndex({ distributor_id: 1, collection_date: -1 });
+        await collections.collectionHistory.createIndex({ 'salesman_details.id': 1, collection_date: -1 });
 await collections.outstanding.createIndex({ distributor_id: 1 });
 await collections.outstanding.createIndex({ distributorId: 1 });
 await collections.outstanding.createIndex({ salesman_id: 1 });
@@ -346,9 +353,7 @@ async function getProductMrp(productId, sku) {
 
 // Helper function to process order items and ensure MRP is included
 async function processOrderItems(items) {
-    const processedItems = [];
-    
-    for (const item of items) {
+    return Promise.all(items.map(async item => {
         // Get MRP from database if not provided
         let mrpValue = item.mrp || 0;
         
@@ -363,7 +368,7 @@ async function processOrderItems(items) {
 // No rounding - keep as is
         const amount = item.amount ?? (quantity * rate);
         
-        processedItems.push({
+        return {
             productId: item.productId,
             productName: item.productName,
             sku: item.sku,
@@ -378,10 +383,8 @@ async function processOrderItems(items) {
             netAmt: parseFloat(item.netAmt) || amount,
             price: rate, // For backward compatibility
             product_id: item.productId // For backward compatibility
-        });
-    }
-    
-    return processedItems;
+        };
+    }));
 }
 
 // ==================== COLLECTION HISTORY APIs ====================
@@ -2588,27 +2591,20 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
         const distributorId = salesman.distributor_id;
         console.log(`Salesman ${salesmanId} belongs to distributor: ${distributorId}`);
         
-        const salesmanDetails = await collections.salesman.findOne({ salesman_id: salesmanId });
+        const [salesmanDetails, customers, products, orders, collectionHistory,
+            payments, collectionTotal] = await Promise.all([
+            collections.salesman.findOne({ salesman_id: salesmanId }, { projection: { name: 1 } }),
+            collections.customer.find({ distributor_id: distributorId }).sort({ created_at: -1 }).toArray(),
+            collections.product.find({ distributorId, isActive: true }).sort({ createdAt: -1 }).toArray(),
+            collections.order.find({ salesman_id: salesmanId }).sort({ createdAt: -1 }).toArray(),
+            collections.collectionHistory.find({ 'salesman_details.id': salesmanId }).sort({ collection_date: -1 }).toArray(),
+            collections.payment.find({ 'salesman_details.id': salesmanId }).sort({ created_at: -1 }).toArray(),
+            collections.collectionHistory.aggregate([
+                { $match: { 'salesman_details.id': salesmanId } },
+                { $group: { _id: null, total: { $sum: '$amount_collected' } } }
+            ]).next()
+        ]);
         const salesmanName = salesmanDetails?.name || salesman.fullName || salesmanId;
-        
-        const customers = await collections.customer
-            .find({ distributor_id: distributorId })
-            .sort({ created_at: -1 })
-            .toArray();
-        
-        console.log(`Found ${customers.length} customers for distributor ${distributorId}`);
-        
-        const products = await collections.product
-            .find({ distributorId: distributorId, isActive: true })
-            .sort({ createdAt: -1 })
-            .toArray();
-        
-        console.log(`Found ${products.length} products for distributor ${distributorId}`);
-        
-        const orders = await collections.order
-            .find({ salesman_id: salesmanId })
-            .sort({ createdAt: -1 })
-            .toArray();
         
         const permissions = salesman.permissions || {
             canAddProduct: false,
@@ -2624,19 +2620,7 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
             canDeleteOrder: true
         };
         
-        const collectionHistory = await collections.collectionHistory
-            .find({ 'salesman_details.id': salesmanId })
-            .sort({ collection_date: -1 })
-            .toArray();
-        
-        console.log(`Found ${collectionHistory.length} collection history records for salesman ${salesmanId}`);
-        
-        const totalCollection = collectionHistory.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
-        
-        const payments = await collections.payment
-            .find({ 'salesman_details.id': salesmanId })
-            .sort({ created_at: -1 })
-            .toArray();
+        const totalCollection = collectionTotal?.total || 0;
         
         res.json({
             distributorId: distributorId,
@@ -2723,39 +2707,36 @@ app.post('/api/orders', async (req, res) => {
         console.log(`Order created: ${orderNumber} with ID: ${result.insertedId}`);
         console.log(`Order created by: ${orderData.created_by_type}, Distributor ID: ${distributorId}, Salesman ID: ${orderData.salesman_id || 'N/A'}, Customer ID: ${orderData.customerId}`);
         
-        if (orderData.items && Array.isArray(orderData.items) && orderData.items.length > 0) {
-            for (const item of orderData.items) {
+        if (Array.isArray(orderData.items) && orderData.items.length > 0) {
+            const stockUpdates = orderData.items.flatMap(item => {
+                const quantitySold = parseInt(item.quantity, 10) || parseInt(item.qty, 10) || 0;
+                if (quantitySold <= 0) return [];
+                let filter;
+                if (item.productId && ObjectId.isValid(item.productId)) {
+                    filter = { _id: new ObjectId(item.productId) };
+                } else if (item.sku) {
+                    filter = distributorId ? { sku: item.sku, distributorId } : { sku: item.sku };
+                } else if (item.product_id && ObjectId.isValid(item.product_id)) {
+                    filter = { _id: new ObjectId(item.product_id) };
+                } else {
+                    console.warn(`Product not found for stock update: ${item.productId || item.sku}`);
+                    return [];
+                }
+                // The pipeline calculates from the current value at update time,
+                // so concurrent orders cannot overwrite each other's deductions.
+                return [{ updateOne: {
+                    filter,
+                    update: [{ $set: {
+                        stock: { $max: [0, { $subtract: [{ $ifNull: ['$stock', 0] }, quantitySold] }] },
+                        updatedAt: new Date().toISOString()
+                    } }]
+                } }];
+            });
+            if (stockUpdates.length > 0) {
                 try {
-                    let product = null;
-                    if (item.productId && ObjectId.isValid(item.productId)) {
-                        product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
-                    } else if (item.sku) {
-                        product = await collections.product.findOne({ sku: item.sku });
-                    } else if (item.product_id) {
-                        product = await collections.product.findOne({ _id: new ObjectId(item.product_id) });
-                    }
-                    
-                    if (product) {
-                        const quantitySold = parseInt(item.quantity) || parseInt(item.qty) || 0;
-                        const currentStock = product.stock || 0;
-                        const newStock = currentStock - quantitySold;
-                        const finalStock = newStock < 0 ? 0 : newStock;
-                        
-                        await collections.product.updateOne(
-                            { _id: product._id },
-                            { 
-                                $set: { 
-                                    stock: finalStock, 
-                                    updatedAt: new Date().toISOString() 
-                                } 
-                            }
-                        );
-                        console.log(`Stock updated for product ${product.productName || product.name}: ${currentStock} -> ${finalStock} (Sold: ${quantitySold})`);
-                    } else {
-                        console.warn(`Product not found for stock update: ${item.productId || item.sku}`);
-                    }
+                    await collections.product.bulkWrite(stockUpdates, { ordered: false });
                 } catch (stockError) {
-                    console.error(`Error updating stock for product ${item.productId}:`, stockError);
+                    console.error(`Error updating stock for order ${orderNumber}:`, stockError);
                 }
             }
         }
@@ -2773,7 +2754,8 @@ app.post('/api/orders', async (req, res) => {
                     }
                 }
             }
-            await createOrderNotification(orderData, distributorId, orderData.salesman_id, salesmanName);
+            void createOrderNotification(orderData, distributorId, orderData.salesman_id, salesmanName)
+                .catch(error => console.error('Error creating order notification:', error));
         } else {
             console.log(`No notification created for order ${orderNumber} - created by distributor or no salesman associated`);
         }
@@ -2970,11 +2952,13 @@ app.delete('/api/orders/:orderId', async (req, res) => {
 app.get('/api/orders/salesman/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
-        
-        const orders = await collections.order
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = req.query.limit == null ? 0 : Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 100));
+        const cursor = collections.order
             .find({ salesman_id: salesmanId })
-            .sort({ createdAt: -1 })
-            .toArray();
+            .sort({ createdAt: -1, _id: -1 });
+        if (limit) cursor.skip((page - 1) * limit).limit(limit);
+        const orders = await cursor.toArray();
         res.json(orders);
     } catch (error) {
         console.error('Error fetching orders:', error);
@@ -3018,10 +3002,13 @@ app.get('/api/orders/distributor/:distributorId', async (req, res) => {
             }
         }
         
-        const orders = await collections.order
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const limit = req.query.limit == null ? 0 : Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 100));
+        const cursor = collections.order
             .find(query)
-            .sort({ createdAt: -1 })
-            .toArray();
+            .sort({ createdAt: -1, _id: -1 });
+        if (limit) cursor.skip((page - 1) * limit).limit(limit);
+        const orders = await cursor.toArray();
         res.json(orders);
     } catch (error) {
         console.error('Error fetching orders:', error);
@@ -3789,45 +3776,73 @@ app.get('/api/upi-types', (req, res) => {
 app.get('/api/dashboard/stats/:distributorId', async (req, res) => {
     try {
         const { distributorId } = req.params;
+        const todayStart = new Date();
+        todayStart.setUTCHours(0, 0, 0, 0);
         
-        const totalSalesmen = await collections.salesman.countDocuments({ distributor_id: distributorId });
-        
-        const totalCustomers = await collections.customer.countDocuments({ distributor_id: distributorId });
-        
-        const totalProducts = await collections.product.countDocuments({ distributorId: distributorId, isActive: true });
-        
-        const orders = await collections.order.find({ distributor_id: distributorId }).toArray();
-        const totalOrders = orders.length;
-        
-        const totalOrderValue = orders.reduce((sum, order) => sum + (order.grand_total || 0), 0);
-        
-        const collectionsData = await collections.collectionHistory.find({ distributor_id: distributorId }).toArray();
-        const totalCollected = collectionsData.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
-        const totalTransactions = collectionsData.length;
-        
-        const totalOutstanding = orders.reduce((sum, order) => sum + (order.dueAmount || 0), 0);
-        
-        const recentOrders = await collections.order
-            .find({ distributor_id: distributorId })
-            .sort({ createdAt: -1 })
-            .limit(10)
-            .toArray();
-        
-        const recentCollections = await collections.collectionHistory
-            .find({ distributor_id: distributorId })
-            .sort({ collection_date: -1 })
-            .limit(10)
-            .toArray();
-        
+        const orderGroups = [
+            { $match: { distributor_id: distributorId } },
+            { $facet: {
+                summary: [{ $group: {
+                    _id: null,
+                    count: { $sum: 1 },
+                    value: { $sum: '$grand_total' },
+                    paid: { $sum: '$paidAmount' },
+                    outstanding: { $sum: '$dueAmount' },
+                    delivered: { $sum: { $cond: [
+                        { $eq: ['$status', 'delivered'] }, '$grand_total', 0
+                    ] } },
+                    today: { $sum: { $cond: [
+                        { $gte: ['$createdAt', todayStart.toISOString()] }, 1, 0
+                    ] } }
+                } }],
+                bySalesman: [{ $group: {
+                    _id: '$salesman_id',
+                    count: { $sum: 1 },
+                    value: { $sum: '$grand_total' }
+                } }]
+            } }
+        ];
+        const collectionGroups = [
+            { $match: { distributor_id: distributorId } },
+            { $facet: {
+                summary: [{ $group: {
+                    _id: null,
+                    count: { $sum: 1 },
+                    value: { $sum: '$amount_collected' }
+                } }],
+                bySalesman: [{ $group: {
+                    _id: '$salesman_details.id',
+                    count: { $sum: 1 },
+                    value: { $sum: '$amount_collected' }
+                } }]
+            } }
+        ];
+        const [totalSalesmen, totalCustomers, totalProducts, orderStats, collectionStats,
+            recentOrders, recentCollections, salesmen] = await Promise.all([
+            collections.salesman.countDocuments({ distributor_id: distributorId }),
+            collections.customer.countDocuments({ distributor_id: distributorId }),
+            collections.product.countDocuments({ distributorId, isActive: true }),
+            collections.order.aggregate(orderGroups).next(),
+            collections.collectionHistory.aggregate(collectionGroups).next(),
+            collections.order.find({ distributor_id: distributorId }).sort({ createdAt: -1 }).limit(10).toArray(),
+            collections.collectionHistory.find({ distributor_id: distributorId }).sort({ collection_date: -1 }).limit(10).toArray(),
+            collections.salesman.find({ distributor_id: distributorId }, { projection: { salesman_id: 1, name: 1 } }).toArray()
+        ]);
+        const orderSummary = orderStats?.summary[0] || {};
+        const collectionSummary = collectionStats?.summary[0] || {};
+        const ordersBySalesman = new Map((orderStats?.bySalesman || []).map(row => [row._id, row]));
+        const collectionsBySalesman = new Map((collectionStats?.bySalesman || []).map(row => [row._id, row]));
+        const totalOrders = orderSummary.count || 0;
+        const totalOrderValue = orderSummary.value || 0;
+        const totalOutstanding = orderSummary.outstanding || 0;
+        const totalCollected = collectionSummary.value || 0;
+        const totalTransactions = collectionSummary.count || 0;
         const salesmanPerformance = [];
-        const salesmen = await collections.salesman.find({ distributor_id: distributorId }).toArray();
-        
         for (const salesman of salesmen) {
-            const salesmanOrders = orders.filter(o => o.salesman_id === salesman.salesman_id);
-            const salesmanCollections = collectionsData.filter(c => c.salesman_details?.id === salesman.salesman_id);
-            
-            const totalSales = salesmanOrders.reduce((sum, o) => sum + (o.grand_total || 0), 0);
-            const totalCollection = salesmanCollections.reduce((sum, c) => sum + (c.amount_collected || 0), 0);
+            const salesmanOrders = ordersBySalesman.get(salesman.salesman_id) || {};
+            const salesmanCollections = collectionsBySalesman.get(salesman.salesman_id) || {};
+            const totalSales = salesmanOrders.value || 0;
+            const totalCollection = salesmanCollections.value || 0;
             const collectionRatio = totalSales > 0 ? (totalCollection / totalSales) * 100 : 0;
             
             salesmanPerformance.push({
@@ -3836,8 +3851,8 @@ app.get('/api/dashboard/stats/:distributorId', async (req, res) => {
                 total_sales: totalSales,
                 total_collection: totalCollection,
                 collection_ratio: collectionRatio,
-                orders_count: salesmanOrders.length,
-                collections_count: salesmanCollections.length
+                orders_count: salesmanOrders.count || 0,
+                collections_count: salesmanCollections.count || 0
             });
         }
         
@@ -3850,6 +3865,9 @@ app.get('/api/dashboard/stats/:distributorId', async (req, res) => {
                 total_products: totalProducts,
                 total_orders: totalOrders,
                 total_order_value: totalOrderValue,
+                total_order_paid: orderSummary.paid || 0,
+                delivered_revenue: orderSummary.delivered || 0,
+                today_orders: orderSummary.today || 0,
                 total_collected: totalCollected,
                 total_transactions: totalTransactions,
                 total_outstanding: totalOutstanding
@@ -6825,6 +6843,19 @@ console.log('PAYMENT SOURCE CHECK:', {
             });
         }
 
+        if (
+          deliveryBill.last_payment_id ||
+          Number(deliveryBill.paid_amount ?? 0) > 0 ||
+          ['paid', 'partial'].includes(
+            String(deliveryBill.payment_status ?? '').toLowerCase()
+          )
+        ) {
+          return res.status(409).json({
+            success: false,
+            message: 'Payment has already been collected for this load bill'
+          });
+        }
+
         // ----------------------------------------------------------
         // MAS_DELIVERY BALANCE IS THE SOURCE OF TRUTH
         // ----------------------------------------------------------
@@ -7236,7 +7267,10 @@ console.log('PAYMENT SOURCE CHECK:', {
           // --------------------------------------------------------
 
           const guardedBillMatch = {
-            ...loadBillMatch
+            ...loadBillMatch,
+            last_payment_id: { $in: [null, ''] },
+            paid_amount: { $in: [null, 0] },
+            payment_status: { $nin: ['paid', 'partial'] }
           };
 
           // Protect against simultaneous collection on the same bill.
@@ -9827,9 +9861,14 @@ app.post('/api/load-delivery/route', async (req, res) => {
     try {
         const apiKey = String(process.env.GOOGLE_ROUTES_API_KEY ?? '').trim();
         if (!apiKey) {
-            return res.status(503).json({
-                success: false,
-                message: 'Google Routes API is not configured on the server'
+            // Road routing is optional; delivery bills can still be worked
+            // without a Google route when this deployment has no API key.
+            return res.json({
+                success: true,
+                routeAvailable: false,
+                encodedPolyline: '',
+                distanceMeters: 0,
+                durationSeconds: 0
             });
         }
 
