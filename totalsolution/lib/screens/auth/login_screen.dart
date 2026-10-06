@@ -347,6 +347,28 @@ class ProductModel {
   }
 }
 
+List<ProductModel> _productsAfterOrder(
+  List<ProductModel> products,
+  OrderModel order,
+) {
+  final quantities = <String, int>{};
+  for (final item in order.items) {
+    quantities.update(
+      item.productId,
+      (current) => current + item.quantity,
+      ifAbsent: () => item.quantity,
+    );
+  }
+  return products.map((product) {
+    final sold = quantities[product.id] ?? 0;
+    if (sold == 0) return product;
+    return ProductModel.fromMap({
+      ...product.toMap(),
+      'stock': (product.stock - sold).clamp(0, product.stock),
+    }, product.id);
+  }).toList();
+}
+
 class SalesmanModel {
   final String id;
   final String salesmanId;
@@ -807,12 +829,13 @@ class CartItemData {
 
 // ==================== API Service for backend communication ====================
 class ApiService {
-  static const String _remoteBaseUrl =
-      'https://totalmobileapp.onrender.com/api';
-  // static const String _remoteBaseUrl = 'http://localhost:3000/api';
-
+  // Override at build time with --dart-define=API_BASE_URL=http://HOST:3000/api.
+  static const String _remoteBaseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue: 'https://totalmobileapp.onrender.com/api',
+  );
   static String get apiUrl {
-    return _remoteBaseUrl; // ✅ Now uses the correct URL
+    return _remoteBaseUrl;
   }
 
   static Uri uploadedFileUri(String relativePath) {
@@ -1210,7 +1233,8 @@ class ApiService {
           bill['_deliveryLoadId'] = loadId;
           bill['Amt'] ??= bill['BillAmount'] ?? 0;
           bill['Amount'] ??= bill['BillAmount'] ?? 0;
-          bill['Bamt'] ??= bill['balance_amount'] ?? bill['BillAmount'] ?? 0;
+          bill['Bamt'] = bill['balance_amount'] ??
+              bill['Bamt'] ?? bill['BillAmount'] ?? 0;
           flattenedBills.add(bill);
         }
       } else {
@@ -1221,7 +1245,8 @@ class ApiService {
         load['_deliveryLoadId'] = loadId;
         load['Amt'] ??= load['BillAmount'] ?? 0;
         load['Amount'] ??= load['BillAmount'] ?? 0;
-        load['Bamt'] ??= load['BillAmount'] ?? 0;
+        load['Bamt'] = load['balance_amount'] ??
+            load['Bamt'] ?? load['BillAmount'] ?? 0;
         flattenedBills.add(load);
       }
     }
@@ -2677,7 +2702,7 @@ class OrderService {
     }
   }
 
-  Future<void> createOrder(
+  Future<OrderModel> createOrder(
     OrderModel order,
     String? currentDistributorId,
     String? currentSalesmanId, {
@@ -2746,7 +2771,31 @@ class OrderService {
 
       final response = await ApiService.createOrder(orderMap);
       print('Order created successfully: ${response['orderNumber']}');
-      _orders.add(order);
+      final savedOrder = OrderModel(
+        id: response['_id']?.toString() ?? order.id,
+        orderNumber: response['orderNumber']?.toString() ?? order.orderNumber,
+        customerId: order.customerId,
+        customerName: order.customerName,
+        customerPhone: order.customerPhone,
+        areaName: order.areaName,
+        routeName: order.routeName,
+        salesmanId: order.salesmanId,
+        salesmanName: order.salesmanName,
+        items: order.items,
+        totalAmount: order.totalAmount,
+        paidAmount: order.paidAmount,
+        dueAmount: order.dueAmount,
+        status: order.status,
+        orderType: order.orderType,
+        paymentMode: order.paymentMode,
+        scheduledDate: order.scheduledDate,
+        notes: order.notes,
+        internalNotes: order.internalNotes,
+        createdAt: order.createdAt,
+        timeline: order.timeline,
+      );
+      _orders.insert(0, savedOrder);
+      return savedOrder;
     } catch (e) {
       print('Error creating order: $e');
       rethrow;
@@ -5857,6 +5906,8 @@ class _DistributorDashboardEnhancedState
   List<Map<String, dynamic>> _adminDeliveryLoads = [];
   bool _isLoadingAdminLoads = false;
   bool _isLoading = true;
+  final Set<String> _loadedSections = {};
+  final Set<String> _loadingSections = {};
   int _unreadNotificationCount = 0;
 
   final SyncService _syncService = SyncService();
@@ -5950,6 +6001,7 @@ class _DistributorDashboardEnhancedState
   final Map<String, CartItemData> _editCart = {};
 
   Map<String, dynamic> _dashboardStats = {};
+  List<OrderModel> _recentDashboardOrders = [];
   List<Map<String, dynamic>> _salesmanPerformance = [];
 
   List<ProductModel> get filteredProducts {
@@ -7268,12 +7320,16 @@ class _DistributorDashboardEnhancedState
       );
 
       _loadUsersUnderDistributor();
-      _loadDashboardStats();
     }
 
-    _loadData();
+    _initializeDashboard();
     _loadBankAndUpiLists();
     _loadNotifications();
+  }
+
+  Future<void> _initializeDashboard() async {
+    await _loadDashboardStats();
+    if (mounted) setState(() => _isLoading = false);
   }
 
   Future<void> _loadDashboardStats() async {
@@ -7282,8 +7338,12 @@ class _DistributorDashboardEnhancedState
       final stats = await ApiService.getDashboardStats(
         _currentDistributor.distributorId!,
       );
+      if (!mounted) return;
       setState(() {
         _dashboardStats = stats;
+        _recentDashboardOrders = _orderService._parseOrdersFromResponse(
+          List<dynamic>.from(stats['recent_orders'] ?? []),
+        );
         _salesmanPerformance = List<Map<String, dynamic>>.from(
           stats['salesman_performance'] ?? [],
         );
@@ -7380,16 +7440,65 @@ class _DistributorDashboardEnhancedState
       _salesmanService.getSalesmen(),
     ]);
 
+    if (!mounted) return;
     setState(() {
       _customers = results[0] as List<CustomerModel>;
       _products = results[1] as List<ProductModel>;
       _orders = results[2] as List<OrderModel>;
       _salesmen = results[3] as List<SalesmanModel>;
       _draftOrders = _orderService.getDraftOrders();
+      _loadedSections.addAll(['customers', 'products', 'orders', 'salesmen']);
       _isLoading = false;
     });
 
     _loadDashboardStats();
+  }
+
+  Future<void> _loadSections(List<String> sections) async {
+    try {
+      final results = await Future.wait(sections.map((section) async {
+        switch (section) {
+          case 'customers':
+            return await _customerService.getCustomers();
+          case 'products':
+            return await _productService.getProducts();
+          case 'orders':
+            return await _orderService.getOrders();
+          case 'salesmen':
+            return await _salesmanService.getSalesmen();
+          default:
+            return null;
+        }
+      }));
+      if (!mounted) return;
+      setState(() {
+        for (var i = 0; i < sections.length; i++) {
+          switch (sections[i]) {
+            case 'customers':
+              _customers = results[i] as List<CustomerModel>;
+              break;
+            case 'products':
+              _products = results[i] as List<ProductModel>;
+              break;
+            case 'orders':
+              _orders = results[i] as List<OrderModel>;
+              break;
+            case 'salesmen':
+              _salesmen = results[i] as List<SalesmanModel>;
+              break;
+          }
+        }
+        _loadedSections.addAll(sections);
+        _loadingSections.removeAll(sections);
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadedSections.addAll(sections);
+        _loadingSections.removeAll(sections);
+      });
+      showSafeSnackBar(context, 'Unable to load section: $error', backgroundColor: errorRed);
+    }
   }
 
   Future<void> _loadAdminDeliveryLoads() async {
@@ -8318,30 +8427,25 @@ class _DistributorDashboardEnhancedState
         ],
       );
 
-      await _orderService.createOrder(
+      final savedOrder = await _orderService.createOrder(
         order,
         _currentDistributor.distributorId,
         null,
       );
 
-      for (var entry in _cart.entries) {
-        final productId = entry.key;
-        final quantity = entry.value.quantity;
-        await ApiService.updateProductStock(productId, quantity);
-      }
-
       if (mounted) {
+        setState(() {
+          _orders.insert(0, savedOrder);
+          _products = _productsAfterOrder(_products, savedOrder);
+          _selectedIndex = 0;
+        });
         showSafeSnackBar(
           context,
-          '✅ Order submitted successfully! Order ID: ${order.orderNumber}',
+          '✅ Order submitted successfully! Order ID: ${savedOrder.orderNumber}',
           backgroundColor: successGreen,
         );
         _clearCart();
-        await _loadData();
-
-        setState(() {
-          _selectedIndex = 0;
-        });
+        unawaited(_loadDashboardStats());
       }
     } catch (e) {
       if (mounted) {
@@ -10811,6 +10915,31 @@ class _DistributorDashboardEnhancedState
   }
 
   Widget _buildContent() {
+    final requiredSections = switch (_selectedIndex) {
+      1 => <String>['customers', 'products', 'orders', 'salesmen'],
+      2 => <String>['customers'],
+      3 => <String>['products'],
+      4 => <String>['salesmen'],
+      5 || 10 => <String>['orders'],
+      6 => <String>['customers', 'products', 'salesmen'],
+      7 => <String>['customers', 'orders'],
+      _ => <String>[],
+    };
+    final missing = requiredSections
+        .where((section) => !_loadedSections.contains(section))
+        .toList();
+    if (missing.isNotEmpty) {
+      final pending = missing
+          .where((section) => !_loadingSections.contains(section))
+          .toList();
+      if (pending.isNotEmpty) {
+        _loadingSections.addAll(pending);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_loadSections(pending));
+        });
+      }
+      return const Center(child: CircularProgressIndicator());
+    }
     switch (_selectedIndex) {
       case 0:
         return _buildDashboard();
@@ -10961,15 +11090,21 @@ class _DistributorDashboardEnhancedState
   }
 
   Widget _buildDashboard() {
-    final totalRevenue = _orders
+    final summary = Map<String, dynamic>.from(_dashboardStats['summary'] ?? {});
+    final totalRevenue = _loadedSections.contains('orders') ? _orders
         .where((o) => o.status == OrderStatus.delivered)
-        .fold<double>(0, (sum, o) => sum + o.totalAmount);
-    final todayOrders = _orderService.todayOrders;
-    final totalCollection = _orders.fold<double>(
+        .fold<double>(0, (sum, o) => sum + o.totalAmount)
+        : (summary['delivered_revenue'] as num? ?? 0).toDouble();
+    final todayOrders = _loadedSections.contains('orders')
+        ? _orderService.todayOrders
+        : (summary['today_orders'] as num? ?? 0).toInt();
+    final totalCollection = _loadedSections.contains('orders') ? _orders.fold<double>(
       0,
       (sum, o) => sum + o.paidAmount,
-    );
-    final totalPending = _orders.fold<double>(0, (sum, o) => sum + o.dueAmount);
+    ) : (summary['total_order_paid'] as num? ?? 0).toDouble();
+    final totalPending = _loadedSections.contains('orders')
+        ? _orders.fold<double>(0, (sum, o) => sum + o.dueAmount)
+        : (summary['total_outstanding'] as num? ?? 0).toDouble();
     final achievementPercentage = _monthlyTarget > 0
         ? (totalRevenue / _monthlyTarget * 100).clamp(0, 100)
         : 0.0;
@@ -11178,7 +11313,7 @@ class _DistributorDashboardEnhancedState
                 Expanded(
                   child: _buildQuickStatCard(
                     'Customers',
-                    '${_customers.length}',
+                     '${_loadedSections.contains('customers') ? _customers.length : summary['total_customers'] ?? 0}',
                     Icons.people,
                     cardPurple,
                   ),
@@ -11187,7 +11322,7 @@ class _DistributorDashboardEnhancedState
                 Expanded(
                   child: _buildQuickStatCard(
                     'Salesmen',
-                    '${_salesmen.length}',
+                     '${_loadedSections.contains('salesmen') ? _salesmen.length : summary['total_salesmen'] ?? 0}',
                     Icons.badge,
                     goldAccent,
                   ),
@@ -11342,7 +11477,8 @@ class _DistributorDashboardEnhancedState
   }
 
   Widget _buildRecentOrders() {
-    final recentOrders = _orders.take(5).toList();
+    final recentOrders = (_loadedSections.contains('orders')
+            ? _orders : _recentDashboardOrders).take(5).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -14908,6 +15044,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   String? _outstandingLoadError;
   int _outstandingLoadGeneration = 0;
   List<dynamic> _deliveryBills = [];
+  final Set<String> _pendingLoadPayments = {};
+  final Set<String> _paidLoadBills = {};
   bool _isLoadingDelivery = false;
   String? _deliveryLoadError;
   int _deliveryLoadGeneration = 0;
@@ -14919,6 +15057,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       TextEditingController();
   final TextEditingController _loadNumberController = TextEditingController();
   String _deliverySearchQuery = '';
+  String _deliverySequenceSearchQuery = '';
   String? _selectedLoadSeries;
   String? _activeLoadSeries;
   String? _activeLoadNumber;
@@ -15349,6 +15488,19 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   void _showOutstandingPaymentDialog(Map<String, dynamic> bill) {
+    if (bill['LoadNo'] != null &&
+        (_isLoadBillPaymentCollected(bill) ||
+            _pendingLoadPayments.contains(_loadPaymentKey(bill)) ||
+            _deliveryAmount(bill, const ['Bamt', 'balance']) <= 0)) {
+      showSafeSnackBar(
+        context,
+        _pendingLoadPayments.contains(_loadPaymentKey(bill))
+            ? 'Payment is being saved for this bill'
+            : 'Payment already collected for this bill',
+        backgroundColor: errorRed,
+      );
+      return;
+    }
     final balance = ((bill['Bamt'] ?? 0) as num).toDouble();
     final billAmount = ((bill['Amt'] ?? bill['Bamt'] ?? 0) as num).toDouble();
     final paidAmount = billAmount - balance < 0 ? 0.0 : billAmount - balance;
@@ -15410,40 +15562,6 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
               setDialogState(() {
                 balanceAfterPayment = balance - readAmount();
               });
-            }
-
-            Widget amountBox(String title, String value, Color color) {
-              return Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.04),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: color.withOpacity(0.12)),
-                  ),
-                  child: Column(
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade700,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        value,
-                        style: TextStyle(
-                          fontSize: 19,
-                          color: color,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
             }
 
             Widget modeButton(String mode, IconData icon) {
@@ -15562,134 +15680,35 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                         const SizedBox(height: 18),
 
                         Container(
+                          width: double.infinity,
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(18),
-                            border: Border.all(color: Colors.grey.shade200),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.05),
-                                blurRadius: 18,
-                                offset: const Offset(0, 8),
-                              ),
-                            ],
+                            color: const Color(0xFFF4F7FB),
+                            borderRadius: BorderRadius.circular(14),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(
-                                children: [
-                                  Container(
-                                    height: 56,
-                                    width: 56,
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFEEF4FF),
-                                      borderRadius: BorderRadius.circular(14),
-                                    ),
-                                    child: const Icon(
-                                      Icons.receipt_long,
-                                      color: Color(0xFF2563EB),
-                                      size: 30,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          billNo.toString(),
-                                          style: const TextStyle(
-                                            fontSize: 20,
-                                            fontWeight: FontWeight.w900,
-                                            color: Color(0xFF0B1F3A),
-                                          ),
-                                        ),
-                                        const SizedBox(height: 5),
-                                        Text(
-                                          'Customer Code: $customerCode',
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            color: Colors.grey.shade700,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 18),
-
-                              Row(
-                                children: [
-                                  amountBox(
-                                    'Total Amount',
-                                    '₹ ${billAmount.toStringAsFixed(0)}',
-                                    const Color(0xFF0B1F3A),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  amountBox(
-                                    'Total Paid',
-                                    '₹ ${paidAmount.toStringAsFixed(0)}',
-                                    const Color(0xFF059669),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  amountBox(
-                                    'Balance Due',
-                                    '₹ ${balance.toStringAsFixed(0)}',
-                                    const Color(0xFFDC2626),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 14),
-
-                              Container(
-                                padding: const EdgeInsets.all(14),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFFFF7ED),
-                                  borderRadius: BorderRadius.circular(14),
-                                  border: Border.all(
-                                    color: const Color(
-                                      0xFFF97316,
-                                    ).withOpacity(0.25),
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    const Icon(
-                                      Icons.account_balance_wallet,
-                                      color: Color(0xFFF97316),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    const Expanded(
-                                      child: Text(
-                                        'Outstanding Amount',
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.w900,
-                                          color: Color(0xFF0B1F3A),
-                                        ),
-                                      ),
-                                    ),
-                                    Text(
-                                      '₹ ${balance.toStringAsFixed(0)}',
-                                      style: const TextStyle(
-                                        color: Color(0xFFF97316),
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w900,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
+                              Text('Bill $billNo', style: const TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w700,
+                                color: Color(0xFF526077))),
+                              if (customerCode.isNotEmpty)
+                                Text('Customer $customerCode', style: const TextStyle(
+                                  fontSize: 13, color: Color(0xFF667085))),
+                              const SizedBox(height: 10),
+                              const Text('Amount due', style: TextStyle(
+                                fontSize: 14, color: Color(0xFF526077))),
+                              Text('₹ ${balance.toStringAsFixed(0)}',
+                                style: const TextStyle(
+                                  fontSize: 28, fontWeight: FontWeight.w900,
+                                  color: Color(0xFF0B1F3A))),
+                              Text('Bill total ₹ ${billAmount.toStringAsFixed(0)} • Paid ₹ ${paidAmount.toStringAsFixed(0)}',
+                                style: const TextStyle(
+                                  fontSize: 12, color: Color(0xFF667085))),
                             ],
                           ),
                         ),
-
                         const SizedBox(height: 18),
-
                         const Text(
                           'Amount to Collect *',
                           style: TextStyle(
@@ -16075,9 +16094,37 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                     return;
                                   }
 
+                                  var paymentSaved = false;
+                                  final isLoadPayment = bill['LoadNo'] != null;
+                                  final loadPaymentKey = isLoadPayment
+                                      ? _loadPaymentKey(bill)
+                                      : '';
+                                  if (isLoadPayment &&
+                                      (_pendingLoadPayments.contains(loadPaymentKey) ||
+                                          _isLoadBillPaymentCollected(bill))) {
+                                    showSafeSnackBar(
+                                      context,
+                                      'Payment already collected or being saved for this bill',
+                                      backgroundColor: errorRed,
+                                    );
+                                    return;
+                                  }
                                   try {
                                     Navigator.pop(context);
-                                    setState(() => _isLoading = true);
+                                    setState(() {
+                                      if (isLoadPayment) {
+                                        _pendingLoadPayments.add(loadPaymentKey);
+                                      } else {
+                                        _isLoading = true;
+                                      }
+                                    });
+                                    if (isLoadPayment) {
+                                      showSafeSnackBar(
+                                        this.context,
+                                        'Saving payment...',
+                                        backgroundColor: primaryBlue,
+                                      );
+                                    }
 
                                     // FIXED: Send all required fields including distributorId, salesmanId, billNo, sysAcCode
                                     // FIXED:
@@ -16148,6 +16195,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
 
                                       'remark': remarkController.text.trim(),
                                     }, paymentPhoto: paymentPhoto);
+                                    paymentSaved = true;
 
                                     final newBalance = balance - amount;
 
@@ -16156,6 +16204,23 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                       bill['payment_status'] = newBalance <= 0
                                           ? 'paid'
                                           : 'partial';
+                                      if (bill['LoadNo'] != null) {
+                                        bill['last_payment_id'] = 'saved';
+                                        _paidLoadBills.add(loadPaymentKey);
+                                        for (final deliveryBill in _deliveryBills) {
+                                          if (deliveryBill['_deliveryLoadId'] ==
+                                                  bill['_deliveryLoadId'] &&
+                                              _deliveryBillKey(deliveryBill) ==
+                                                  _deliveryBillKey(bill) &&
+                                              deliveryBill['SysAcCode'].toString() ==
+                                                  bill['SysAcCode'].toString()) {
+                                            deliveryBill['Bamt'] = bill['Bamt'];
+                                            deliveryBill['payment_status'] =
+                                                bill['payment_status'];
+                                            deliveryBill['last_payment_id'] = 'saved';
+                                          }
+                                        }
+                                      }
                                       if (newBalance <= 0) {
                                         _outstandingBills.removeWhere(
                                           (b) =>
@@ -16189,22 +16254,45 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                       }
                                     });
 
-                                    await _loadData();
-
-                                    showSafeSnackBar(
-                                      context,
-                                      'Payment collected successfully',
-                                      backgroundColor: successGreen,
-                                    );
+                                    if (mounted) {
+                                      if (isLoadPayment) {
+                                        ScaffoldMessenger.of(this.context)
+                                            .removeCurrentSnackBar();
+                                      }
+                                      showSafeSnackBar(
+                                        this.context,
+                                        'Payment collected successfully!',
+                                        backgroundColor: successGreen,
+                                      );
+                                    }
+                                    if (isLoadPayment) {
+                                      unawaited(_refreshLoadDelivery());
+                                      unawaited(_loadCollectionHistory());
+                                    } else {
+                                      await _loadData();
+                                    }
                                   } catch (e) {
-                                    showSafeSnackBar(
-                                      context,
-                                      'Payment failed: $e',
-                                      backgroundColor: errorRed,
-                                    );
+                                    if (!paymentSaved && mounted) {
+                                      if (isLoadPayment) {
+                                        ScaffoldMessenger.of(this.context)
+                                            .removeCurrentSnackBar();
+                                      }
+                                      showSafeSnackBar(
+                                        this.context,
+                                        'Payment failed: $e',
+                                        backgroundColor: errorRed,
+                                      );
+                                    }
                                   } finally {
-                                    if (mounted)
-                                      setState(() => _isLoading = false);
+                                    if (mounted) {
+                                      setState(() {
+                                        if (isLoadPayment) {
+                                          _pendingLoadPayments.remove(loadPaymentKey);
+                                        } else {
+                                          _isLoading = false;
+                                        }
+                                      });
+                                    }
                                   }
                                 },
                               ),
@@ -17923,7 +18011,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         ],
       );
 
-      await _orderService.createOrder(
+      final savedOrder = await _orderService.createOrder(
         order,
         _currentSalesman.distributorId,
         _currentSalesman.salesmanId ?? _currentSalesman.id,
@@ -17932,24 +18020,18 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         companyName: customer.companyName,
       );
 
-      for (var entry in _cart.entries) {
-        final productId = entry.key;
-        final quantity = entry.value.quantity;
-        await ApiService.updateProductStock(productId, quantity);
-      }
-
       if (mounted) {
+        setState(() {
+          _orders.insert(0, savedOrder);
+          _products = _productsAfterOrder(_products, savedOrder);
+          _selectedIndex = 0;
+        });
         showSafeSnackBar(
           context,
-          '✅ Order submitted successfully! Order ID: ${order.orderNumber}',
+          '✅ Order submitted successfully! Order ID: ${savedOrder.orderNumber}',
           backgroundColor: successGreen,
         );
         clearCart();
-        await _loadData();
-
-        setState(() {
-          _selectedIndex = 0;
-        });
       }
     } catch (e) {
       if (mounted) {
@@ -18288,7 +18370,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   Widget build(BuildContext context) {
     return Scaffold(
       key: const ValueKey('salesmanScaffold'),
-      backgroundColor: const Color(0xFFF5F7FA),
+      backgroundColor: const Color(0xFFF4F9FD),
       body: Stack(
         children: [
           Column(
@@ -18319,8 +18401,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   Widget _buildHeader() {
-    const headerBlue = Color(0xFF0A4A9D);
-    const headerBlueDark = Color(0xFF073B82);
+    const headerBlue = Color(0xFF0B4698);
+    const headerBlueDark = Color(0xFF0C4C9F);
 
     void closeHeaderSearch() {
       setState(() {
@@ -18360,7 +18442,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       width: double.infinity,
       decoration: const BoxDecoration(
         gradient: LinearGradient(
-          colors: [headerBlueDark, Color(0xFF0B64C8), headerBlue],
+          colors: [headerBlueDark, Color(0xFF176CDE), headerBlue],
           begin: Alignment.centerLeft,
           end: Alignment.centerRight,
         ),
@@ -20197,209 +20279,416 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     );
   }
 
-  Widget _buildDashboard() {
-    bool sameDay(DateTime a, DateTime b) =>
-        a.year == b.year && a.month == b.month && a.day == b.day;
-
-    final now = DateTime.now();
-    final todayStart = DateTime(now.year, now.month, now.day);
-    final yesterday = todayStart.subtract(const Duration(days: 1));
-
-    final todayOrders = _orders
-        .where((order) => sameDay(order.createdAt, now))
-        .toList();
-    final yesterdayOrders = _orders
-        .where((order) => sameDay(order.createdAt, yesterday))
-        .toList();
-
-    final weekStart = todayStart.subtract(Duration(days: now.weekday - 1));
-    final weekEnd = weekStart.add(const Duration(days: 7));
-    final weekEndInclusive = weekEnd.subtract(const Duration(days: 1));
-    final previousWeekStart = weekStart.subtract(const Duration(days: 7));
-
-    final weekOrders = _orders
-        .where(
-          (order) =>
-              !order.createdAt.isBefore(weekStart) &&
-              order.createdAt.isBefore(weekEnd),
-        )
-        .toList();
-    final previousWeekOrders = _orders
-        .where(
-          (order) =>
-              !order.createdAt.isBefore(previousWeekStart) &&
-              order.createdAt.isBefore(weekStart),
-        )
-        .toList();
-
-    final todayCollections = _collectionHistory
-        .where((item) => sameDay(item.collectionDate, now))
-        .toList();
-
-    double orderSales(Iterable<OrderModel> orders) => orders
-        .where((o) => o.status != OrderStatus.cancelled)
-        .fold<double>(0, (sum, o) => sum + o.totalAmount);
-    double orderPending(Iterable<OrderModel> orders) => orders
-        .where((o) => o.status != OrderStatus.cancelled)
-        .fold<double>(0, (sum, o) => sum + o.dueAmount);
-    double orderCollected(Iterable<OrderModel> orders) => orders
-        .where((o) => o.status != OrderStatus.cancelled)
-        .fold<double>(0, (sum, o) => sum + o.paidAmount);
-
-    final todaySales = orderSales(todayOrders);
-    final yesterdaySales = orderSales(yesterdayOrders);
-    final todayPending = orderPending(todayOrders);
-    final yesterdayPending = orderPending(yesterdayOrders);
-
-    final weeklySales = orderSales(weekOrders);
-    final previousWeeklySales = orderSales(previousWeekOrders);
-    final weeklyCollected = orderCollected(weekOrders);
-    final previousWeeklyCollected = orderCollected(previousWeekOrders);
-
-    final double recovery = weeklySales <= 0
-        ? 0.0
-        : (weeklyCollected / weeklySales * 100)
-              .clamp(0.0, 100.0)
-              .toDouble();
-    final double previousRecovery = previousWeeklySales <= 0
-        ? 0.0
-        : (previousWeeklyCollected / previousWeeklySales * 100)
-              .clamp(0.0, 100.0)
-              .toDouble();
-
-    final target =
-        double.tryParse(
-          (_permissions['target_amount'] ?? _permissions['sales_target'] ?? 0)
-              .toString(),
-        ) ??
-        0.0;
-
-    final orderDelta = _dashboardPercentDelta(
-      todayOrders.length.toDouble(),
-      yesterdayOrders.length.toDouble(),
+  // Visual layout for the salesman dashboard preview.
+  Widget _referenceSurface({required Widget child, EdgeInsets? padding}) {
+    return Container(
+      width: double.infinity,
+      padding: padding ?? const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFE0EBF7)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF1D4774).withOpacity(.07),
+            blurRadius: 14,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: child,
     );
-    final salesDelta = _dashboardPercentDelta(todaySales, yesterdaySales);
-    final pendingDelta = _dashboardPercentDelta(todayPending, yesterdayPending);
-    final weeklySalesDelta = _dashboardPercentDelta(
-      weeklySales,
-      previousWeeklySales,
-    );
-    final weeklyCollectionDelta = _dashboardPercentDelta(
-      weeklyCollected,
-      previousWeeklyCollected,
-    );
-    final weeklyOrdersDelta = _dashboardPercentDelta(
-      weekOrders.length.toDouble(),
-      previousWeekOrders.length.toDouble(),
-    );
-    final recoveryDelta = recovery - previousRecovery;
+  }
 
-    return RefreshIndicator(
-      color: const Color(0xFF0B64C8),
-      onRefresh: _loadData,
-      child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(12, 11, 12, 98),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildSalesmanDashboardHero(todaySales, target),
-            const SizedBox(height: 15),
-            _buildDashboardSectionHeader(
-              'Today Summary',
-              _dashboardDateLabel(now),
+  Widget _referenceIcon(IconData icon, Color color, {double size = 36}) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: color.withOpacity(.10),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Icon(icon, color: color, size: size * .55),
+    );
+  }
+
+  Widget _referenceTitle(String title, {String? action, VoidCallback? onTap}) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(1, 9, 1, 5),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Color(0xFF071F72),
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                height: 1.1,
+              ),
             ),
-            const SizedBox(height: 9),
-            Row(
+          ),
+          if (action != null)
+            InkWell(
+              onTap: onTap,
+              child: Row(
+                children: [
+                  Text(action, style: const TextStyle(
+                    color: Color(0xFF006BF0), fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  )),
+                  const SizedBox(width: 3),
+                  const Icon(Icons.chevron_right_rounded,
+                    color: Color(0xFF006BF0), size: 19),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _referenceAction(
+    String title, String subtitle, IconData icon, Color color,
+    VoidCallback onTap,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: _referenceSurface(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          child: Row(
+            children: [
+              _referenceIcon(icon, color, size: 38),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Color(0xFF071F72),
+                        fontSize: 14, fontWeight: FontWeight.w800, height: 1.1)),
+                    const SizedBox(height: 3),
+                    Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Color(0xFF52658F),
+                        fontSize: 11, height: 1.1)),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded,
+                color: Color(0xFF005DCE), size: 22),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _referenceMetric(
+    String label, String value, IconData icon, Color color, {
+    bool divider = true,
+    bool compact = false,
+  }) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 5),
+        decoration: BoxDecoration(
+          border: divider ? const Border(right: BorderSide(
+            color: Color(0xFFDCE6F2))) : null,
+        ),
+        child: Row(
+          children: [
+            _referenceIcon(icon, color, size: compact ? 27 : 32),
+            SizedBox(width: compact ? 4 : 6),
+            Expanded(child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: _buildDashboardMetricCard(
-                    'Orders',
-                    '${todayOrders.length}',
-                    Icons.shopping_bag_outlined,
-                    const Color(0xFF2374E8),
-                    delta: orderDelta,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _buildDashboardMetricCard(
-                    'Sales',
-                    _dashboardMoney(todaySales),
-                    Icons.currency_rupee_rounded,
-                    const Color(0xFF12A958),
-                    delta: salesDelta,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: _buildDashboardMetricCard(
-                    'Pending Dues',
-                    _dashboardMoney(todayPending),
-                    Icons.pending_actions_outlined,
-                    const Color(0xFFF29A16),
-                    delta: pendingDelta,
-                    invertTrend: true,
-                  ),
+                Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: TextStyle(color: const Color(0xFF52658F),
+                    fontSize: compact ? 7.5 : 9.5, height: 1)),
+                const SizedBox(height: 4),
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(value, style: TextStyle(
+                    color: const Color(0xFF071F72), fontSize: compact ? 14 : 16,
+                    fontWeight: FontWeight.w900, height: 1)),
                 ),
               ],
-            ),
-            const SizedBox(height: 16),
-            _buildDashboardSectionHeader(
-              'This Week Summary',
-              _dashboardWeekRange(weekStart, weekEndInclusive),
-            ),
-            const SizedBox(height: 9),
-            Row(
-              children: [
-                Expanded(
-                  child: _buildDashboardWeekCard(
-                    'Weekly Sales',
-                    _dashboardMoney(weeklySales),
-                    Icons.bar_chart_rounded,
-                    const Color(0xFF2374E8),
-                    delta: weeklySalesDelta,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: _buildDashboardWeekCard(
-                    'Weekly Collection',
-                    _dashboardMoney(weeklyCollected),
-                    Icons.account_balance_wallet_outlined,
-                    const Color(0xFF12A958),
-                    delta: weeklyCollectionDelta,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: _buildDashboardWeekCard(
-                    'Weekly Orders',
-                    '${weekOrders.length}',
-                    Icons.shopping_bag_outlined,
-                    const Color(0xFF6D5DF6),
-                    delta: weeklyOrdersDelta,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: _buildDashboardWeekCard(
-                    'Recovery %',
-                    '${recovery.toStringAsFixed(0)}%',
-                    Icons.percent_rounded,
-                    const Color(0xFFE5263F),
-                    delta: recoveryDelta,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            _buildDashboardDetailsGrid(todayCollections),
+            )),
           ],
         ),
       ),
     );
+  }
+
+  Widget _buildDashboard() {
+    bool sameDay(DateTime a, DateTime b) =>
+        a.year == b.year && a.month == b.month && a.day == b.day;
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final weekStart = todayStart.subtract(Duration(days: now.weekday - 1));
+    final weekEnd = weekStart.add(const Duration(days: 7));
+    final todayOrders = _orders.where((o) => sameDay(o.createdAt, now)).toList();
+    final weekOrders = _orders.where((o) =>
+      !o.createdAt.isBefore(weekStart) && o.createdAt.isBefore(weekEnd)).toList();
+    final todayCollections = _collectionHistory.where((item) =>
+      sameDay(item.collectionDate, now)).toList();
+    double sales(Iterable<OrderModel> orders) => orders
+      .where((o) => o.status != OrderStatus.cancelled)
+      .fold<double>(0, (sum, o) => sum + o.totalAmount);
+    final todaySales = sales(todayOrders);
+    final todayPending = todayOrders
+      .where((o) => o.status != OrderStatus.cancelled)
+      .fold<double>(0, (sum, o) => sum + o.dueAmount);
+    final weeklySales = sales(weekOrders);
+    final weeklyCollected = weekOrders
+      .where((o) => o.status != OrderStatus.cancelled)
+      .fold<double>(0, (sum, o) => sum + o.paidAmount);
+    final recovery = weeklySales <= 0 ? 0.0 :
+      (weeklyCollected / weeklySales * 100).clamp(0.0, 100.0).toDouble();
+    final target = double.tryParse(
+      (_permissions['target_amount'] ?? _permissions['sales_target'] ?? 0)
+        .toString()) ?? 0.0;
+    final targetProgress = target <= 0 ? 0.0 :
+      (todaySales / target).clamp(0.0, 1.0).toDouble();
+    final delivered = _deliveryBills.where((bill) {
+      final status = (bill['delivery_status'] ?? bill['status'] ?? '')
+        .toString().toLowerCase();
+      return status == 'completed' || status == 'delivered';
+    }).length;
+    final pending = (_deliveryBills.length - delivered)
+      .clamp(0, _deliveryBills.length);
+    final loadValue = _deliveryBills.fold<double>(0, (sum, bill) {
+      final raw = bill['BillAmount'] ?? bill['Amt'] ?? bill['Amount'] ?? 0;
+      return sum + (raw is num ? raw.toDouble() :
+        double.tryParse(raw.toString()) ?? 0);
+    });
+    final collected = todayCollections.fold<double>(
+      0, (sum, item) => sum + item.amountCollected);
+    final hour = now.hour;
+    final greeting = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+    final firstName = _currentSalesman.name.trim().split(' ').first;
+    final recentOrders = [..._orders]
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    final recentCollections = [..._collectionHistory]
+      ..sort((a, b) => b.collectionDate.compareTo(a.collectionDate));
+    final activity = <Widget>[];
+    if (recentOrders.isNotEmpty) {
+      final order = recentOrders.first;
+      activity.add(_dashboardActivityRow(
+        icon: Icons.receipt_long_outlined, color: const Color(0xFF006BF0),
+        title: 'New order placed', subtitle: order.customerName,
+        trailing: _dashboardTime(order.createdAt),
+      ));
+    }
+    if (recentCollections.isNotEmpty) {
+      final collection = recentCollections.first;
+      activity.add(_dashboardActivityRow(
+        icon: Icons.currency_rupee_rounded, color: const Color(0xFF00A85A),
+        title: 'Payment collected', subtitle: collection.customerName,
+        trailing: _dashboardMoney(collection.amountCollected),
+        trailingSecondary: _dashboardTime(collection.collectionDate),
+      ));
+    }
+    if (delivered > 0) {
+      activity.add(_dashboardActivityRow(
+        icon: Icons.local_shipping_outlined, color: const Color(0xFFF38200),
+        title: 'Load delivered', subtitle: '$delivered completed',
+      ));
+    }
+    void openPayments() {
+      final distributorId = _currentSalesman.distributorId?.trim() ?? '';
+      if (distributorId.isNotEmpty && !_isLoadingOutstanding &&
+          (_outstandingBills.isEmpty || _outstandingLoadError != null)) {
+        unawaited(_loadOutstandingBills(distributorId));
+      }
+      setState(() => _selectedIndex = 3);
+    }
+
+    return RefreshIndicator(
+      color: const Color(0xFF0867D1),
+      onRefresh: _loadData,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(14, 7, 14, 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _referenceSurface(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 34),
+                child: Row(children: [
+                  Expanded(child: Text('Good $greeting, $firstName 👋',
+                    maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: Color(0xFF314978),
+                      fontSize: 14, fontWeight: FontWeight.w700))),
+                  Container(width: 1, height: 35,
+                    color: const Color(0xFFDCE6F2)),
+                  const SizedBox(width: 15),
+                  Expanded(child: Stack(children: [
+                    Column(crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Text("Today's Target",
+                          style: TextStyle(color: Color(0xFF52658F),
+                            fontSize: 10, height: 1)),
+                        Text('${(targetProgress * 100).toStringAsFixed(0)}%',
+                          style: const TextStyle(color: Color(0xFF071F72),
+                            fontSize: 18, fontWeight: FontWeight.w900,
+                            height: 1.1)),
+                        ClipRRect(borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(value: targetProgress,
+                            minHeight: 5,
+                            backgroundColor: const Color(0xFFDCE5F0),
+                            valueColor: const AlwaysStoppedAnimation(
+                              Color(0xFF006BF0)))),
+                        Text('${_dashboardMoney(todaySales)} / ${_dashboardMoney(target)}',
+                          style: const TextStyle(color: Color(0xFF071F72),
+                            fontSize: 10, fontWeight: FontWeight.w800)),
+                      ]),
+                    const Positioned(right: 0, top: 0,
+                      child: Icon(Icons.trending_up_rounded,
+                        color: Color(0xFF006BF0), size: 22)),
+                  ])),
+                ]),
+              ),
+            ),
+            _referenceTitle("Today's work"),
+            if (canCreateOrder)
+              _referenceAction('New Order', 'Create an order',
+                Icons.assignment_outlined, const Color(0xFF006BF0),
+                () => setState(() => _selectedIndex = 2)),
+            if (canCollectPayment)
+              _referenceAction('Collect Payment', 'Open unpaid bills',
+                Icons.currency_rupee_rounded, const Color(0xFF00A85A),
+                openPayments),
+            _referenceAction('Load Delivery',
+              _deliveryBills.isEmpty ? 'No load assigned' :
+                '${_deliveryBills.length} stops assigned',
+              Icons.local_shipping_outlined, const Color(0xFFF38200),
+              _openLoadDelivery),
+            _referenceTitle('Today Summary'),
+            _referenceSurface(child: SizedBox(height: 44, child: Row(children: [
+              _referenceMetric('Orders', '${todayOrders.length}',
+                Icons.receipt_long_outlined, const Color(0xFF006BF0)),
+              _referenceMetric('Sales', _dashboardMoney(todaySales),
+                Icons.currency_rupee_rounded, const Color(0xFF00A85A)),
+              _referenceMetric('Pending Dues', _dashboardMoney(todayPending),
+                Icons.pending_actions_outlined, const Color(0xFFF38200),
+                divider: false),
+            ]))),
+            _referenceTitle('This Week Summary'),
+            _referenceSurface(child: SizedBox(height: 44, child: Row(children: [
+              _referenceMetric('Weekly Sales', _dashboardMoney(weeklySales),
+                Icons.bar_chart_rounded, const Color(0xFF914DFA),
+                compact: true),
+              _referenceMetric('Weekly Collection',
+                _dashboardMoney(weeklyCollected),
+                Icons.currency_rupee_rounded, const Color(0xFF00A85A),
+                compact: true),
+              _referenceMetric('Weekly Orders', '${weekOrders.length}',
+                Icons.assignment_outlined, const Color(0xFF006BF0),
+                compact: true),
+              _referenceMetric('Recovery',
+                '${recovery.toStringAsFixed(0)}%',
+                Icons.schedule_rounded, const Color(0xFFF38200),
+                divider: false, compact: true),
+            ]))),
+            _referenceTitle('Load Delivery', action: 'View All',
+              onTap: _openLoadDelivery),
+            _referenceSurface(child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 36),
+              child: Row(children: [
+                _referenceMetric(
+                  _deliveryBills.isEmpty ? 'No Load' : 'Load No.',
+                  _activeLoadNumber?.trim().isNotEmpty == true
+                    ? _activeLoadNumber!.trim() : '0',
+                  Icons.local_shipping_rounded, const Color(0xFF006BF0),
+                  compact: true),
+                _referencePlainMetric('Stops', '${_deliveryBills.length}'),
+                _referencePlainMetric('Delivered', '$delivered',
+                  color: const Color(0xFF00A85A)),
+                _referencePlainMetric('Pending', '$pending',
+                  color: const Color(0xFFE9203C)),
+                _referencePlainMetric('Load Value', _dashboardMoney(loadValue),
+                  divider: false),
+              ]))),
+            _referenceTitle('Collection History', action: 'View All',
+              onTap: () => setState(() {
+                _selectedIndex = 3;
+                _paymentsSubTab = 0;
+              })),
+            _referenceSurface(child: SizedBox(height: 36, child: Row(children: [
+              _referenceMetric('Today Collected', _dashboardMoney(collected),
+                Icons.currency_rupee_rounded, const Color(0xFF00A85A)),
+              _referenceMetric('${todayCollections.length} Transactions',
+                '${todayCollections.length}', Icons.receipt_long_outlined,
+                const Color(0xFFE9203C), divider: false),
+            ]))),
+            _referenceTitle('Recent activity'),
+            _referenceSurface(
+              padding: const EdgeInsets.fromLTRB(12, 7, 12, 8),
+              child: Column(children: [
+                Row(children: [
+                  const Icon(Icons.receipt_long_rounded,
+                    color: Color(0xFF006BF0), size: 17),
+                  const SizedBox(width: 8),
+                  const Expanded(child: Text('Recent activity',
+                    style: TextStyle(color: Color(0xFF071F72),
+                      fontSize: 11, fontWeight: FontWeight.w800))),
+                  InkWell(
+                    onTap: () => setState(() {
+                      _selectedIndex = 3;
+                      _paymentsSubTab = 0;
+                    }),
+                    child: const Row(children: [
+                      Text('Payment history', style: TextStyle(
+                        color: Color(0xFF006BF0), fontSize: 10)),
+                      Icon(Icons.chevron_right_rounded,
+                        color: Color(0xFF006BF0), size: 17),
+                    ]),
+                  ),
+                ]),
+                const Divider(height: 10, color: Color(0xFFDCE6F2)),
+                if (activity.isEmpty)
+                  const Text('No activity yet', style: TextStyle(
+                    color: Color(0xFF777F94), fontSize: 10))
+                else
+                  ...activity.take(3),
+              ]),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _referencePlainMetric(
+    String label, String value, {
+    Color color = const Color(0xFF071F72),
+    bool divider = true,
+  }) {
+    return Expanded(child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      decoration: BoxDecoration(border: divider ? const Border(
+        right: BorderSide(color: Color(0xFFDCE6F2))) : null),
+      child: Column(mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Color(0xFF52658F), fontSize: 9)),
+          const SizedBox(height: 3),
+          FittedBox(fit: BoxFit.scaleDown, child: Text(value,
+            style: TextStyle(color: color, fontSize: 15,
+              fontWeight: FontWeight.w900))),
+        ]),
+    ));
   }
 
   Widget _buildStatCard(
@@ -27323,6 +27612,10 @@ Thank you.
         '${_deliveryText(bill, const ['TrnNo', 'BillNo', 'bill_no'])}';
   }
 
+  String _loadPaymentKey(Map<String, dynamic> bill) =>
+      '${bill['_deliveryLoadId'] ?? '${bill['LoadSeries']}/${bill['LoadNo']}'}|'
+      '${_deliveryBillKey(bill)}|${bill['SysAcCode']}';
+
   String _deliveryCustomerName(Map<String, dynamic> bill) {
     final name = _deliveryText(bill, const [
       'customer_name',
@@ -27352,6 +27645,16 @@ Thank you.
       'DeliveryStatus',
     ]).toLowerCase();
     return status == 'completed' || status == 'delivered';
+  }
+
+  bool _isLoadBillPaymentCollected(Map<String, dynamic> bill) {
+    final status = (bill['payment_status'] ?? '').toString().toLowerCase();
+    final paidAmount = num.tryParse((bill['paid_amount'] ?? 0).toString()) ?? 0;
+    return _paidLoadBills.contains(_loadPaymentKey(bill)) ||
+        bill['last_payment_id'] != null ||
+        paidAmount > 0 ||
+        status == 'paid' ||
+        status == 'partial';
   }
 
   Map<String, dynamic>? _nextDeliveryStop(List<Map<String, dynamic>> route) {
@@ -27518,6 +27821,7 @@ Thank you.
               Text(_deliveryAddress(bill)),
               const SizedBox(height: 16),
               if (canCollectPayment &&
+                  !_isLoadBillPaymentCollected(bill) &&
                   _deliveryAmount(bill, const ['Bamt', 'balance']) > 0)
                 SizedBox(
                   width: double.infinity,
@@ -27579,6 +27883,8 @@ Thank you.
           if (query.isEmpty) return true;
           return [
             _deliveryBillKey(bill),
+            _deliveryText(bill, const ['TrnNo', 'BillNo', 'bill_no', 'invoice_no', 'InvoiceNo']),
+            _deliveryText(bill, const ['TrnSeries', 'Series', 'BillSeries']),
             _deliveryCustomerName(bill),
             _deliveryAddress(bill),
             _deliveryText(bill, const ['SysAcCode', 'customer_id']),
@@ -27939,7 +28245,7 @@ Thank you.
                       controller: _deliverySearchController,
                       style: const TextStyle(fontSize: 12),
                       decoration: InputDecoration(
-                        hintText: 'Search bill, outlet or address...',
+                        hintText: 'Search invoice, outlet or address...',
                         hintStyle: const TextStyle(
                           color: Color(0xFF98A2B3),
                           fontSize: 11,
@@ -28366,7 +28672,31 @@ Thank you.
           ],
         ),
         const SizedBox(height: 10),
-        _buildRouteStopsList(route, onChanged: () => setState(() {})),
+        TextField(
+          style: const TextStyle(fontSize: 12),
+          decoration: InputDecoration(
+            hintText: 'Search customer name or bill no.',
+            hintStyle: const TextStyle(
+              color: Color(0xFF98A2B3),
+              fontSize: 11,
+            ),
+            prefixIcon: const Icon(Icons.search, size: 18),
+            isDense: true,
+            filled: true,
+            fillColor: Colors.white,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
+              borderSide: const BorderSide(color: Color(0xFFE5E7EB)),
+            ),
+          ),
+          onChanged: (value) =>
+              setState(() => _deliverySequenceSearchQuery = value),
+        ),
+        _buildRouteStopsList(
+          route,
+          searchQuery: _deliverySequenceSearchQuery,
+          onChanged: () => setState(() {}),
+        ),
         if (route.length > 10) ...[
           const SizedBox(height: 8),
           SizedBox(
@@ -30110,9 +30440,17 @@ Thank you.
 
   Widget _buildRouteStopsList(
     List<Map<String, dynamic>> route, {
+    String searchQuery = '',
     VoidCallback? onChanged,
   }) {
-    final visibleCount = math.min(route.length, 10);
+    final query = searchQuery.trim().toLowerCase();
+    final matchingIndices = query.isEmpty
+        ? List<int>.generate(math.min(route.length, 10), (index) => index)
+        : List<int>.generate(route.length, (index) => index).where((index) {
+            final bill = route[index];
+            return _deliveryCustomerName(bill).toLowerCase().contains(query) ||
+                _deliveryBillKey(bill).toLowerCase().contains(query);
+          }).toList();
 
     Widget buildStop(int index) {
       final distance = index == 0
@@ -30132,8 +30470,13 @@ Thank you.
       padding: const EdgeInsets.all(10),
       child: Column(
         children: [
-          ...List.generate(visibleCount, buildStop),
-          if (route.length > visibleCount)
+          if (query.isNotEmpty && matchingIndices.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Text('No invoices match your search.'),
+            ),
+          ...matchingIndices.map(buildStop),
+          if (query.isEmpty && route.length > matchingIndices.length)
             Container(
               width: double.infinity,
               margin: const EdgeInsets.only(top: 1),
@@ -30144,7 +30487,7 @@ Thank you.
                 border: Border.all(color: const Color(0xFFC8DBF6)),
               ),
               child: Text(
-                'Showing first $visibleCount of ${route.length} bills',
+                'Showing first ${matchingIndices.length} of ${route.length} bills',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Color(0xFF0A3E92),
@@ -30159,13 +30502,23 @@ Thank you.
   }
 
   void _showRouteBillsSheet(List<Map<String, dynamic>> route) {
+    String invoiceQuery = '';
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) {
         return StatefulBuilder(
-          builder: (context, setSheetState) => DraggableScrollableSheet(
+          builder: (context, setSheetState) {
+            final matchingBills = route.where((bill) {
+              final query = invoiceQuery.trim().toLowerCase();
+              return query.isEmpty || [
+                _deliveryBillKey(bill),
+                _deliveryText(bill, const ['TrnNo', 'BillNo', 'bill_no', 'invoice_no', 'InvoiceNo']),
+                _deliveryCustomerName(bill),
+              ].join(' ').toLowerCase().contains(query);
+            }).toList();
+            return DraggableScrollableSheet(
             initialChildSize: 0.82,
             minChildSize: 0.45,
             maxChildSize: 0.92,
@@ -30206,6 +30559,19 @@ Thank you.
                         ],
                       ),
                     ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          hintText: 'Search invoice number or outlet',
+                          prefixIcon: Icon(Icons.search),
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        onChanged: (value) =>
+                            setSheetState(() => invoiceQuery = value),
+                      ),
+                    ),
                     Expanded(
                       child: Scrollbar(
                         controller: scrollController,
@@ -30213,17 +30579,19 @@ Thank you.
                         child: ListView.builder(
                           controller: scrollController,
                           padding: const EdgeInsets.fromLTRB(14, 0, 14, 18),
-                          itemCount: route.length,
+                          itemCount: matchingBills.length,
                           itemBuilder: (context, index) {
-                            final distance = index == 0
+                            final bill = matchingBills[index];
+                            final routeIndex = route.indexOf(bill);
+                            final distance = routeIndex == 0
                                 ? 0.0
                                 : _routeDistanceKm(
-                                    route[index - 1],
-                                    route[index],
+                                    route[routeIndex - 1],
+                                    bill,
                                   );
                             return _buildRouteStopCard(
-                              route[index],
-                              index,
+                              bill,
+                              routeIndex,
                               distance,
                               route.length,
                               route: route,
@@ -30237,7 +30605,8 @@ Thank you.
                 ),
               );
             },
-          ),
+          );
+          },
         );
       },
     );
@@ -30325,7 +30694,8 @@ Thank you.
     final canOpenMap =
         _getBillLatitude(bill) != null && _getBillLongitude(bill) != null;
     final canTakePayment =
-        canCollectPayment &&
+        !_isLoadBillPaymentCollected(bill) &&
+        !_pendingLoadPayments.contains(_loadPaymentKey(bill)) &&
         _deliveryAmount(bill, const ['Bamt', 'balance']) > 0;
     return Container(
       margin: EdgeInsets.only(bottom: index == stopCount - 1 ? 0 : 9),
@@ -30495,12 +30865,16 @@ Thank you.
                     ? () => _openOutstandingCustomerInGoogleMaps(bill)
                     : null,
               ),
-              if (canTakePayment) ...[
+              if (canCollectPayment) ...[
                 const SizedBox(width: 7),
                 _buildRouteStopActionButton(
                   icon: Icons.currency_rupee,
-                  tooltip: 'Collect payment',
-                  color: successGreen,
+                  tooltip: canTakePayment
+                      ? 'Collect payment'
+                      : 'Payment already collected',
+                  color: canTakePayment
+                      ? successGreen
+                      : const Color(0xFFB8C1CC),
                   onPressed: () => _showOutstandingPaymentDialog(bill),
                 ),
               ],
@@ -31233,41 +31607,7 @@ Thank you.
 
   Widget _buildPaymentsTab() {
     if (_paymentsSubTab == 1) {
-      return Column(
-        children: [
-          Container(
-            color: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back, color: primaryBlue),
-                  onPressed: () => setState(() => _paymentsSubTab = 0),
-                ),
-                const SizedBox(width: 8),
-                const Text(
-                  'Collect Payment',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: primaryBlue,
-                  ),
-                ),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: () => setState(() => _paymentsSubTab = 0),
-                  icon: const Icon(Icons.history, size: 18, color: primaryBlue),
-                  label: const Text(
-                    'History',
-                    style: TextStyle(color: primaryBlue),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Expanded(child: _buildCollectPaymentFromOutstanding()),
-        ],
-      );
+      return _buildCollectPaymentFromOutstanding();
     }
     return _buildCollectionHistorySection();
   }
@@ -31886,11 +32226,8 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _errorMessage;
   String? _successMessage;
 
-  static const String _remoteBaseUrl ='https://totalmobileapp.onrender.com/api';
-  // static const String _remoteBaseUrl = 'http://localhost:3000/api';
-
   static String get apiUrl {
-    return _remoteBaseUrl; // ✅ Now uses the correct URL
+    return ApiService.apiUrl;
   }
 
   static const Color primaryBlue = Color(0xFF1A3B70);
