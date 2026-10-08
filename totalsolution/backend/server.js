@@ -185,6 +185,7 @@ await db.collection('Mas_Delivery').createIndex({
   LoadSeries: 1,
   LoadNo: 1
 });
+await db.collection('Mas_Delivery_Route_Plans').createIndex({ loadId: 1 }, { unique: true });
         console.log('Indexes created successfully');
     } catch (error) {
         console.error('MongoDB connection error:', error);
@@ -1473,6 +1474,125 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
             }
         }
         res.status(500).json({ error: error.message, success: false });
+    }
+});
+
+// ==================== INCREMENTAL DESKTOP MASTER SYNC ====================
+// Additive routes only: the existing customer/product import routes above remain unchanged.
+// The desktop compares these remote records before uploading only missing/new records.
+app.get('/api/import/sync-state', async (req, res) => {
+    try {
+        const distributorId = String(req.query.distributorId || '').trim();
+        const type = String(req.query.type || '').trim().toLowerCase();
+        if (!distributorId || !['customers', 'products'].includes(type)) {
+            return res.status(400).json({ success: false, error: 'Valid distributorId and type (customers/products) are required' });
+        }
+
+        let records;
+        if (type === 'customers') {
+            const customerRows = await collections.customer
+                .find({ distributor_id: distributorId }, { projection: { _id: 0, customer_id: 1 } })
+                .toArray();
+            const codes = new Set();
+            records = [];
+            for (const row of customerRows) {
+                const code = String(row.customer_id ?? '').trim();
+                if (!code) {
+                    return res.status(409).json({ success: false, error: 'A stored customer is missing customer_id; sync comparison is unsafe' });
+                }
+                // Historical duplicate customer documents should not cause duplicate sync keys.
+                if (!codes.has(code)) {
+                    codes.add(code);
+                    records.push({ code });
+                }
+            }
+        } else {
+            const productRows = await collections.product
+                .find({ distributorId }, { projection: { _id: 0, sku: 1, stockQuantity: 1, stock: 1 } })
+                .toArray();
+            const codes = new Set();
+            records = [];
+            for (const row of productRows) {
+                const code = String(row.sku ?? '').trim();
+                if (!code || codes.has(code)) {
+                    return res.status(409).json({ success: false, error: 'Missing or duplicate product SKU for distributor; cannot safely compare by product code', code });
+                }
+                codes.add(code);
+                const value = row.stockQuantity ?? row.stock;
+                if (value === null || value === undefined || value === '' || !Number.isFinite(Number(value))) {
+                    return res.status(409).json({ success: false, error: 'Existing product has missing or invalid stock quantity', code });
+                }
+                records.push({ code, stockQuantity: Number(value) });
+            }
+        }
+        return res.json({ success: true, distributorId, type, records });
+    } catch (error) {
+        console.error('Error reading incremental master sync state:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Updates stock of existing SKUs only; never inserts or modifies product master/pricing fields.
+app.post('/api/import/products/stock', excelUpload.single('file'), async (req, res) => {
+    try {
+        const distributorId = String(req.body.distributorId || '').trim();
+        if (!req.file || !distributorId) {
+            return res.status(400).json({ success: false, error: 'A CSV file and distributorId are required' });
+        }
+        const workbook = XLSX.readFile(req.file.path);
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+        if (!rows.length) {
+            return res.status(400).json({ success: false, error: 'Stock file has no rows' });
+        }
+        const parsed = [];
+        const seen = new Set();
+        for (const [index, row] of rows.entries()) {
+            const code = String(row['Product code'] ?? '').trim();
+            const rawStock = row['Stock Quantity'];
+            const stockQuantity = Number(rawStock);
+            if (!code || rawStock === '' || rawStock === null || rawStock === undefined || !Number.isFinite(stockQuantity)) {
+                return res.status(400).json({ success: false, error: `Invalid product code or stock quantity at row ${index + 2}` });
+            }
+            if (seen.has(code)) {
+                return res.status(409).json({ success: false, error: `Duplicate product code in stock file: ${code}` });
+            }
+            seen.add(code);
+            parsed.push({ code, stockQuantity });
+        }
+
+        // Prevalidate each SKU; do not silently create missing items or update ambiguous company variants.
+        const existing = await collections.product.find(
+            { distributorId, sku: { $in: parsed.map(p => p.code) } },
+            { projection: { _id: 1, sku: 1 } }
+        ).toArray();
+        const byCode = new Map();
+        for (const product of existing) {
+            const code = String(product.sku || '').trim();
+            byCode.set(code, (byCode.get(code) || 0) + 1);
+        }
+        const invalid = parsed.filter(p => byCode.get(p.code) !== 1).map(p => p.code);
+        if (invalid.length) {
+            return res.status(409).json({ success: false, error: 'Some SKUs are missing or not unique; no stock updates were applied', codes: invalid.slice(0, 50) });
+        }
+
+        const time = new Date().toISOString();
+        let updatedCount = 0;
+        for (const item of parsed) {
+            const result = await collections.product.updateOne(
+                { distributorId, sku: item.code },
+                { $set: { stock: item.stockQuantity, stockQuantity: item.stockQuantity, updatedAt: time, updatedBy: req.body.createdBy || 'desktop-stock-sync' } }
+            );
+            updatedCount += result.modifiedCount;
+        }
+        return res.json({ success: true, mode: 'stock-only', distributorId, updatedCount, matchedCount: parsed.length });
+    } catch (error) {
+        console.error('Error updating product stock only:', error);
+        return res.status(500).json({ success: false, error: error.message });
+    } finally {
+        if (req.file && fs.existsSync(req.file.path)) {
+            try { fs.unlinkSync(req.file.path); } catch (cleanupError) { console.error('Stock file cleanup failed:', cleanupError); }
+        }
     }
 });
 
@@ -9626,6 +9746,7 @@ app.post('/api/load-delivery/upload', async (req, res) => {
             Object.assign(deliveryDocument, {
                 assignedSalesmanId: previousLoad?.assignedSalesmanId ?? null,
                 assignedSalesmanName: previousLoad?.assignedSalesmanName ?? null,
+                ...(previousLoad?.assignedSalesman ? { assignedSalesman: previousLoad.assignedSalesman } : {}),
                 assignedBy: previousLoad?.assignedBy ?? null,
                 assignedAt: previousLoad?.assignedAt ?? null,
                 assignmentStatus: previousLoad?.assignmentStatus ?? 'unassigned',
@@ -9725,12 +9846,19 @@ app.put('/api/load-delivery/:loadId/assign', async (req, res) => {
         if (!salesman) {
             return res.status(404).json({ success: false, message: 'Salesman does not belong to this distributor' });
         }
+        const assignedSalesmanCode = String(salesman.salesman_id).trim();
         const assignedAt = new Date();
+        const assignedSalesmanName = salesman.name ?? salesman.salesman_name ?? assignedSalesmanCode;
         const result = await db.collection('Mas_Delivery').updateOne(
             { _id: new ObjectId(loadId), distributorId },
             { $set: {
-                assignedSalesmanId: salesmanId,
-                assignedSalesmanName: salesman.name ?? salesman.salesman_name ?? salesmanId,
+                assignedSalesmanId: assignedSalesmanCode,
+                assignedSalesmanName,
+                assignedSalesman: {
+                    id: salesman._id.toString(),
+                    name: assignedSalesmanName,
+                    assignedAt
+                },
                 assignedBy: distributorId,
                 assignedAt,
                 assignmentStatus: 'assigned',
@@ -9852,6 +9980,236 @@ app.get('/api/load-delivery/:loadId/reconciliation', async (req, res) => {
     } catch (error) {
         console.error('Load reconciliation error:', error);
         return res.status(500).json({ success: false, message: error.message || 'Unable to reconcile load' });
+    }
+});
+
+// Route plans contain outlet IDs and bill references, never copies of payment
+// or delivery data. Mas_Delivery remains the source of truth for those fields.
+function deliveryPlanOutlets(load) {
+    const outlets = new Map();
+    for (const bill of Array.isArray(load.bills) ? load.bills : []) {
+        const customerId = String(bill.SysAcCode ?? '').trim();
+        if (!customerId) continue;
+        if (!outlets.has(customerId)) {
+            outlets.set(customerId, { customerId, name: String(bill.AcName ?? '').trim(), bills: [] });
+        }
+        outlets.get(customerId).bills.push(bill);
+    }
+    return [...outlets.values()].map(outlet => {
+        const locatedBill = outlet.bills.find(bill => {
+            if (String(bill.GeoLatitude ?? '').trim() === '' ||
+                String(bill.GeoLongitude ?? '').trim() === '') return false;
+            const lat = Number(bill.GeoLatitude);
+            const lng = Number(bill.GeoLongitude);
+            return Number.isFinite(lat) && Number.isFinite(lng) &&
+                lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180 && !(lat === 0 && lng === 0);
+        });
+        const pendingBills = outlet.bills.filter(bill =>
+            !['completed', 'delivered'].includes(String(bill.delivery_status ?? '').toLowerCase())
+        );
+        return {
+            customerId: outlet.customerId,
+            name: outlet.name,
+            latitude: locatedBill ? Number(locatedBill.GeoLatitude) : null,
+            longitude: locatedBill ? Number(locatedBill.GeoLongitude) : null,
+            locationStatus: locatedBill ? 'valid' : 'needs_correction',
+            status: pendingBills.length ? 'pending' : 'completed',
+            inProgress: pendingBills.length > 0 && pendingBills.length < outlet.bills.length,
+            priority: Math.max(0, ...pendingBills.map(bill => {
+                const explicit = Number(bill.deliveryPriority ?? bill.priority) || 0;
+                const deadline = Date.parse(bill.deliveryDeadline ?? bill.collectionDueDate ?? '');
+                return Math.max(explicit, bill.urgent === true ? 100 : 0,
+                    Number.isFinite(deadline) && deadline <= Date.now() ? 50 : 0);
+            })),
+            billIds: outlet.bills.map(bill => `${String(bill.TrnSeries ?? '').trim()}/${String(bill.TrnNo ?? '').trim()}`)
+        };
+    });
+}
+
+function deliveryPlanDistance(a, b) {
+    if (!a || a.latitude == null || a.longitude == null || b.latitude == null || b.longitude == null) return 0;
+    const radians = value => value * Math.PI / 180;
+    const dLat = radians(b.latitude - a.latitude);
+    const dLng = radians(b.longitude - a.longitude);
+    const x = Math.sin(dLat / 2) ** 2 + Math.cos(radians(a.latitude)) *
+        Math.cos(radians(b.latitude)) * Math.sin(dLng / 2) ** 2;
+    return 6371000 * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+async function deliveryPlanTravelTimes(outlets, origin, returnPoint = null) {
+    const apiKey = String(process.env.GOOGLE_ROUTES_API_KEY ?? '').trim();
+    const located = outlets.filter(stop => stop.locationStatus === 'valid');
+    if (!apiKey || !located.length || located.length > 25) return null;
+    const origins = [origin, ...located];
+    const destinations = returnPoint
+        ? [...located, { ...returnPoint, customerId: 'return' }]
+        : located;
+    const waypoint = point => ({ waypoint: { location: { latLng: {
+        latitude: point.latitude, longitude: point.longitude
+    } } } });
+    const times = new Map();
+    const rowsPerRequest = Math.max(1, Math.floor(625 / destinations.length));
+    try {
+        for (let start = 0; start < origins.length; start += rowsPerRequest) {
+            const rows = origins.slice(start, start + rowsPerRequest);
+            const response = await fetch('https://routes.googleapis.com/distanceMatrix/v2:computeRouteMatrix', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Goog-Api-Key': apiKey,
+                    'X-Goog-FieldMask': 'originIndex,destinationIndex,duration,status,condition'
+                },
+                body: JSON.stringify({
+                    origins: rows.map(waypoint), destinations: destinations.map(waypoint),
+                    travelMode: 'DRIVE', routingPreference: 'TRAFFIC_AWARE'
+                }),
+                signal: AbortSignal.timeout(15000)
+            });
+            if (!response.ok) throw new Error(`Route matrix returned ${response.status}`);
+            const elements = await response.json();
+            if (!Array.isArray(elements)) throw new Error('Invalid route matrix response');
+            for (const element of elements) {
+                if (element.condition !== 'ROUTE_EXISTS') continue;
+                const from = origins[start + element.originIndex];
+                const to = destinations[element.destinationIndex];
+                const seconds = Number(String(element.duration ?? '').replace(/s$/, ''));
+                if (from && to && Number.isFinite(seconds)) {
+                    times.set(`${from.customerId ?? 'origin'}|${to.customerId}`, seconds);
+                }
+            }
+        }
+        return times;
+    } catch (error) {
+        console.warn('Road travel times unavailable; using coordinate distances:', error.message);
+        return null;
+    }
+}
+
+function orderDeliveryPlanOutlets(outlets, origin, travelTimes = null, returnPoint = null) {
+    const cost = (from, to) => travelTimes?.get(`${from?.customerId ?? 'origin'}|${to.customerId}`) ??
+        deliveryPlanDistance(from, to) / 8.33;
+    const remaining = outlets.filter(stop => stop.locationStatus === 'valid');
+    const missing = outlets.filter(stop => stop.locationStatus !== 'valid');
+    const ordered = [];
+    let current = origin;
+    while (remaining.length) {
+        remaining.sort((a, b) => b.priority - a.priority ||
+            cost(current, a) - cost(current, b) ||
+            a.customerId.localeCompare(b.customerId));
+        current = remaining.shift();
+        ordered.push(current);
+    }
+    // Improve the whole path when there are no priority constraints.
+    if (ordered.length > (returnPoint ? 1 : 3) && ordered.every(stop => stop.priority === 0)) {
+        const pathCost = path => path.reduce((sum, stop, index) =>
+            sum + cost(index === 0 ? origin : path[index - 1], stop), 0) +
+            (returnPoint && path.length ? cost(path[path.length - 1], returnPoint) : 0);
+        for (let pass = 0; pass < 2; pass++) {
+            let improved = false;
+            for (let i = 0; i < ordered.length - 1; i++) {
+                for (let j = i + 1; j < ordered.length; j++) {
+                    const candidate = [...ordered.slice(0, i),
+                        ...ordered.slice(i, j + 1).reverse(), ...ordered.slice(j + 1)];
+                    if (pathCost(candidate) + 1 < pathCost(ordered)) {
+                        ordered.splice(0, ordered.length, ...candidate);
+                        improved = true;
+                    }
+                }
+            }
+            if (!improved) break;
+        }
+    }
+    return [...ordered, ...missing];
+}
+
+async function findAssignedDeliveryLoad(req, res) {
+    const loadId = String(req.params.loadId ?? '').trim();
+    const distributorId = String((req.method === 'GET' ? req.query.distributorId : req.body?.distributorId) ?? '').trim();
+    const salesmanId = String((req.method === 'GET' ? req.query.salesmanId : req.body?.salesmanId) ?? '').trim();
+    if (!ObjectId.isValid(loadId) || !distributorId || !salesmanId) {
+        res.status(400).json({ success: false, message: 'Valid load, distributor and salesman are required' });
+        return null;
+    }
+    const load = await db.collection('Mas_Delivery').findOne({
+        _id: new ObjectId(loadId), distributorId, assignedSalesmanId: salesmanId
+    });
+    if (!load) res.status(404).json({ success: false, message: 'Assigned load not found' });
+    return load;
+}
+
+function deliveryPlanResponse(plan, load) {
+    const current = new Map(deliveryPlanOutlets(load).map(stop => [stop.customerId, stop]));
+    return {
+        success: true,
+        version: plan.version,
+        optimizationSource: plan.optimizationSource,
+        stops: plan.outletIds.map((id, index) => ({
+            ...current.get(id), sequence: index + 1
+        })).filter(stop => stop.customerId)
+    };
+}
+
+app.get('/api/load-delivery/:loadId/plan', async (req, res) => {
+    try {
+        const load = await findAssignedDeliveryLoad(req, res);
+        if (!load) return;
+        const plan = await db.collection('Mas_Delivery_Route_Plans').findOne({ loadId: load._id });
+        if (!plan || plan.salesmanId !== load.assignedSalesmanId) {
+            return res.status(404).json({ success: false, message: 'Route plan not created yet' });
+        }
+        return res.json(deliveryPlanResponse(plan, load));
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
+    }
+});
+
+app.post('/api/load-delivery/:loadId/plan', async (req, res) => {
+    try {
+        const load = await findAssignedDeliveryLoad(req, res);
+        if (!load) return;
+        const origin = req.body?.origin;
+        const latitude = Number(origin?.latitude);
+        const longitude = Number(origin?.longitude);
+        if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+            !Number.isFinite(longitude) || longitude < -180 || longitude > 180 ||
+            (latitude === 0 && longitude === 0)) {
+            return res.status(400).json({ success: false, message: 'Valid current location is required' });
+        }
+        const collection = db.collection('Mas_Delivery_Route_Plans');
+        const savedPlan = await collection.findOne({ loadId: load._id });
+        const previous = savedPlan?.salesmanId === load.assignedSalesmanId ? savedPlan : null;
+        const outlets = deliveryPlanOutlets(load);
+        const byId = new Map(outlets.map(stop => [stop.customerId, stop]));
+        const completed = (previous?.outletIds ?? []).filter(id => byId.get(id)?.status === 'completed');
+        const pending = outlets.filter(stop => stop.status === 'pending');
+        const recalculate = req.body?.recalculate === true;
+        const kept = (previous?.outletIds ?? []).filter(id =>
+            byId.get(id)?.status === 'pending' &&
+            (!recalculate || byId.get(id)?.inProgress));
+        const remaining = pending.filter(stop => !kept.includes(stop.customerId));
+        const last = kept.length ? byId.get(kept[kept.length - 1]) : null;
+        const routeOrigin = last?.locationStatus === 'valid' ? last : { latitude, longitude };
+        // Keep the trip's original starting point so a skipped outlet can be
+        // scheduled on the return journey after the driver changes course.
+        const returnPoint = {
+            ...(previous?.returnPoint ?? { latitude, longitude }), customerId: 'return'
+        };
+        const travelTimes = await deliveryPlanTravelTimes(remaining, routeOrigin, returnPoint);
+        const ordered = orderDeliveryPlanOutlets(remaining, routeOrigin, travelTimes, returnPoint);
+        const outletIds = [...completed, ...kept, ...ordered.map(stop => stop.customerId),
+            ...outlets.filter(stop => stop.status === 'completed' && !completed.includes(stop.customerId)).map(stop => stop.customerId)];
+        const version = previous?.outletIds?.join('|') === outletIds.join('|') ? previous.version : (previous?.version ?? 0) + 1;
+        const plan = {
+            loadId: load._id, distributorId: load.distributorId,
+            salesmanId: load.assignedSalesmanId, planDate: previous?.planDate ?? new Date(),
+            version, outletIds, returnPoint,
+            optimizationSource: travelTimes ? 'road_time' : 'coordinate_distance',
+            updatedAt: new Date()
+        };
+        await collection.updateOne({ loadId: load._id }, { $set: plan }, { upsert: true });
+        return res.json(deliveryPlanResponse(plan, load));
+    } catch (error) {
+        return res.status(500).json({ success: false, message: error.message });
     }
 });
 
