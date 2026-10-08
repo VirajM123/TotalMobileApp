@@ -1280,6 +1280,49 @@ class ApiService {
     }
   }
 
+  static Future<Map<String, dynamic>> getDeliveryPlan({
+    required String loadId,
+    required String distributorId,
+    required String salesmanId,
+  }) async {
+    final uri = Uri.parse('$apiUrl/load-delivery/${Uri.encodeComponent(loadId)}/plan')
+        .replace(queryParameters: {
+      'distributorId': distributorId,
+      'salesmanId': salesmanId,
+    });
+    final response = await http.get(uri).timeout(const Duration(seconds: 20));
+    final data = _decodeJsonObject(response.body);
+    if (response.statusCode != 200 || data['success'] != true) {
+      throw Exception(data['message'] ?? 'Unable to load delivery plan');
+    }
+    return data;
+  }
+
+  static Future<Map<String, dynamic>> saveDeliveryPlan({
+    required String loadId,
+    required String distributorId,
+    required String salesmanId,
+    required double latitude,
+    required double longitude,
+    bool recalculate = false,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$apiUrl/load-delivery/${Uri.encodeComponent(loadId)}/plan'),
+      headers: const {'Content-Type': 'application/json', 'Accept': 'application/json'},
+      body: json.encode({
+        'distributorId': distributorId,
+        'salesmanId': salesmanId,
+        'origin': {'latitude': latitude, 'longitude': longitude},
+        'recalculate': recalculate,
+      }),
+    ).timeout(const Duration(seconds: 20));
+    final data = _decodeJsonObject(response.body);
+    if (response.statusCode != 200 || data['success'] != true) {
+      throw Exception(data['message'] ?? 'Unable to save delivery plan');
+    }
+    return data;
+  }
+
   static Future<List<Map<String, dynamic>>> getLoadDocuments(
     String distributorId,
   ) async {
@@ -15061,13 +15104,20 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   String? _selectedLoadSeries;
   String? _activeLoadSeries;
   String? _activeLoadNumber;
+  String? _startedDeliveryLoadKey;
+  String? _startingDeliveryLoadKey;
   Position? _salesmanPosition;
   List<LatLng> _deliveryRoadRoute = const [];
   double? _deliveryRoadDistanceKm;
   int? _deliveryRoadDurationMinutes;
   StreamSubscription<Position>? _deliveryPositionSubscription;
   Position? _lastDeliveryRouteOrigin;
+  Position? _lastDeliveryPlanOrigin;
+  Position? _pendingDeliveryPosition;
   bool _isRecalculatingDeliveryRoute = false;
+  Map<String, dynamic>? _deliveryPlan;
+  String? _deliveryPlanLoadId;
+  VoidCallback? _deliveryRouteRefresh;
 
   // Add this near other state variables
   String? _persistedSelectedRoute; // This will persist the route selection
@@ -16427,7 +16477,17 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             _selectedLoadSeries = null;
             _activeLoadNumber = null;
           }
+          final stillAssigned = bills.whereType<Map>().any((value) {
+            final bill = Map<String, dynamic>.from(value);
+            return _deliveryLoadKey(
+                  _deliveryText(bill, const ['LoadSeries']),
+                  _deliveryText(bill, const ['LoadNo']),
+                ) ==
+                _startedDeliveryLoadKey;
+          });
+          if (!stillAssigned) _startedDeliveryLoadKey = null;
         });
+        unawaited(_loadSavedDeliveryPlan());
       }
     } catch (error) {
       print('Error loading delivery records: $error');
@@ -27640,6 +27700,12 @@ Thank you.
   }
 
   bool _isDeliveryCompleted(Map<String, dynamic> bill) {
+    final outletBills = bill['_outletBills'];
+    if (outletBills is List) {
+      return outletBills.whereType<Map>().every(
+        (item) => _isDeliveryCompleted(Map<String, dynamic>.from(item)),
+      );
+    }
     final status = _deliveryText(bill, const [
       'delivery_status',
       'DeliveryStatus',
@@ -27660,8 +27726,7 @@ Thank you.
   Map<String, dynamic>? _nextDeliveryStop(List<Map<String, dynamic>> route) {
     for (final bill in route) {
       if (!_isDeliveryCompleted(bill) &&
-          _getBillLatitude(bill) != null &&
-          _getBillLongitude(bill) != null) {
+          _hasValidDeliveryLocation(bill)) {
         return bill;
       }
     }
@@ -27780,7 +27845,14 @@ Thank you.
       );
       final latestPosition = _salesmanPosition;
       if (latestPosition != null) {
-        unawaited(_recalculateActiveDeliveryRoute(latestPosition));
+        final outletCode = _deliveryText(bill, const ['SysAcCode', 'customer_id']);
+        final loadId = bill['_deliveryLoadId']?.toString() ?? '';
+        final outletCompleted = _deliveryBills.whereType<Map>().where((item) {
+          final row = Map<String, dynamic>.from(item);
+          return row['_deliveryLoadId']?.toString() == loadId &&
+              _deliveryText(row, const ['SysAcCode', 'customer_id']) == outletCode;
+        }).every((item) => _isDeliveryCompleted(Map<String, dynamic>.from(item)));
+        await _refreshPlanAfterDelivery(latestPosition, recalculate: outletCompleted);
       }
       return true;
     } catch (error) {
@@ -27800,6 +27872,7 @@ Thank you.
     VoidCallback? onChanged,
   }) async {
     if (!mounted) return;
+    final activeBill = _pendingBillForOutlet(bill);
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -27821,14 +27894,14 @@ Thank you.
               Text(_deliveryAddress(bill)),
               const SizedBox(height: 16),
               if (canCollectPayment &&
-                  !_isLoadBillPaymentCollected(bill) &&
-                  _deliveryAmount(bill, const ['Bamt', 'balance']) > 0)
+                  !_isLoadBillPaymentCollected(activeBill) &&
+                  _deliveryAmount(activeBill, const ['Bamt', 'balance']) > 0)
                 SizedBox(
                   width: double.infinity,
                   child: OutlinedButton.icon(
                     onPressed: () {
                       Navigator.pop(sheetContext);
-                      _showOutstandingPaymentDialog(bill);
+                      _showOutstandingPaymentDialog(activeBill);
                     },
                     icon: const Icon(Icons.currency_rupee),
                     label: const Text('Collect Payment at Delivery'),
@@ -27842,7 +27915,7 @@ Thank you.
                       ? null
                       : () async {
                           Navigator.pop(sheetContext);
-                          if (await _markDeliveryCompleted(bill)) {
+                          if (await _markDeliveryCompleted(activeBill)) {
                             onChanged?.call();
                           }
                         },
@@ -28103,6 +28176,7 @@ Thank you.
                             _selectedLoadSeries = selected;
                             _activeLoadSeries = selected;
                             _activeLoadNumber = loadNo;
+                            _startedDeliveryLoadKey = _deliveryLoadKey(selected!, loadNo);
                             _selectedIndex = 7;
                           });
                           Navigator.pop(dialogContext);
@@ -28126,6 +28200,333 @@ Thank you.
   }
 
   Widget _buildLoadDeliverySection() {
+    final loads = <String, List<Map<String, dynamic>>>{};
+    for (final value in _deliveryBills.whereType<Map>()) {
+      final bill = Map<String, dynamic>.from(value);
+      final key = _deliveryLoadKey(
+        _deliveryText(bill, const ['LoadSeries']),
+        _deliveryText(bill, const ['LoadNo']),
+      );
+      loads.putIfAbsent(key, () => []).add(bill);
+    }
+    final query = _deliverySearchQuery.trim().toLowerCase();
+    final visibleLoads = loads.entries.where((entry) {
+      if (query.isEmpty) return true;
+      final first = entry.value.first;
+      return [
+        _deliveryText(first, const ['LoadSeries']),
+        _deliveryText(first, const ['LoadNo']),
+        _deliveryText(first, const ['RouteName', 'routeName', 'Route']),
+        ...entry.value.map(_deliveryCustomerName),
+      ].join(' ').toLowerCase().contains(query);
+    }).toList();
+
+    return ColoredBox(
+      color: const Color(0xFFF4F8FF),
+      child: RefreshIndicator(
+        onRefresh: _refreshLoadDelivery,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 96),
+          children: [
+            Row(children: [
+              const Expanded(child: Text(
+                'Load Delivery',
+                style: TextStyle(
+                  color: Color(0xFF080E3F),
+                  fontSize: 27,
+                  fontWeight: FontWeight.w900,
+                ),
+              )),
+              IconButton(
+                tooltip: 'Sync data',
+                onPressed: _refreshLoadDelivery,
+                icon: const Icon(Icons.sync, color: Color(0xFF0755DB)),
+              ),
+              IconButton(
+                tooltip: 'Select load',
+                onPressed: _showStartDeliveryDialog,
+                icon: const Icon(Icons.tune, color: Color(0xFF0755DB)),
+              ),
+            ]),
+            const Text(
+              'Assigned loads',
+              style: TextStyle(
+                color: Color(0xFF7883A9),
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _deliverySearchController,
+              decoration: InputDecoration(
+                hintText: 'Search load no. or route...',
+                hintStyle: const TextStyle(color: Color(0xFF8996BA)),
+                prefixIcon: const Icon(Icons.search, color: Color(0xFF747D99)),
+                filled: true,
+                fillColor: Colors.white,
+                contentPadding: const EdgeInsets.symmetric(vertical: 15),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFFD4DEF0)),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Color(0xFFD4DEF0)),
+                ),
+              ),
+              onChanged: (value) => setState(() => _deliverySearchQuery = value),
+            ),
+            if (_isLoadingDelivery) ...[
+              const SizedBox(height: 12),
+              const LinearProgressIndicator(minHeight: 2),
+            ],
+            const SizedBox(height: 14),
+            if (_deliveryLoadError != null)
+              _buildDeliveryMessageCard(
+                Icons.error_outline,
+                _deliveryLoadError!,
+                errorRed,
+              )
+            else if (!_isLoadingDelivery && loads.isEmpty)
+              _buildDeliveryMessageCard(
+                Icons.inventory_2_outlined,
+                'No loads are assigned. Pull down to refresh.',
+                const Color(0xFF667085),
+              )
+            else if (visibleLoads.isEmpty)
+              _buildDeliveryMessageCard(
+                Icons.search_off,
+                'No assigned loads match your search.',
+                const Color(0xFF667085),
+              ),
+            ...visibleLoads.map((entry) => _buildAssignedDeliveryLoadCard(entry.key, entry.value)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAssignedDeliveryLoadCard(
+    String loadKey,
+    List<Map<String, dynamic>> loadBills,
+  ) {
+    final first = loadBills.first;
+    final series = _deliveryText(first, const ['LoadSeries']);
+    final number = _deliveryText(first, const ['LoadNo']);
+    final routeName = _deliveryText(first, const [
+      'RouteName', 'routeName', 'Route', 'route',
+    ]);
+    final active = _startedDeliveryLoadKey == loadKey;
+    final starting = _startingDeliveryLoadKey == loadKey;
+    final locations = _optimizedDeliveryRoute(loadBills)
+        .where(_hasValidDeliveryLocation).toList();
+    var distanceKm = 0.0;
+    if (_salesmanPosition != null && locations.isNotEmpty) {
+      distanceKm += Geolocator.distanceBetween(
+        _salesmanPosition!.latitude,
+        _salesmanPosition!.longitude,
+        _getBillLatitude(locations.first)!,
+        _getBillLongitude(locations.first)!,
+      ) / 1000;
+    }
+    for (var i = 1; i < locations.length; i++) {
+      distanceKm += _routeDistanceKm(locations[i - 1], locations[i]);
+    }
+    final shownDistance = active && _deliveryRoadDistanceKm != null
+        ? _deliveryRoadDistanceKm!
+        : distanceKm;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(9),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: active ? const Color(0xFF217AF5) : const Color(0xFFDDE6F4),
+          width: active ? 2 : 1,
+        ),
+        boxShadow: [BoxShadow(
+          color: const Color(0xFF174A9D).withValues(alpha: 0.05),
+          blurRadius: 12,
+          offset: const Offset(0, 4),
+        )],
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE9F2FF),
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: const Text('LD', style: TextStyle(
+                  color: Color(0xFF0755DB),
+                  fontSize: 17,
+                  fontWeight: FontWeight.w900,
+                )),
+              ),
+              const SizedBox(width: 9),
+              Container(width: 1, height: 30, color: const Color(0xFFD2DBEB)),
+              const SizedBox(width: 10),
+              Expanded(child: _buildAssignedLoadValue('Load Series', series.isEmpty ? '-' : series)),
+              Expanded(child: _buildAssignedLoadValue('Load No.', number)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: InkWell(
+                  onTap: active ? () => _showDeliveryRoute(loadBills) : null,
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEAF3FF),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(children: [
+                      const Icon(Icons.location_on, color: Color(0xFF0FBA63), size: 20),
+                      const SizedBox(width: 5),
+                      Expanded(child: Text(
+                        routeName.isEmpty ? 'Route unavailable' : routeName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Color(0xFF080E3F), fontWeight: FontWeight.w800),
+                      )),
+                      const Icon(Icons.chevron_right, color: Color(0xFF617093)),
+                    ]),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(children: [
+            Expanded(child: _buildAssignedLoadMetric(
+              Icons.receipt_long_outlined, 'Bills', '${loadBills.length}',
+              const Color(0xFF0755DB),
+            )),
+            Expanded(child: _buildAssignedLoadMetric(
+              Icons.groups, 'Outlets', '${_uniqueDeliveryCustomers(loadBills)}',
+              const Color(0xFF7827E8),
+            )),
+            Expanded(child: _buildAssignedLoadMetric(
+              Icons.route, 'Distance',
+              shownDistance > 0 ? '${shownDistance.toStringAsFixed(1)} km' : '-',
+              const Color(0xFFF08A00),
+            )),
+          ]),
+          const SizedBox(height: 6),
+          Row(children: [
+            Expanded(child: SizedBox(
+              height: 34,
+              child: ElevatedButton.icon(
+                onPressed: starting
+                    ? null
+                    : active
+                        ? () => _showDeliveryRoute(loadBills)
+                        : () => _startAssignedDeliveryLoad(series, number, loadKey),
+                icon: starting
+                    ? const SizedBox(width: 14, height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.map_outlined, size: 15),
+                label: Text(active ? 'Open Map' : 'Start Delivery', maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF0755DB),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(horizontal: 5),
+                  textStyle: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
+                ),
+              ),
+            )),
+            const SizedBox(width: 6),
+            Expanded(child: SizedBox(
+              height: 34,
+              child: OutlinedButton.icon(
+                onPressed: () => _showRouteBillsSheet(loadBills),
+                icon: const Icon(Icons.currency_rupee, size: 14),
+                label: const Text('Collection', maxLines: 1),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF0755DB),
+                  side: const BorderSide(color: Color(0xFFB8CFF7)),
+                  padding: const EdgeInsets.symmetric(horizontal: 5),
+                  textStyle: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
+                ),
+              ),
+            )),
+          ]),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAssignedLoadValue(String label, String value) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: const TextStyle(color: Color(0xFF7585B0), fontSize: 10)),
+      Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
+        style: const TextStyle(color: Color(0xFF080E3F), fontSize: 14, fontWeight: FontWeight.w900)),
+    ],
+  );
+
+  Widget _buildAssignedLoadMetric(IconData icon, String label, String value, Color color) =>
+      Container(
+        height: 36,
+        margin: const EdgeInsets.only(right: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 5),
+        decoration: BoxDecoration(
+          border: Border.all(color: const Color(0xFFE3EBF7)),
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: Row(children: [
+          Icon(icon, color: color, size: 14),
+          const SizedBox(width: 4),
+          Expanded(child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Color(0xFF7585B0), fontSize: 9)),
+              Text(value, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Color(0xFF080E3F), fontSize: 12, fontWeight: FontWeight.w900)),
+            ],
+          )),
+        ]),
+      );
+
+  Future<void> _startAssignedDeliveryLoad(String series, String number, String loadKey) async {
+    if (_startingDeliveryLoadKey != null) return;
+    setState(() => _startingDeliveryLoadKey = loadKey);
+    final error = await _prepareDeliveryStart(series, number);
+    if (!mounted) return;
+    setState(() => _startingDeliveryLoadKey = null);
+    if (error != null) {
+      showSafeSnackBar(context, error, backgroundColor: errorRed);
+      return;
+    }
+    final bills = _deliveryBills
+        .whereType<Map>()
+        .map((bill) => Map<String, dynamic>.from(bill))
+        .where((bill) =>
+            _deliveryLoadKey(
+              _deliveryText(bill, const ['LoadSeries']),
+              _deliveryText(bill, const ['LoadNo']),
+            ) == loadKey)
+        .toList();
+    if (bills.isNotEmpty) _showDeliveryRoute(bills);
+  }
+
+  // ignore: unused_element
+  Widget _buildPreviousLoadDeliverySection() {
     final bills = _activeDeliveryBills();
     final allBills = _deliveryBills
         .whereType<Map>()
@@ -28387,7 +28788,7 @@ Thank you.
                 _buildDeliverySummaryTile(
                   Icons.receipt_long_outlined,
                   'Bills',
-                  '${route.length}',
+                  '${bills.length}',
                   const Color(0xFF0787F5),
                   Colors.white,
                 ),
@@ -28473,12 +28874,7 @@ Thank you.
       final bill = route[index];
       final latitude = _getBillLatitude(bill);
       final longitude = _getBillLongitude(bill);
-      if (latitude == null ||
-          longitude == null ||
-          latitude < -90 ||
-          latitude > 90 ||
-          longitude < -180 ||
-          longitude > 180) {
+      if (!_hasValidDeliveryLocation(bill) || latitude == null || longitude == null) {
         continue;
       }
 
@@ -28492,7 +28888,7 @@ Thank you.
         name = code.isEmpty ? 'Outlet ${index + 1}' : 'Outlet $code';
       }
       final address = _deliveryAddress(bill);
-      final billNumber = _deliveryBillKey(bill);
+      final billNumbers = _outletBills(bill).map(_deliveryBillKey).join(', ');
       stops.add(
         DeliveryMapStop(
           sequence: index + 1,
@@ -28501,7 +28897,7 @@ Thank you.
           info: [
             'Stop #${index + 1}',
             if (address != 'Address not available') address,
-            if (billNumber != '/') 'Bill: $billNumber',
+            if (billNumbers.isNotEmpty) 'Bills: $billNumbers',
           ].join('\n'),
         ),
       );
@@ -28697,7 +29093,7 @@ Thank you.
           searchQuery: _deliverySequenceSearchQuery,
           onChanged: () => setState(() {}),
         ),
-        if (route.length > 10) ...[
+        if (route.isNotEmpty) ...[
           const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
@@ -28711,7 +29107,7 @@ Thank you.
                   borderRadius: BorderRadius.circular(9),
                 ),
               ),
-              child: Text('View All ${route.length} Bills'),
+              child: Text('View All ${route.expand(_outletBills).length} Bills'),
             ),
           ),
         ],
@@ -29387,7 +29783,10 @@ Thank you.
   }
 
   int _uniqueDeliveryCustomers(List<Map<String, dynamic>> bills) {
-    return bills.map(_deliveryCustomerName).toSet().length;
+    return bills.map((bill) {
+      final code = _deliveryText(bill, const ['SysAcCode', 'customer_id']);
+      return code.isEmpty ? 'bill:${_deliveryBillKey(bill)}' : code;
+    }).toSet().length;
   }
 
   Widget _buildDeliveryBillCard(Map<String, dynamic> bill, int stopNumber) {
@@ -29570,44 +29969,36 @@ Thank you.
   List<Map<String, dynamic>> _optimizedDeliveryRoute(
     List<Map<String, dynamic>> bills,
   ) {
-    if (bills.length < 3) return List<Map<String, dynamic>>.from(bills);
-    final located = bills
-        .where(
-          (bill) =>
-              _getBillLatitude(bill) != null && _getBillLongitude(bill) != null,
-        )
-        .toList();
-    final missing = bills.where((bill) => !located.contains(bill)).toList();
-    if (located.length < 2) return [...located, ...missing];
-
-    if (_salesmanPosition != null) {
-      located.sort((a, b) {
-        final aDistance = Geolocator.distanceBetween(
-          _salesmanPosition!.latitude,
-          _salesmanPosition!.longitude,
-          _getBillLatitude(a)!,
-          _getBillLongitude(a)!,
-        );
-        final bDistance = Geolocator.distanceBetween(
-          _salesmanPosition!.latitude,
-          _salesmanPosition!.longitude,
-          _getBillLatitude(b)!,
-          _getBillLongitude(b)!,
-        );
-        return aDistance.compareTo(bDistance);
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    for (final bill in bills) {
+      final customerId = _deliveryText(bill, const ['SysAcCode', 'customer_id']);
+      final key = customerId.isEmpty ? 'bill:${_deliveryBillKey(bill)}' : customerId;
+      grouped.putIfAbsent(key, () => []).add(bill);
+    }
+    final route = grouped.values.map((group) {
+      final representative = group.firstWhere(
+        (bill) => !_isDeliveryCompleted(bill) && _hasValidDeliveryLocation(bill),
+        orElse: () => group.firstWhere(_hasValidDeliveryLocation, orElse: () => group.first),
+      );
+      return <String, dynamic>{...representative, '_outletBills': group};
+    }).toList();
+    final loadId = bills.isEmpty ? '' : bills.first['_deliveryLoadId']?.toString() ?? '';
+    final planStops = _deliveryPlanLoadId == loadId && _deliveryPlan != null
+        ? _deliveryPlan!['stops']
+        : null;
+    if (planStops is List) {
+      final sequence = <String, int>{};
+      for (final stop in planStops.whereType<Map>()) {
+        sequence[stop['customerId']?.toString() ?? ''] =
+            (stop['sequence'] as num?)?.toInt() ?? sequence.length + 1;
+      }
+      route.sort((a, b) {
+        final aCode = _deliveryText(a, const ['SysAcCode', 'customer_id']);
+        final bCode = _deliveryText(b, const ['SysAcCode', 'customer_id']);
+        return (sequence[aCode] ?? 999999).compareTo(sequence[bCode] ?? 999999);
       });
     }
-    final route = <Map<String, dynamic>>[located.removeAt(0)];
-    while (located.isNotEmpty) {
-      located.sort(
-        (a, b) => _routeDistanceKm(
-          route.last,
-          a,
-        ).compareTo(_routeDistanceKm(route.last, b)),
-      );
-      route.add(located.removeAt(0));
-    }
-    return [...route, ...missing];
+    return route;
   }
 
   bool _hasValidDeliveryLocation(Map<String, dynamic> bill) {
@@ -29713,14 +30104,22 @@ Thank you.
         _selectedLoadSeries = series;
         _activeLoadSeries = series;
         _activeLoadNumber = normalizedLoadNo;
+        _startedDeliveryLoadKey = _deliveryLoadKey(series, normalizedLoadNo);
+        _deliverySearchController.clear();
+        _deliverySearchQuery = '';
+        _deliverySequenceSearchQuery = '';
 
         _salesmanPosition = position;
         _lastDeliveryRouteOrigin = position;
+        _lastDeliveryPlanOrigin = null;
+        _pendingDeliveryPosition = null;
 
         // Clear previous load route
         _deliveryRoadRoute = const [];
         _deliveryRoadDistanceKm = null;
         _deliveryRoadDurationMinutes = null;
+        _deliveryPlan = null;
+        _deliveryPlanLoadId = null;
       });
 
       // ============================================================
@@ -29735,26 +30134,15 @@ Thank you.
       // Bill delivery/payment functionality is not dependent on it.
       // ============================================================
       if (routeBills.isNotEmpty) {
-        try {
-          await _updateDeliveryRoadRoute(position, routeBills);
-        } catch (routeError) {
-          debugPrint(
-            'Google route unavailable for '
-            '${series.isEmpty ? "(blank)" : series}/$normalizedLoadNo: '
-            '$routeError',
-          );
-
-          // Do NOT cancel load start because of Google route failure.
-          if (mounted) {
-            setState(() {
-              _deliveryRoadRoute = const [];
-              _deliveryRoadDistanceKm = null;
-              _deliveryRoadDurationMinutes = null;
-              _lastDeliveryRouteOrigin = position;
-            });
-          }
-        }
+        // Show the selected load's outlets immediately. Road directions can
+        // arrive later without holding up the inline delivery sequence.
+        unawaited(_loadStartedDeliveryPlanAndRoadRoute(
+          position,
+          routeBills,
+          _deliveryLoadKey(series, normalizedLoadNo),
+        ));
       } else {
+        unawaited(_saveDeliveryPlan(position));
         debugPrint(
           'Load ${series.isEmpty ? "(blank)" : series}/$normalizedLoadNo '
           'started without route because no valid customer coordinates exist.',
@@ -29772,10 +30160,115 @@ Thank you.
     }
   }
 
+  String _deliveryLoadKey(String series, String number) =>
+      '${series.trim().toLowerCase()}|${number.trim()}';
+
+  Future<void> _loadStartedDeliveryPlanAndRoadRoute(
+    Position position,
+    List<Map<String, dynamic>> bills,
+    String loadKey,
+  ) async {
+    await _saveDeliveryPlan(position);
+    if (!mounted || loadKey != _deliveryLoadKey(
+      _activeLoadSeries ?? '', _activeLoadNumber ?? '',
+    )) return;
+    await _loadStartedDeliveryRoadRoute(position, bills, loadKey);
+  }
+
+  String _activeDeliveryLoadId() {
+    for (final value in _deliveryBills.whereType<Map>()) {
+      final bill = Map<String, dynamic>.from(value);
+      if (_deliveryLoadKey(
+            _deliveryText(bill, const ['LoadSeries']),
+            _deliveryText(bill, const ['LoadNo']),
+          ) == _deliveryLoadKey(_activeLoadSeries ?? '', _activeLoadNumber ?? '')) {
+        return bill['_deliveryLoadId']?.toString() ?? '';
+      }
+    }
+    return '';
+  }
+
+  Future<void> _loadSavedDeliveryPlan() async {
+    final loadId = _activeDeliveryLoadId();
+    if (loadId.isEmpty) return;
+    if (_salesmanPosition != null &&
+        _startedDeliveryLoadKey == _deliveryLoadKey(
+          _activeLoadSeries ?? '', _activeLoadNumber ?? '',
+        )) {
+      await _saveDeliveryPlan(_salesmanPosition!);
+      return;
+    }
+    try {
+      final plan = await ApiService.getDeliveryPlan(
+        loadId: loadId,
+        distributorId: _deliveryDistributorId,
+        salesmanId: _currentSalesman.salesmanId ?? _currentSalesman.id,
+      );
+      if (mounted && _activeDeliveryLoadId() == loadId) {
+        setState(() {
+          if (_deliveryPlanLoadId != loadId ||
+              _deliveryPlan?['version'] != plan['version']) {
+            _deliveryRoadRoute = const [];
+            _deliveryRoadDistanceKm = null;
+            _deliveryRoadDurationMinutes = null;
+          }
+          _deliveryPlan = plan;
+          _deliveryPlanLoadId = loadId;
+        });
+        _deliveryRouteRefresh?.call();
+      }
+    } catch (error) {
+      debugPrint('Saved delivery plan unavailable: $error');
+    }
+  }
+
+  Future<void> _saveDeliveryPlan(Position position, {bool recalculate = false}) async {
+    final loadId = _activeDeliveryLoadId();
+    if (loadId.isEmpty) return;
+    try {
+      final plan = await ApiService.saveDeliveryPlan(
+        loadId: loadId,
+        distributorId: _deliveryDistributorId,
+        salesmanId: _currentSalesman.salesmanId ?? _currentSalesman.id,
+        latitude: position.latitude,
+        longitude: position.longitude,
+        recalculate: recalculate,
+      );
+      if (mounted && _activeDeliveryLoadId() == loadId) {
+        setState(() {
+          if (_deliveryPlan?['version'] != plan['version']) {
+            _deliveryRoadRoute = const [];
+            _deliveryRoadDistanceKm = null;
+            _deliveryRoadDurationMinutes = null;
+          }
+          _deliveryPlan = plan;
+          _deliveryPlanLoadId = loadId;
+          _lastDeliveryPlanOrigin = position;
+        });
+        _deliveryRouteRefresh?.call();
+      }
+    } catch (error) {
+      debugPrint('Delivery plan unavailable; keeping local outlet list: $error');
+    }
+  }
+
+  Future<void> _loadStartedDeliveryRoadRoute(
+    Position position,
+    List<Map<String, dynamic>> bills,
+    String loadKey,
+  ) async {
+    try {
+      await _updateDeliveryRoadRoute(position, bills, loadKey: loadKey);
+    } catch (error) {
+      debugPrint('Google route unavailable for $loadKey: $error');
+    }
+  }
+
   Future<void> _updateDeliveryRoadRoute(
     Position position,
-    List<Map<String, dynamic>> pendingBills,
-  ) async {
+    List<Map<String, dynamic>> pendingBills, {
+    String? loadKey,
+  }) async {
     if (pendingBills.isEmpty) return;
 
     // ============================================================
@@ -29784,17 +30277,16 @@ Thank you.
     final orderedBills = _optimizedDeliveryRoute(pendingBills);
 
     // ============================================================
-    // 2. REMOVE DUPLICATE CUSTOMER LOCATIONS
+    // 2. SEND EACH CUSTOMER OUTLET ONCE
     //
     // Example:
-    // Same customer may have 3 bills.
-    // Google Route should receive that outlet only once.
+    // Same customer may have 3 bills. Customers at the same coordinates
+    // still remain separate outlets in the saved sequence.
     //
     // Bill records themselves are NOT removed anywhere.
-    // This affects route coordinates only.
     // ============================================================
     final routeStops = <LatLng>[];
-    final seenLocations = <String>{};
+    final seenOutlets = <String>{};
 
     for (final bill in orderedBills) {
       final latitude = _getBillLatitude(bill);
@@ -29812,12 +30304,8 @@ Thank you.
         continue;
       }
 
-      // 6 decimals is accurate enough for identifying same outlet location.
-      final locationKey =
-          '${latitude.toStringAsFixed(6)}|'
-          '${longitude.toStringAsFixed(6)}';
-
-      if (seenLocations.add(locationKey)) {
+      final outletId = _deliveryText(bill, const ['SysAcCode', 'customer_id']);
+      if (seenOutlets.add(outletId)) {
         routeStops.add(LatLng(latitude, longitude));
       }
     }
@@ -29919,7 +30407,12 @@ Thank you.
       currentOriginLongitude = lastStop.longitude;
     }
 
-    if (!mounted) return;
+    if (!mounted ||
+        (loadKey != null &&
+            loadKey != _deliveryLoadKey(
+              _activeLoadSeries ?? '',
+              _activeLoadNumber ?? '',
+            ))) return;
 
     // ============================================================
     // 4. UPDATE ROUTE FOR CURRENT SELECTED LOAD
@@ -29971,11 +30464,17 @@ Thank you.
             position.latitude,
             position.longitude,
           );
-    if (movedMeters < 100 || _isRecalculatingDeliveryRoute) return;
-    unawaited(_recalculateActiveDeliveryRoute(position));
+    if (movedMeters < 100) return;
+    if (_isRecalculatingDeliveryRoute) {
+      _pendingDeliveryPosition = position;
+      return;
+    }
+    unawaited(_recalculateActiveDeliveryRoute(position, replanStops: true));
   }
 
-  Future<void> _recalculateActiveDeliveryRoute(Position position) async {
+  Future<void> _recalculateActiveDeliveryRoute(
+    Position position, {bool replanStops = false}
+  ) async {
     if (_isRecalculatingDeliveryRoute) return;
     _isRecalculatingDeliveryRoute = true;
     try {
@@ -29986,12 +30485,33 @@ Thank you.
           )
           .toList();
       if (pendingBills.isEmpty) return;
+      final lastPlanOrigin = _lastDeliveryPlanOrigin;
+      if (replanStops && _deliveryPlan != null &&
+          (lastPlanOrigin == null ||
+              Geolocator.distanceBetween(
+                lastPlanOrigin.latitude,
+                lastPlanOrigin.longitude,
+                position.latitude,
+                position.longitude,
+              ) >= 500)) {
+        await _saveDeliveryPlan(position, recalculate: true);
+      }
       await _updateDeliveryRoadRoute(position, pendingBills);
     } catch (error) {
       debugPrint('Unable to recalculate delivery route: $error');
     } finally {
       _isRecalculatingDeliveryRoute = false;
+      final pendingPosition = _pendingDeliveryPosition;
+      _pendingDeliveryPosition = null;
+      if (pendingPosition != null && mounted) {
+        _handleDeliveryPositionUpdate(pendingPosition);
+      }
     }
+  }
+
+  Future<void> _refreshPlanAfterDelivery(Position position, {required bool recalculate}) async {
+    await _saveDeliveryPlan(position, recalculate: recalculate);
+    await _recalculateActiveDeliveryRoute(position);
   }
 
   Widget _buildRoutePlanPortalHeader(BuildContext routeContext) {
@@ -30118,13 +30638,24 @@ Thank you.
   }
 
   void _showDeliveryRoute(List<Map<String, dynamic>> bills) {
-    final route = _optimizedDeliveryRoute(bills);
+    var route = _optimizedDeliveryRoute(bills);
+    var showAllStops = false;
     var totalDistance = 0.0;
+    if (_salesmanPosition != null &&
+        route.isNotEmpty &&
+        _hasValidDeliveryLocation(route.first)) {
+      totalDistance += Geolocator.distanceBetween(
+        _salesmanPosition!.latitude,
+        _salesmanPosition!.longitude,
+        _getBillLatitude(route.first)!,
+        _getBillLongitude(route.first)!,
+      ) / 1000;
+    }
     for (var i = 1; i < route.length; i++) {
       totalDistance += _routeDistanceKm(route[i - 1], route[i]);
     }
     final estimatedMinutes = math.max(15, (totalDistance / 25 * 60).round());
-    final totalAmount = route.fold<double>(
+    final totalAmount = bills.fold<double>(
       0,
       (sum, bill) => sum + _deliveryAmount(bill, const ['Amt', 'Amount']),
     );
@@ -30133,11 +30664,78 @@ Thank you.
       context,
       MaterialPageRoute(
         builder: (routeContext) => StatefulBuilder(
-          builder: (routeContext, setRouteState) => Scaffold(
+          builder: (routeContext, setRouteState) {
+            _deliveryRouteRefresh = () {
+              if (routeContext.mounted) {
+                setRouteState(() => route = _optimizedDeliveryRoute(bills));
+              }
+            };
+            return Scaffold(
             backgroundColor: const Color(0xFFF4F7FB),
             appBar: PreferredSize(
-              preferredSize: const Size.fromHeight(124),
+              preferredSize: Size.fromHeight(
+                136 + MediaQuery.paddingOf(routeContext).top,
+              ),
               child: _buildRoutePlanPortalHeader(routeContext),
+            ),
+            bottomNavigationBar: SafeArea(
+              top: false,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  border: Border(top: BorderSide(color: Color(0xFFE5E7EB))),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        height: 48,
+                        child: OutlinedButton(
+                          onPressed: route.isEmpty
+                              ? null
+                              : () => _showRouteBillsSheet(route),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Color(0xFF075FE4)),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(11),
+                            ),
+                          ),
+                          child: const Text('Collection'),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: SizedBox(
+                        height: 48,
+                        child: ElevatedButton.icon(
+                          onPressed: route.isEmpty
+                              ? null
+                              : () => _openCompleteRouteInMaps(
+                                  route,
+                                  onChanged: () => setRouteState(() {
+                                    route = _optimizedDeliveryRoute(bills);
+                                  }),
+                                ),
+                          icon: const Icon(Icons.navigation, size: 16),
+                          label: const Text('Start Navigation', maxLines: 1),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF16A34A),
+                            foregroundColor: Colors.white,
+                            elevation: 0,
+                            padding: const EdgeInsets.symmetric(horizontal: 5),
+                            textStyle: const TextStyle(fontSize: 11),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(11),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
             body: ListView(
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
@@ -30308,15 +30906,15 @@ Thank you.
                             top: Radius.circular(12),
                           ),
                         ),
-                        child: const Row(
+                        child: Row(
                           children: [
-                            Icon(
+                            const Icon(
                               Icons.alt_route,
                               color: Colors.white,
                               size: 19,
                             ),
-                            SizedBox(width: 8),
-                            Expanded(
+                            const SizedBox(width: 8),
+                            const Expanded(
                               child: Text(
                                 'Delivery Sequence (Optimized)',
                                 style: TextStyle(
@@ -30326,17 +30924,34 @@ Thank you.
                                 ),
                               ),
                             ),
-                            Icon(
-                              Icons.swap_vert,
-                              color: Colors.white,
-                              size: 20,
+                            IconButton(
+                              tooltip: 'Recalculate remaining outlets',
+                              icon: const Icon(Icons.swap_vert, color: Colors.white, size: 20),
+                              onPressed: () async {
+                                try {
+                                  final position = await _requestSalesmanLocation();
+                                  await _saveDeliveryPlan(position, recalculate: true);
+                                  await _recalculateActiveDeliveryRoute(position);
+                                  if (routeContext.mounted) {
+                                    setRouteState(() => route = _optimizedDeliveryRoute(bills));
+                                  }
+                                } catch (error) {
+                                  if (routeContext.mounted) {
+                                    showSafeSnackBar(routeContext, '$error', backgroundColor: errorRed);
+                                  }
+                                }
+                              },
                             ),
                           ],
                         ),
                       ),
                       _buildRouteStopsList(
                         route,
-                        onChanged: () => setRouteState(() {}),
+                        maxVisibleStops: showAllStops ? null : 5,
+                        onViewMore: () => setRouteState(() => showAllStops = true),
+                        onChanged: () => setRouteState(() {
+                          route = _optimizedDeliveryRoute(bills);
+                        }),
                       ),
                     ],
                   ),
@@ -30380,7 +30995,7 @@ Thank you.
                       ),
                       const Spacer(),
                       Text(
-                        '${route.length}',
+                        '${bills.length}',
                         style: const TextStyle(
                           color: Color(0xFF071D49),
                           fontSize: 14,
@@ -30390,71 +31005,47 @@ Thank you.
                     ],
                   ),
                 ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: route.isEmpty
-                            ? null
-                            : () => _showRouteBillsSheet(route),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 15),
-                          side: const BorderSide(color: Color(0xFF075FE4)),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(11),
-                          ),
-                        ),
-                        child: const Text('View All Bills'),
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        onPressed: () => _openCompleteRouteInMaps(
-                          route,
-                          onChanged: () => setRouteState(() {}),
-                        ),
-                        icon: const Icon(Icons.navigation, size: 18),
-                        label: const Text('Start Navigation'),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF16A34A),
-                          foregroundColor: Colors.white,
-                          elevation: 0,
-                          padding: const EdgeInsets.symmetric(vertical: 15),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(11),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
               ],
             ),
-          ),
+          );
+          },
         ),
       ),
-    );
+    ).whenComplete(() => _deliveryRouteRefresh = null);
   }
 
   Widget _buildRouteStopsList(
     List<Map<String, dynamic>> route, {
     String searchQuery = '',
+    int? maxVisibleStops,
+    VoidCallback? onViewMore,
     VoidCallback? onChanged,
   }) {
     final query = searchQuery.trim().toLowerCase();
     final matchingIndices = query.isEmpty
-        ? List<int>.generate(math.min(route.length, 10), (index) => index)
+        ? List<int>.generate(route.length, (index) => index)
         : List<int>.generate(route.length, (index) => index).where((index) {
             final bill = route[index];
             return _deliveryCustomerName(bill).toLowerCase().contains(query) ||
-                _deliveryBillKey(bill).toLowerCase().contains(query);
+                _outletBills(bill).any(
+                  (item) => _deliveryBillKey(item).toLowerCase().contains(query),
+                );
           }).toList();
+    final visibleIndices = maxVisibleStops == null
+        ? matchingIndices
+        : matchingIndices.take(maxVisibleStops).toList();
 
     Widget buildStop(int index) {
       final distance = index == 0
-          ? 0.0
+          ? (_salesmanPosition != null &&
+                  _hasValidDeliveryLocation(route[index])
+              ? Geolocator.distanceBetween(
+                    _salesmanPosition!.latitude,
+                    _salesmanPosition!.longitude,
+                    _getBillLatitude(route[index])!,
+                    _getBillLongitude(route[index])!,
+                  ) / 1000
+              : 0.0)
           : _routeDistanceKm(route[index - 1], route[index]);
       return _buildRouteStopCard(
         route[index],
@@ -30475,25 +31066,12 @@ Thank you.
               padding: EdgeInsets.symmetric(vertical: 16),
               child: Text('No invoices match your search.'),
             ),
-          ...matchingIndices.map(buildStop),
-          if (query.isEmpty && route.length > matchingIndices.length)
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(top: 1),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              decoration: BoxDecoration(
-                color: const Color(0xFFEAF3FF),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFFC8DBF6)),
-              ),
+          ...visibleIndices.map(buildStop),
+          if (visibleIndices.length < matchingIndices.length)
+            TextButton(
+              onPressed: onViewMore,
               child: Text(
-                'Showing first ${matchingIndices.length} of ${route.length} bills',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Color(0xFF0A3E92),
-                  fontSize: 10,
-                  fontWeight: FontWeight.w800,
-                ),
+                'View more (${matchingIndices.length - visibleIndices.length} outlets)',
               ),
             ),
         ],
@@ -30502,6 +31080,7 @@ Thank you.
   }
 
   void _showRouteBillsSheet(List<Map<String, dynamic>> route) {
+    final allBills = route.expand(_outletBills).toList();
     String invoiceQuery = '';
     showModalBottomSheet<void>(
       context: context,
@@ -30510,7 +31089,7 @@ Thank you.
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
-            final matchingBills = route.where((bill) {
+            final matchingBills = allBills.where((bill) {
               final query = invoiceQuery.trim().toLowerCase();
               return query.isEmpty || [
                 _deliveryBillKey(bill),
@@ -30544,7 +31123,7 @@ Thank you.
                       child: Row(
                         children: [
                           Text(
-                            'All Delivery Bills (${route.length})',
+                            'All Delivery Bills (${allBills.length})',
                             style: const TextStyle(
                               color: Color(0xFF071D49),
                               fontSize: 16,
@@ -30679,6 +31258,18 @@ Thank you.
     );
   }
 
+  List<Map<String, dynamic>> _outletBills(Map<String, dynamic> outlet) {
+    final values = outlet['_outletBills'];
+    return values is List
+        ? values.whereType<Map<String, dynamic>>().toList()
+        : [outlet];
+  }
+
+  Map<String, dynamic> _pendingBillForOutlet(Map<String, dynamic> outlet) {
+    final bills = _outletBills(outlet);
+    return bills.firstWhere((item) => !_isDeliveryCompleted(item), orElse: () => bills.first);
+  }
+
   Widget _buildRouteStopCard(
     Map<String, dynamic> bill,
     int index,
@@ -30687,16 +31278,20 @@ Thank you.
     List<Map<String, dynamic>>? route,
     VoidCallback? onChanged,
   }) {
-    final amount = _deliveryAmount(bill, const ['Amt', 'Amount']);
+    final outletBills = _outletBills(bill);
+    final activeBill = _pendingBillForOutlet(bill);
+    final amount = outletBills.fold<double>(
+      0, (sum, item) => sum + _deliveryAmount(item, const ['Amt', 'Amount']),
+    );
     final completed = _isDeliveryCompleted(bill);
     final isNextStop =
         route == null || identical(_nextDeliveryStop(route), bill);
     final canOpenMap =
         _getBillLatitude(bill) != null && _getBillLongitude(bill) != null;
     final canTakePayment =
-        !_isLoadBillPaymentCollected(bill) &&
-        !_pendingLoadPayments.contains(_loadPaymentKey(bill)) &&
-        _deliveryAmount(bill, const ['Bamt', 'balance']) > 0;
+        !_isLoadBillPaymentCollected(activeBill) &&
+        !_pendingLoadPayments.contains(_loadPaymentKey(activeBill)) &&
+        _deliveryAmount(activeBill, const ['Bamt', 'balance']) > 0;
     return Container(
       margin: EdgeInsets.only(bottom: index == stopCount - 1 ? 0 : 9),
       padding: const EdgeInsets.all(10),
@@ -30805,9 +31400,15 @@ Thank you.
                         ),
                       ],
                     ),
+                    if (!_hasValidDeliveryLocation(bill) ||
+                        _deliveryText(bill, const ['SysAcCode', 'customer_id']).isEmpty)
+                      const Text(
+                        'Outlet ID or location needs correction',
+                        style: TextStyle(color: errorRed, fontSize: 9),
+                      ),
                     const SizedBox(height: 6),
                     Text(
-                      'Bill: ${_deliveryBillKey(bill)}  •  Amount: \u20B9${amount.toStringAsFixed(0)}',
+                      '${outletBills.length} bill(s)  •  Amount: \u20B9${amount.toStringAsFixed(0)}',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -30819,8 +31420,8 @@ Thank you.
                     const SizedBox(height: 4),
                     Text(
                       index == 0
-                          ? 'First delivery stop  •  ETA: Start'
-                          : 'Distance: ${legDistance.toStringAsFixed(1)} Km  •  ETA: ${math.max(1, (legDistance / 25 * 60).round())} Min',
+                          ? 'From your location: ${legDistance.toStringAsFixed(1)} Km'
+                          : 'From previous stop: ${legDistance.toStringAsFixed(1)} Km  •  ETA: ${math.max(1, (legDistance / 25 * 60).round())} Min',
                       style: const TextStyle(
                         color: Color(0xFF667085),
                         fontSize: 9,
@@ -30838,7 +31439,7 @@ Thank you.
                 child: SizedBox(
                   height: 36,
                   child: OutlinedButton.icon(
-                    onPressed: () => _showOutstandingDetailsDialog(bill),
+                    onPressed: () => _showOutstandingDetailsDialog(activeBill),
                     icon: const Icon(Icons.receipt_long_outlined, size: 14),
                     label: const Text('View Details'),
                     style: OutlinedButton.styleFrom(
@@ -30875,7 +31476,7 @@ Thank you.
                   color: canTakePayment
                       ? successGreen
                       : const Color(0xFFB8C1CC),
-                  onPressed: () => _showOutstandingPaymentDialog(bill),
+                  onPressed: () => _showOutstandingPaymentDialog(activeBill),
                 ),
               ],
               const SizedBox(width: 7),
@@ -30886,7 +31487,7 @@ Thank you.
                     onPressed: completed || !isNextStop
                         ? null
                         : () async {
-                            if (await _markDeliveryCompleted(bill)) {
+                            if (await _markDeliveryCompleted(activeBill)) {
                               onChanged?.call();
                             }
                           },
@@ -30919,6 +31520,22 @@ Thank you.
               ),
             ],
           ),
+          if (outletBills.length > 1)
+            ExpansionTile(
+              title: Text('${outletBills.length} bills at this outlet'),
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: EdgeInsets.zero,
+              children: outletBills.map((item) => ListTile(
+                dense: true,
+                title: Text(_deliveryBillKey(item)),
+                subtitle: Text(_isDeliveryCompleted(item) ? 'Delivered' : 'Pending'),
+                trailing: IconButton(
+                  tooltip: 'View bill',
+                  icon: const Icon(Icons.receipt_long_outlined),
+                  onPressed: () => _showOutstandingDetailsDialog(item),
+                ),
+              )).toList(),
+            ),
         ],
       ),
     );
