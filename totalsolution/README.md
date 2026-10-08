@@ -96,6 +96,17 @@ flutter pub get
 flutter run
 ```
 
+The app uses `https://totalmobileapp.onrender.com/api` by default. To use a
+local backend, set `API_BASE_URL` at build time. For an Android emulator:
+
+```bash
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:3000/api
+```
+
+For a physical phone, use your computer's LAN IP instead of `10.0.2.2` and
+keep the phone and computer on the same network. Use an HTTPS URL for deployed
+builds. `localhost` on a phone points to the phone itself.
+
 ### Running the Backend (Optional)
 
 1. Navigate to backend directory:

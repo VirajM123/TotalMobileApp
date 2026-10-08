@@ -38,8 +38,13 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Local development reads android/local.properties. CI/release builds
+        // can inject the same value through the MAPS_API_KEY environment
+        // variable instead of producing an APK with an empty Maps key.
         manifestPlaceholders["MAPS_API_KEY"] =
-            localProperties.getProperty("MAPS_API_KEY", "")
+            localProperties.getProperty("MAPS_API_KEY")
+                ?: System.getenv("MAPS_API_KEY")
+                ?: ""
     }
 
     buildTypes {
