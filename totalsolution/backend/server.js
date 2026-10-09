@@ -88,10 +88,19 @@ let collections = {};
 
 async function connectToMongoDB() {
     try {
-        const client = await MongoClient.connect(MONGODB_URI, {
-            useNewUrlParser: true,
-            useUnifiedTopology: true
-        });
+        let client;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                client = await MongoClient.connect(MONGODB_URI);
+                break;
+            } catch (error) {
+                if (error.name !== 'MongoServerSelectionError' || attempt === 3) {
+                    throw error;
+                }
+                console.warn(`MongoDB server unavailable (attempt ${attempt}/3); retrying in 3 seconds...`);
+                await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+        }
         db = client.db(DB_NAME);
         
         collections.register = db.collection(COLLECTIONS.REGISTER);
@@ -189,6 +198,11 @@ await db.collection('Mas_Delivery_Route_Plans').createIndex({ loadId: 1 }, { uni
         console.log('Indexes created successfully');
     } catch (error) {
         console.error('MongoDB connection error:', error);
+        if (error.reason?.servers) {
+            for (const [host, server] of error.reason.servers) {
+                console.error(`${host}: ${server.error?.message || server.type}`);
+            }
+        }
         process.exit(1);
     }
 }
@@ -4130,16 +4144,17 @@ app.post('/api/login', async (req, res) => {
         
         console.log('Login attempt for:', { email });
         
-        if (!validateEmail(email)) {
-            return res.status(401).json({ message: 'Invalid email format' });
+        const isMobileNumber = validateMobileNumber(email);
+        if (!isMobileNumber && !validateEmail(email)) {
+            return res.status(401).json({ message: 'Invalid email or mobile number format' });
         }
         
-        const normalizedEmail = normalizeEmail(email);
-        
-        const user = await collections.register.findOne({ email: normalizedEmail });
+        const user = await collections.register.findOne(isMobileNumber
+            ? { phoneNumber: email }
+            : { email: normalizeEmail(email) });
         
         if (!user) {
-            return res.status(401).json({ message: 'Invalid credentials. Email or password incorrect.' });
+            return res.status(401).json({ message: 'Invalid credentials. Email, mobile number or password incorrect.' });
         }
         
         if (user.isActive === false) {
@@ -4149,7 +4164,7 @@ app.post('/api/login', async (req, res) => {
         const isValidPassword = await bcrypt.compare(password, user.password);
         
         if (!isValidPassword) {
-            return res.status(401).json({ message: 'Invalid credentials. Email or password incorrect.' });
+            return res.status(401).json({ message: 'Invalid credentials. Email, mobile number or password incorrect.' });
         }
 
         const { _id, password: _, ...userResponse } = user;
@@ -10287,6 +10302,15 @@ app.post('/api/load-delivery/route', async (req, res) => {
         const routesData = await routesResponse.json();
         if (!routesResponse.ok || !Array.isArray(routesData.routes) || !routesData.routes[0]) {
             console.error('Google Routes API error:', routesData?.error?.message ?? routesResponse.status);
+            if (routesResponse.status === 403) {
+                return res.json({
+                    success: true,
+                    routeAvailable: false,
+                    encodedPolyline: '',
+                    distanceMeters: 0,
+                    durationSeconds: 0
+                });
+            }
             return res.status(502).json({
                 success: false,
                 message: routesData?.error?.message || 'Unable to calculate the Google route'
