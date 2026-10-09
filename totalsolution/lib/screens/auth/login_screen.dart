@@ -124,6 +124,8 @@ class CustomerModel {
   final String? erpRouteCode;
   final String? customerCompanyKey;
   final List<Map<String, dynamic>> companies;
+  final double? outletLatitude;
+  final double? outletLongitude;
 
   CustomerModel({
     required this.id,
@@ -149,6 +151,8 @@ class CustomerModel {
     this.erpRouteCode,
     this.customerCompanyKey,
     this.companies = const [],
+    this.outletLatitude,
+    this.outletLongitude,
   });
 
   static String? _firstCompanyValue(Map<String, dynamic> map, String key) {
@@ -251,6 +255,14 @@ class CustomerModel {
           .whereType<Map>()
           .map((company) => Map<String, dynamic>.from(company))
           .toList(),
+      outletLatitude: double.tryParse(
+        (map['GeoLatitude'] ?? map['geoLatitude'] ?? map['latitude'] ?? '')
+            .toString(),
+      ),
+      outletLongitude: double.tryParse(
+        (map['GeoLongitude'] ?? map['geoLongitude'] ?? map['longitude'] ?? '')
+            .toString(),
+      ),
     );
   }
 }
@@ -694,6 +706,8 @@ class OrderModel {
   final String? notes;
   final String? internalNotes;
   final DateTime createdAt;
+  final double? latitude;
+  final double? longitude;
   final List<OrderTimelineEvent> timeline;
 
   OrderModel({
@@ -717,6 +731,8 @@ class OrderModel {
     this.notes,
     this.internalNotes,
     required this.createdAt,
+    this.latitude,
+    this.longitude,
     required this.timeline,
   });
 
@@ -829,11 +845,15 @@ class CartItemData {
 
 // ==================== API Service for backend communication ====================
 class ApiService {
-  // Override at build time with --dart-define=API_BASE_URL=http://HOST:3000/api.
-  static const String _remoteBaseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-    defaultValue: 'https://totalmobileapp.onrender.com/api',
-  );
+
+  // LOCAL URL (For Testing)
+  //static const String _remoteBaseUrl =
+   //   "http://localhost:3000/api";
+
+   PRODUCTION URL (Render)
+   static const String _remoteBaseUrl =
+       "https://totalmobileapp.onrender.com/api";
+
   static String get apiUrl {
     return _remoteBaseUrl;
   }
@@ -2761,6 +2781,10 @@ class OrderService {
         'customerPhone': order.customerPhone,
         'areaName': order.areaName,
         'routeName': order.routeName,
+        if (order.latitude != null && order.longitude != null) ...{
+          'latitude': order.latitude,
+          'longitude': order.longitude,
+        },
         'salesman_id': order.salesmanId,
         'salesmanName': order.salesmanName,
         'distributor_id': currentDistributorId,
@@ -2835,6 +2859,8 @@ class OrderService {
         notes: order.notes,
         internalNotes: order.internalNotes,
         createdAt: order.createdAt,
+        latitude: order.latitude,
+        longitude: order.longitude,
         timeline: order.timeline,
       );
       _orders.insert(0, savedOrder);
@@ -15236,6 +15262,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   bool _showAllOrderCustomers = false;
   String _orderProductFilter = 'all';
   final Map<String, Future<double>> _orderOutstandingFutures = {};
+  final Map<String, Position> _capturedOutletLocations = {};
+  final Set<String> _capturingOutletLocations = {};
 
   List<String> _banksList = [];
   List<String> _upiTypesList = [];
@@ -18061,6 +18089,10 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         notes: _orderNotes,
         internalNotes: null,
         createdAt: DateTime.now(),
+        latitude: _capturedOutletLocations[customer.id]?.latitude ??
+            customer.outletLatitude,
+        longitude: _capturedOutletLocations[customer.id]?.longitude ??
+            customer.outletLongitude,
         timeline: [
           OrderTimelineEvent(
             id: 'timeline_${DateTime.now().millisecondsSinceEpoch}',
@@ -23136,6 +23168,31 @@ Thank you.
     );
   }
 
+  Future<void> _captureOutletLocation(CustomerModel customer) async {
+    if (_capturingOutletLocations.contains(customer.id)) return;
+    setState(() => _capturingOutletLocations.add(customer.id));
+    try {
+      final position = await _requestSalesmanLocation();
+      await ApiService.updateCustomer(customer.id, {
+        'GeoLatitude': position.latitude,
+        'GeoLongitude': position.longitude,
+      });
+      if (!mounted) return;
+      setState(() => _capturedOutletLocations[customer.id] = position);
+      showSafeSnackBar(context, 'Outlet location saved');
+    } catch (error) {
+      if (!mounted) return;
+      showSafeSnackBar(
+        context,
+        error.toString().replaceFirst('Exception: ', ''),
+        backgroundColor: errorRed,
+      );
+    } finally {
+      if (mounted)
+        setState(() => _capturingOutletLocations.remove(customer.id));
+    }
+  }
+
   Widget _orderCard({
     required Widget child,
     EdgeInsetsGeometry padding = const EdgeInsets.all(12),
@@ -23309,7 +23366,7 @@ Thank you.
         ),
         decoration: InputDecoration(
           hintText: hint,
-          hintStyle: const TextStyle(color: Color(0xFF8AA0C5), fontSize: 11.5),
+          hintStyle: const TextStyle(color: Color(0xFF8AA0C5), fontSize: 12),
           prefixIcon: const Icon(
             Icons.search_rounded,
             size: 20,
@@ -23320,15 +23377,15 @@ Thank you.
           fillColor: Colors.white,
           contentPadding: const EdgeInsets.symmetric(vertical: 9),
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(7),
+            borderRadius: BorderRadius.circular(8),
             borderSide: const BorderSide(color: Color(0xFFD7E1F0)),
           ),
           enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(7),
+            borderRadius: BorderRadius.circular(8),
             borderSide: const BorderSide(color: Color(0xFFD7E1F0)),
           ),
           focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(7),
+            borderRadius: BorderRadius.circular(8),
             borderSide: const BorderSide(color: Color(0xFF0865EA), width: 1.4),
           ),
         ),
@@ -23388,11 +23445,11 @@ Thank you.
       children: [
         // COMPANY
         Container(
-          height: 54,
+          height: 51,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.circular(9),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(color: const Color(0xFFDCE6F3)),
             boxShadow: const [
               BoxShadow(
@@ -23407,7 +23464,7 @@ Thank you.
               const Icon(
                 Icons.apartment_rounded,
                 color: Color(0xFF0A65E7),
-                size: 23,
+                size: 24,
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -23419,7 +23476,7 @@ Thank you.
                       'Select Company',
                       style: TextStyle(
                         color: Color(0xFF142D67),
-                        fontSize: 12.2,
+                        fontSize: 16,
                         fontWeight: FontWeight.w900,
                       ),
                     ),
@@ -23428,9 +23485,14 @@ Thank you.
                           (entry) => DropdownMenuItem<String>(
                             value: entry.key,
                             child: Text(
-                              entry.value,
+                              entry.value.toUpperCase(),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.black,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                         )
@@ -23455,15 +23517,15 @@ Thank you.
             ],
           ),
         ),
-        const SizedBox(height: 7),
+        const SizedBox(height: 8),
 
         // ROUTE
         Container(
-          height: 54,
+          height: 51,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.circular(9),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(color: const Color(0xFFDCE6F3)),
             boxShadow: const [
               BoxShadow(
@@ -23478,7 +23540,7 @@ Thank you.
               const Icon(
                 Icons.location_on_rounded,
                 color: Color(0xFF18A43F),
-                size: 24,
+                size: 25,
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -23500,7 +23562,7 @@ Thank you.
                           'Route',
                           style: TextStyle(
                             color: Color(0xFF6077A7),
-                            fontSize: 9.5,
+                            fontSize: 10,
                             height: 1.05,
                             fontWeight: FontWeight.w600,
                           ),
@@ -23510,7 +23572,7 @@ Thank you.
                           'Select Route',
                           style: TextStyle(
                             color: Color(0xFF142D67),
-                            fontSize: 12.2,
+                            fontSize: 13,
                             height: 1.05,
                             fontWeight: FontWeight.w900,
                           ),
@@ -23527,7 +23589,7 @@ Thank you.
                                 'Route',
                                 style: TextStyle(
                                   color: Color(0xFF6077A7),
-                                  fontSize: 9.5,
+                                  fontSize: 10,
                                   height: 1.05,
                                   fontWeight: FontWeight.w600,
                                 ),
@@ -23539,7 +23601,7 @@ Thank you.
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                   color: Color(0xFF142D67),
-                                  fontSize: 12.2,
+                                  fontSize: 13,
                                   height: 1.05,
                                   fontWeight: FontWeight.w900,
                                 ),
@@ -23578,7 +23640,7 @@ Thank you.
             ],
           ),
         ),
-        const SizedBox(height: 7),
+        const SizedBox(height: 8),
         _buildOrderSearchBox(
           controller: _customerSearchController,
           hint: 'Search customer by name, code...',
@@ -23593,7 +23655,7 @@ Thank you.
                 'Recent Customers',
                 style: TextStyle(
                   color: Color(0xFF17356F),
-                  fontSize: 12.1,
+                  fontSize: 13,
                   height: 1,
                   fontWeight: FontWeight.w900,
                 ),
@@ -23673,14 +23735,14 @@ Thank you.
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 120),
                       constraints: const BoxConstraints(minHeight: 67),
-                      padding: const EdgeInsets.fromLTRB(8, 8, 5, 8),
+                      padding: const EdgeInsets.fromLTRB(9, 10, 8, 8),
                       decoration: BoxDecoration(
                         color: selected
                             ? const Color(0xFFF1F7FF)
                             : Colors.white,
                         borderRadius: BorderRadius.circular(9),
                         border: Border.all(
-                          color: selected
+                          color: selected || visibleCustomers.length == 1
                               ? const Color(0xFF7FB2FF)
                               : const Color(0xFFE0E8F3),
                           width: selected ? 1.25 : 1,
@@ -23693,101 +23755,164 @@ Thank you.
                           ),
                         ],
                       ),
-                      child: Row(
+                      child: Column(
                         children: [
-                          Container(
-                            width: 43,
-                            height: 43,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFE8F3FF),
-                              borderRadius: BorderRadius.circular(11),
-                            ),
-                            child: Text(
-                              _orderInitials(customer.name),
-                              style: const TextStyle(
-                                color: Color(0xFF0865EA),
-                                fontSize: 16,
-                                height: 1,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        customer.name.toUpperCase(),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          color: Color(0xFF17356F),
-                                          fontSize: 10.6,
-                                          height: 1.05,
-                                          fontWeight: FontWeight.w900,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
+                          Row(
+                            children: [
+                              Container(
+                                width: 43,
+                                height: 43,
+                                alignment: Alignment.center,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE8F3FF),
+                                  borderRadius: BorderRadius.circular(11),
                                 ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  'Address: ${(customer.address?.trim().isNotEmpty ?? false) ? customer.address!.trim() : '-'}',
+                                child: Text(
+                                  _orderInitials(customer.name),
                                   style: const TextStyle(
-                                    color: Color(0xFF58709E),
-                                    fontSize: 9.4,
-                                    height: 1.05,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                _buildCustomerGstLine(customer),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 5),
-                          SizedBox(
-                            width: 72,
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                const Text(
-                                  'Outstanding',
-                                  style: TextStyle(
-                                    color: Color(0xFF7185AA),
-                                    fontSize: 8.5,
-                                    height: 1,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                                const SizedBox(height: 3),
-                                Text(
-                                  '₹ ${outstanding.toStringAsFixed(0)}',
-                                  maxLines: 1,
-                                  style: TextStyle(
-                                    color: outstanding > 0.005
-                                        ? const Color(0xFF15346F)
-                                        : const Color(0xFF12853A),
-                                    fontSize: 11.7,
+                                    color: Color(0xFF0865EA),
+                                    fontSize: 16,
                                     height: 1,
                                     fontWeight: FontWeight.w900,
                                   ),
                                 ),
-                              ],
-                            ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            customer.name.toUpperCase(),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              color: Color(0xFF17356F),
+                                              fontSize: 11.5,
+                                              height: 1.05,
+                                              fontWeight: FontWeight.w900,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Address: ${(customer.address?.trim().isNotEmpty ?? false) ? customer.address!.trim() : '-'}',
+                                      style: const TextStyle(
+                                        color: Color(0xFF58709E),
+                                        fontSize: 9.8,
+                                        height: 1.05,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    _buildCustomerGstLine(customer),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 5),
+                              SizedBox(
+                                width: 72,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    const Text(
+                                      'Outstanding',
+                                      style: TextStyle(
+                                        color: Color(0xFF7185AA),
+                                        fontSize: 9,
+                                        height: 1,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                      '₹ ${outstanding.toStringAsFixed(0)}',
+                                      maxLines: 1,
+                                      style: TextStyle(
+                                        color: outstanding > 0.005
+                                            ? const Color(0xFF15346F)
+                                            : const Color(0xFF12853A),
+                                        fontSize: 12,
+                                        height: 1,
+                                        fontWeight: FontWeight.w900,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 1),
+                              const Icon(
+                                Icons.chevron_right_rounded,
+                                color: Color(0xFF0A65E7),
+                                size: 20,
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 1),
-                          const Icon(
-                            Icons.chevron_right_rounded,
-                            color: Color(0xFF0A65E7),
-                            size: 20,
+                          const SizedBox(height: 9),
+                          const Divider(height: 1, color: Color(0xFFD9E2F0)),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed:
+                                    _capturingOutletLocations.contains(
+                                      customer.id,
+                                    )
+                                    ? null
+                                    : () => _captureOutletLocation(customer),
+                                icon: const Icon(
+                                  Icons.location_on_rounded,
+                                  size: 18,
+                                ),
+                                label: Text(
+                                  _capturingOutletLocations.contains(
+                                        customer.id,
+                                      )
+                                      ? 'Capturing...'
+                                      : 'Capture Outlet Location',
+                                  style: const TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: const Color(0xFF0865EA),
+                                  side: const BorderSide(
+                                    color: Color(0xFF0865EA),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                  ),
+                                  minimumSize: const Size(0, 30),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 9),
+                              Expanded(
+                                child: Text(
+                                  _capturedOutletLocations.containsKey(customer.id)
+                                      ? 'Saved: ${_capturedOutletLocations[customer.id]!.latitude.toStringAsFixed(6)}, ${_capturedOutletLocations[customer.id]!.longitude.toStringAsFixed(6)}'
+                                      : customer.outletLatitude != null && customer.outletLongitude != null
+                                          ? 'Saved: ${customer.outletLatitude!.toStringAsFixed(6)}, ${customer.outletLongitude!.toStringAsFixed(6)}'
+                                          : 'Location not saved',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Color(0xFF6077A7),
+                                    fontSize: 9.5,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -31161,8 +31286,9 @@ Thank you.
                           itemCount: matchingBills.length,
                           itemBuilder: (context, index) {
                             final bill = matchingBills[index];
-                            final routeIndex = route.indexOf(bill);
-                            final distance = routeIndex == 0
+                            final routeIndex = route.indexWhere((outlet) =>
+                                _outletBills(outlet).contains(bill));
+                            final distance = routeIndex <= 0
                                 ? 0.0
                                 : _routeDistanceKm(
                                     route[routeIndex - 1],
@@ -33610,15 +33736,15 @@ class _LoginScreenState extends State<LoginScreen> {
               keyboardType: TextInputType.emailAddress,
               textInputAction: TextInputAction.next,
               decoration: _authInputDecoration(
-                hint: 'Email',
+                hint: 'Email or Mobile Number',
                 icon: Icons.person_outline,
               ),
               validator: (value) {
                 if (value == null || value.isEmpty) {
-                  return 'Please enter your email';
+                  return 'Please enter your email or mobile number';
                 }
-                if (!_isValidEmail(value)) {
-                  return 'Please enter a valid email address';
+                if (!_isValidEmail(value) && !_isValidPhoneNumber(value)) {
+                  return 'Please enter a valid email or 10-digit mobile number';
                 }
                 return null;
               },
