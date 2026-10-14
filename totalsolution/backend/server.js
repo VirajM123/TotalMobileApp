@@ -1142,6 +1142,7 @@ app.post('/api/import/customers', excelUpload.single('file'), async (req, res) =
                 const trimmedAddress = address ? address.toString().trim() : null;
                 const trimmedPhone = phone ? phone.toString().trim() : '';
                 const trimmedDistributorId = distributorIdFromExcel ? distributorIdFromExcel.toString().trim() : distributorId;
+                if (trimmedDistributorId !== distributorId) throw new Error('Distributor ID in CSV differs from requested distributor');
                 const trimmedSysCompCode = String(sysCompCode).trim();
                 const customerCompanyKey = String(suppliedCustomerCompanyKey).trim() ||
                     [String(sysAcCode).trim(), trimmedSysCompCode, String(areaCode).trim()].filter(Boolean).join('_');
@@ -1290,6 +1291,19 @@ if (existingCustomer) {
     }
 });
 
+// Canonical two-decimal SKU: keep distributor/company separately scoped.
+function canonicalProductSku(code, mrp) {
+    const match = /^(.+)_([0-9]+(?:\.[0-9]{1,2})?)$/.exec(String(code ?? '').trim());
+    const amount = Number(mrp);
+    if (!match || !Number.isFinite(amount) || amount < 0 || Math.abs(amount * 100 - Math.round(amount * 100)) > 0.000001) {
+        throw new Error(`Invalid product SKU/MRP pair: ${code} / ${mrp}`);
+    }
+    if (Math.round(Number(match[2]) * 100) !== Math.round(amount * 100)) {
+        throw new Error(`Product SKU does not match MRP: ${code} / ${mrp}`);
+    }
+    return `${match[1]}_${amount.toFixed(2)}`;
+}
+
 // Import products from Excel
 app.post('/api/import/products', excelUpload.single('file'), async (req, res) => {
     try {
@@ -1370,7 +1384,7 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 }
                 
                 const trimmedProductName = productName.toString().trim();
-                const trimmedProductCode = productCode.toString().trim();
+                const trimmedProductCode = canonicalProductSku(productCode, mrp);
                 const trimmedCategory = category ? category.toString().trim() : 'General';
                 const trimmedDescription = description ? description.toString().trim() : null;
                 const validMRP = isNaN(mrp) || mrp <= 0 ? price : mrp;
@@ -1382,11 +1396,19 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                     companyName: String(companyName).trim()
                 };
                 
-                const existingProduct = await collections.product.findOne({
-                    sku: trimmedProductCode,
-                    distributorId: trimmedDistributorId,
-                    sysCompCode: String(sysCompCode).trim()
-                });
+                const productScope = { distributorId: trimmedDistributorId, sysCompCode: String(sysCompCode).trim() };
+                let existingProduct = await collections.product.findOne({ ...productScope, sku: trimmedProductCode });
+                if (!existingProduct) {
+                    // Upgrade a legacy truncated SKU in place only if both original code and MRP agree.
+                    const baseCode = trimmedProductCode.slice(0, trimmedProductCode.lastIndexOf('_'));
+                    const legacySku = `${baseCode}_${Math.trunc(validMRP)}`;
+                    const legacyMatches = await collections.product.find({ ...productScope, sku: legacySku, mrp: validMRP }).limit(2).toArray();
+                    if (legacyMatches.length > 1) throw new Error('Ambiguous legacy SKU; migration required');
+                    if (legacyMatches.length === 1) {
+                        existingProduct = legacyMatches[0];
+                        await collections.product.updateOne({ _id: existingProduct._id, sku: legacySku }, { $set: { sku: trimmedProductCode } });
+                    }
+                }
                 
                 if (existingProduct) {
                     if (shouldUpdate) {
@@ -1522,21 +1544,29 @@ app.get('/api/import/sync-state', async (req, res) => {
             }
         } else {
             const productRows = await collections.product
-                .find({ distributorId }, { projection: { _id: 0, sku: 1, stockQuantity: 1, stock: 1 } })
+                .find({ distributorId }, { projection: { _id: 0, sku: 1, sysCompCode: 1, mrp: 1, stockQuantity: 1, stock: 1 } })
                 .toArray();
-            const codes = new Set();
+            const keys = new Set();
             records = [];
             for (const row of productRows) {
-                const code = String(row.sku ?? '').trim();
-                if (!code || codes.has(code)) {
-                    return res.status(409).json({ success: false, error: 'Missing or duplicate product SKU for distributor; cannot safely compare by product code', code });
+                const rawCode = String(row.sku ?? '').trim();
+                const sysCompCode = String(row.sysCompCode ?? '').trim();
+                if (!rawCode || !sysCompCode) {
+                    return res.status(409).json({ success: false, error: 'A product lacks SKU or company code; sync comparison unsafe', code: rawCode });
                 }
-                codes.add(code);
+                let code;
+                try { code = canonicalProductSku(rawCode, row.mrp); }
+                catch (err) { return res.status(409).json({ success: false, error: err.message, code: rawCode }); }
+                const key = `${sysCompCode}|${code}`;
+                if (keys.has(key)) {
+                    return res.status(409).json({ success: false, error: 'Duplicate company/SKU/MRP after normalization', code, sysCompCode });
+                }
+                keys.add(key);
                 const value = row.stockQuantity ?? row.stock;
                 if (value === null || value === undefined || value === '' || !Number.isFinite(Number(value))) {
                     return res.status(409).json({ success: false, error: 'Existing product has missing or invalid stock quantity', code });
                 }
-                records.push({ code, stockQuantity: Number(value) });
+                records.push({ code, sysCompCode, stockQuantity: Number(value) });
             }
         }
         return res.json({ success: true, distributorId, type, records });
@@ -1556,47 +1586,54 @@ app.post('/api/import/products/stock', excelUpload.single('file'), async (req, r
         const workbook = XLSX.readFile(req.file.path);
         const worksheet = workbook.Sheets[workbook.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
-        if (!rows.length) {
-            return res.status(400).json({ success: false, error: 'Stock file has no rows' });
-        }
+        if (!rows.length) return res.status(400).json({ success: false, error: 'Stock file has no rows' });
         const parsed = [];
         const seen = new Set();
         for (const [index, row] of rows.entries()) {
-            const code = String(row['Product code'] ?? '').trim();
+            const rawCode = String(row['Product code'] ?? '').trim();
+            const company = String(row['SysCompCode'] ?? '').trim();
             const rawStock = row['Stock Quantity'];
             const stockQuantity = Number(rawStock);
-            if (!code || rawStock === '' || rawStock === null || rawStock === undefined || !Number.isFinite(stockQuantity)) {
-                return res.status(400).json({ success: false, error: `Invalid product code or stock quantity at row ${index + 2}` });
+            const rawMrp = row['MRP'];
+            if (!rawCode || !company || rawMrp === '' || rawMrp === undefined || rawStock === '' || rawStock === null || !Number.isFinite(stockQuantity)) {
+                return res.status(400).json({ success: false, error: `Missing product SKU, MRP, company or stock at row ${index + 2}` });
             }
-            if (seen.has(code)) {
-                return res.status(409).json({ success: false, error: `Duplicate product code in stock file: ${code}` });
-            }
-            seen.add(code);
-            parsed.push({ code, stockQuantity });
+            let code;
+            try { code = canonicalProductSku(rawCode, rawMrp); }
+            catch (error) { return res.status(400).json({ success: false, error: `Row ${index + 2}: ${error.message}` }); }
+            const key = `${company}|${code}`;
+            if (seen.has(key)) return res.status(409).json({ success: false, error: `Duplicate company/product key in stock file: ${key}` });
+            seen.add(key);
+            parsed.push({ code, company, stockQuantity, mrp: Number(rawMrp) });
         }
 
-        // Prevalidate each SKU; do not silently create missing items or update ambiguous company variants.
+        // Read all matched documents and validate the whole upload before writing anything.
+        const codes = [...new Set(parsed.map(p => p.code))];
         const existing = await collections.product.find(
-            { distributorId, sku: { $in: parsed.map(p => p.code) } },
-            { projection: { _id: 1, sku: 1 } }
+            { distributorId, sku: { $in: codes } },
+            { projection: { _id: 1, sku: 1, sysCompCode: 1, mrp: 1 } }
         ).toArray();
-        const byCode = new Map();
+        const byKey = new Map();
         for (const product of existing) {
-            const code = String(product.sku || '').trim();
-            byCode.set(code, (byCode.get(code) || 0) + 1);
+            const key = `${String(product.sysCompCode ?? '').trim()}|${String(product.sku ?? '').trim()}`;
+            if (!byKey.has(key)) byKey.set(key, []);
+            byKey.get(key).push(product);
         }
-        const invalid = parsed.filter(p => byCode.get(p.code) !== 1).map(p => p.code);
-        if (invalid.length) {
-            return res.status(409).json({ success: false, error: 'Some SKUs are missing or not unique; no stock updates were applied', codes: invalid.slice(0, 50) });
-        }
+        const invalid = parsed.filter(p => {
+            const matches = byKey.get(`${p.company}|${p.code}`) || [];
+            return matches.length !== 1 || Math.round(Number(matches[0].mrp) * 100) !== Math.round(p.mrp * 100);
+        }).map(p => `${p.company}|${p.code}`);
+        if (invalid.length) return res.status(409).json({ success: false, error: 'Stock products missing, ambiguous or MRP mismatched; no updates applied', codes: invalid.slice(0, 50) });
 
         const time = new Date().toISOString();
         let updatedCount = 0;
         for (const item of parsed) {
+            const product = byKey.get(`${item.company}|${item.code}`)[0];
             const result = await collections.product.updateOne(
-                { distributorId, sku: item.code },
+                { _id: product._id, distributorId, sku: item.code, sysCompCode: item.company, mrp: product.mrp },
                 { $set: { stock: item.stockQuantity, stockQuantity: item.stockQuantity, updatedAt: time, updatedBy: req.body.createdBy || 'desktop-stock-sync' } }
             );
+            if (result.matchedCount !== 1) throw new Error('Stock changed concurrently during upload; rerun stock reconciliation');
             updatedCount += result.modifiedCount;
         }
         return res.json({ success: true, mode: 'stock-only', distributorId, updatedCount, matchedCount: parsed.length });
