@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const zlib = require('zlib');
 const XLSX = require('xlsx');
 require('dotenv').config();
 
@@ -58,6 +59,31 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ extended: true, limit: "100mb" }));
+
+app.use('/api', (req, res, next) => {
+    const started = process.hrtime.bigint();
+    res.on('finish', () => {
+        const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+        if (elapsedMs >= 1000) {
+            console.warn(`Slow API ${req.method} ${req.route?.path || req.path}: ${elapsedMs.toFixed(0)}ms, status ${res.statusCode}, bytes ${res.getHeader('Content-Length') || 'unknown'}`);
+        }
+    });
+    next();
+});
+
+function sendLargeJson(req, res, value) {
+    const body = JSON.stringify(value);
+    res.type('json');
+    res.vary('Accept-Encoding');
+    if (!String(req.headers['accept-encoding'] || '').includes('gzip') || body.length < 8192) {
+        return res.send(body);
+    }
+    zlib.gzip(body, { level: zlib.constants.Z_BEST_SPEED }, (error, compressed) => {
+        if (error) return res.send(body);
+        res.set('Content-Encoding', 'gzip');
+        res.send(compressed);
+    });
+}
 
 
 // MongoDB connection
@@ -118,6 +144,7 @@ async function connectToMongoDB() {
         console.log(`Database: ${DB_NAME}`);
         
         await collections.register.createIndex({ email: 1, role: 1 }, { unique: true });
+        await collections.register.createIndex({ salesman_id: 1, role: 1 });
         // A customer can be mapped to more than one company/area. The old
         // customer_id + distributor_id unique index collapsed those mappings.
         const customerIndexes = await collections.customer.indexes();
@@ -136,6 +163,8 @@ async function connectToMongoDB() {
         await collections.customer.createIndex({ customer_id: 1, distributor_id: 1 });
         await collections.customer.createIndex({ distributor_id: 1 });
         await collections.customer.createIndex({ distributor_id: 1, created_at: -1 });
+        await collections.customer.createIndex({ distributor_id: 1, route: 1, name: 1 });
+        await collections.customer.createIndex({ distributor_id: 1, area: 1, name: 1 });
         const productIndexes = await collections.product.indexes();
         if (productIndexes.some(index => index.name === 'sku_1')) {
             await collections.product.dropIndex('sku_1');
@@ -146,6 +175,7 @@ async function connectToMongoDB() {
         );
         await collections.product.createIndex({ distributorId: 1 });
         await collections.product.createIndex({ distributorId: 1, sysCompCode: 1 });
+        await collections.product.createIndex({ distributorId: 1, isActive: 1, sysCompCode: 1, productName: 1 });
         await collections.product.createIndex({ distributorId: 1, isActive: 1, createdAt: -1 });
         await collections.salesman.createIndex({ salesman_id: 1 }, { unique: true });
         await collections.salesman.createIndex({ distributor_id: 1 });
@@ -173,6 +203,7 @@ async function connectToMongoDB() {
         await collections.collectionHistory.createIndex({ salesman_id: 1 });
         await collections.collectionHistory.createIndex({ created_at: -1 });
         await collections.collectionHistory.createIndex({ distributor_id: 1, collection_date: -1 });
+        await collections.collectionHistory.createIndex({ distributor_id: 1, 'salesman_details.id': 1 });
         await collections.collectionHistory.createIndex({ 'salesman_details.id': 1, collection_date: -1 });
 await collections.outstanding.createIndex({ distributor_id: 1 });
 await collections.outstanding.createIndex({ distributorId: 1 });
@@ -2547,7 +2578,8 @@ app.post('/api/salesmen', async (req, res) => {
             canCreateOrder: true,
             canCollectPayment: true,
             canEditOrder: true,
-            canDeleteOrder: true
+            canDeleteOrder: true,
+            canEditBillingRate: false
         };
         
         const loginEntry = {
@@ -2746,6 +2778,147 @@ app.get('/api/salesmen/permissions/:salesmanId', async (req, res) => {
     }
 });
 
+// Catalog performance: bounded TTL cache and single-flight queries prevent the same
+// distributor from making repeated expensive MongoDB reads on screen navigation.
+// Records are not filtered, rounded, deduplicated, or reordered by this cache.
+const CATALOG_CACHE_TTL_MS = Math.max(0, Number(process.env.CATALOG_CACHE_TTL_MS ?? 5000));
+const CATALOG_CACHE_MAX_ENTRIES = 50;
+const catalogCache = new Map();
+const catalogInFlight = new Map();
+
+function getCachedCatalog(key, fetchRows) {
+    const now = Date.now();
+    const hit = catalogCache.get(key);
+    if (hit && hit.expires > now) return Promise.resolve(hit.rows);
+    if (catalogInFlight.has(key)) return catalogInFlight.get(key);
+    const started = Date.now();
+    const promise = Promise.resolve().then(fetchRows).then(rows => {
+        // Caching only successful queries. Preserve all documents and their order.
+        if (CATALOG_CACHE_TTL_MS > 0) {
+            catalogCache.delete(key);
+            catalogCache.set(key, { rows, expires: Date.now() + CATALOG_CACHE_TTL_MS });
+            while (catalogCache.size > CATALOG_CACHE_MAX_ENTRIES) {
+                catalogCache.delete(catalogCache.keys().next().value);
+            }
+        }
+        console.info(`[catalog-db] ${key} rows=${rows.length} ms=${Date.now() - started}`);
+        return rows;
+    }).finally(() => catalogInFlight.delete(key));
+    catalogInFlight.set(key, promise);
+    return promise;
+}
+
+const ORDER_CUSTOMER_PROJECTION = {
+    _id: 1,
+    name: 1,
+    phone: 1,
+    mobile: 1,
+    area: 1,
+    route: 1,
+    address: 1,
+    created_at: 1,
+    updated_at: 1,
+    status: 1,
+    created_by: 1,
+    customer_id: 1,
+    distributor_id: 1,
+    gstStatus: 1,
+    GSTStatus: 1,
+    gst_status: 1,
+    gst_type: 1,
+    gstType: 1,
+    GSTType: 1,
+    registrationType: 1,
+    RegistrationType: 1,
+    gstNo: 1,
+    GSTNo: 1,
+    gst_no: 1,
+    gstin: 1,
+    GSTIN: 1,
+    GstNo: 1,
+    creditStatus: 1,
+    credit_status: 1,
+    CreditStatus: 1,
+    creditState: 1,
+    credit_state: 1,
+    sysCompCode: 1,
+    sys_comp_code: 1,
+    SysCompCode: 1,
+    companyCode: 1,
+    company_code: 1,
+    companyName: 1,
+    company_name: 1,
+    areaCode: 1,
+    area_code: 1,
+    erpRouteCode: 1,
+    erp_route_code: 1,
+    customerCompanyKey: 1,
+    customer_company_key: 1,
+    'companies.sysCompCode': 1,
+    'companies.companyCode': 1,
+    'companies.companyName': 1,
+    GeoLatitude: 1,
+    geoLatitude: 1,
+    latitude: 1,
+    GeoLongitude: 1,
+    geoLongitude: 1,
+    longitude: 1
+};
+
+const ORDER_PRODUCT_PROJECTION = {
+    _id: 1,
+    productName: 1,
+    name: 1,
+    sku: 1,
+    price: 1,
+    mrp: 1,
+    category: 1,
+    stock: 1,
+    stockQuantity: 1,
+    description: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    createdBy: 1,
+    distributorId: 1,
+    isActive: 1,
+    images: 1,
+    tags: 1,
+    sysCompCode: 1,
+    sys_comp_code: 1,
+    companyCode: 1,
+    company_code: 1,
+    companyName: 1,
+    company_name: 1
+};
+
+function loadSalesmanCustomers(distributorId, { orderCatalog = false } = {}) {
+    const cacheKey = `customers:${distributorId}${orderCatalog ? ':order' : ''}`;
+    return getCachedCatalog(cacheKey, () => {
+        const query = collections.customer.find(
+            { distributor_id: distributorId },
+            orderCatalog ? { projection: ORDER_CUSTOMER_PROJECTION } : {}
+        );
+        return query.hint('distributor_id_1_created_at_-1')
+            .sort({ created_at: -1 }).toArray();
+    });
+}
+
+function loadSalesmanProducts(distributorId, { orderCatalog = false } = {}) {
+    const cacheKey = `products:${distributorId}${orderCatalog ? ':order' : ''}`;
+    return getCachedCatalog(cacheKey, () => {
+        const query = collections.product.find(
+            { distributorId, isActive: true },
+            orderCatalog ? { projection: ORDER_PRODUCT_PROJECTION } : {}
+        );
+        return query.hint('distributorId_1_isActive_1_createdAt_-1')
+            .sort({ createdAt: -1 }).toArray();
+    });
+}
+
+// Cache expires automatically. Set CATALOG_CACHE_TTL_MS=0 to disable it.
+// For near-immediate catalog updates, invalidate the relevant cache on a
+// successful mutation or set the TTL to zero.
+
 app.get('/api/salesman-data/:salesmanId', async (req, res) => {
     try {
         const { salesmanId } = req.params;
@@ -2761,12 +2934,251 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
         
         const distributorId = salesman.distributor_id;
         console.log(`Salesman ${salesmanId} belongs to distributor: ${distributorId}`);
+
+        const section = String(req.query.section || 'all');
+        const base = {
+            distributorId,
+            distributor_id: distributorId,
+            permissions: salesman.permissions || {},
+            salesmanName: salesman.fullName || salesmanId
+        };
+        if (section === 'order-customers' || section === 'order-products') {
+            const orderPageStartedAt = Date.now();
+            const company = String(req.query.company || '').trim().slice(0, 100);
+            if (!company) return res.status(400).json({ error: 'Company is required' });
+            const page = Math.max(1, Math.min(10000, parseInt(req.query.page, 10) || 1));
+            const limit = 100;
+            const search = String(req.query.search || '').trim().slice(0, 100);
+            const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            if (section === 'order-customers') {
+                const route = String(req.query.route || '').trim().slice(0, 150);
+                if (!route) return res.status(400).json({ error: 'Route is required' });
+                const query = {
+                    distributor_id: distributorId,
+                    $and: [
+                        { $or: [{ route }, { route: { $in: ['', null] }, area: route }] },
+                        { $or: [
+                            { sysCompCode: company }, { sys_comp_code: company },
+                            { companyCode: company }, { company_code: company },
+                            { 'companies.sysCompCode': company }, { 'companies.companyCode': company },
+                            ...(company === '__unmapped__' ? [{ sysCompCode: { $in: ['', null] }, companyCode: { $in: ['', null] }, companies: { $in: [[], null] } }] : [])
+                        ] },
+                        ...(search ? [{ $or: [
+                            { name: { $regex: escapedSearch, $options: 'i' } },
+                            { customer_id: { $regex: escapedSearch, $options: 'i' } },
+                            { phone: { $regex: escapedSearch, $options: 'i' } },
+                            { mobile: { $regex: escapedSearch, $options: 'i' } },
+                            { area: { $regex: escapedSearch, $options: 'i' } }
+                        ] }] : [])
+                    ]
+                };
+                let rows = await collections.customer.find(query, { projection: ORDER_CUSTOMER_PROJECTION })
+                    .sort({ name: 1, _id: 1 }).skip((page - 1) * limit).limit(limit + 1).toArray();
+                if (rows.length === 0) {
+                    const escapedRoute = route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    query.$and[0] = { $or: [
+                        { route: { $regex: `^\\s*${escapedRoute}\\s*$`, $options: 'i' } },
+                        { route: { $in: ['', null] }, area: { $regex: `^\\s*${escapedRoute}\\s*$`, $options: 'i' } }
+                    ] };
+                    rows = await collections.customer.find(query, { projection: ORDER_CUSTOMER_PROJECTION })
+                        .sort({ name: 1, _id: 1 }).skip((page - 1) * limit).limit(limit + 1).toArray();
+                }
+                console.info(`[order-catalog] ${section} page=${page} rows=${Math.min(rows.length, limit)} ms=${Date.now() - orderPageStartedAt}`);
+                return sendLargeJson(req, res, { ...base, customers: rows.slice(0, limit), hasMore: rows.length > limit });
+            }
+            const companyMatch = company === '__unmapped__'
+                ? { sysCompCode: { $in: ['', null] }, sys_comp_code: { $in: ['', null] }, companyCode: { $in: ['', null] }, company_code: { $in: ['', null] } }
+                : { $or: [
+                    { sysCompCode: company },
+                    { sysCompCode: { $in: ['', null] }, sys_comp_code: company },
+                    { sysCompCode: { $in: ['', null] }, sys_comp_code: { $in: ['', null] }, companyCode: company },
+                    { sysCompCode: { $in: ['', null] }, sys_comp_code: { $in: ['', null] }, companyCode: { $in: ['', null] }, company_code: company }
+                ] };
+            const query = {
+                distributorId, isActive: true,
+                $and: [companyMatch, ...(search ? [{ $or: [
+                    { productName: { $regex: escapedSearch, $options: 'i' } },
+                    { name: { $regex: escapedSearch, $options: 'i' } },
+                    { sku: { $regex: escapedSearch, $options: 'i' } },
+                    { category: { $regex: escapedSearch, $options: 'i' } }
+                ] }] : [])]
+            };
+            const rows = await collections.product.find(query, { projection: ORDER_PRODUCT_PROJECTION })
+                .sort({ productName: 1, _id: 1 }).skip((page - 1) * limit).limit(limit + 1).toArray();
+            console.info(`[order-catalog] ${section} page=${page} rows=${Math.min(rows.length, limit)} ms=${Date.now() - orderPageStartedAt}`);
+            return sendLargeJson(req, res, { ...base, products: rows.slice(0, limit), hasMore: rows.length > limit });
+        }
+        if (section === 'companies') {
+            const companiesStartedAt = Date.now();
+            const companies = await getCachedCatalog(`companies:${distributorId}`, async () => {
+                const [customers, products] = await Promise.all([
+                    collections.customer.aggregate([
+                        { $match: { distributor_id: distributorId } },
+                        { $group: { _id: {
+                            sysCompCode: '$sysCompCode',
+                            sys_comp_code: '$sys_comp_code',
+                            companyCode: '$companyCode',
+                            company_code: '$company_code',
+                            companyName: '$companyName',
+                            company_name: '$company_name',
+                            companies: '$companies',
+                            route: '$route',
+                            area: '$area'
+                        } } },
+                        { $replaceRoot: { newRoot: '$_id' } }
+                    ], { allowDiskUse: true }).toArray(),
+                    collections.product.aggregate([
+                        { $match: { distributorId, isActive: true } },
+                        { $group: { _id: {
+                            sysCompCode: '$sysCompCode',
+                            sys_comp_code: '$sys_comp_code',
+                            companyCode: '$companyCode',
+                            company_code: '$company_code',
+                            companyName: '$companyName',
+                            company_name: '$company_name'
+                        } } },
+                        { $project: {
+                            _id: 0,
+                            sysCompCode: '$_id.sysCompCode',
+                            sys_comp_code: '$_id.sys_comp_code',
+                            companyCode: '$_id.companyCode',
+                            company_code: '$_id.company_code',
+                            companyName: '$_id.companyName',
+                            company_name: '$_id.company_name'
+                        } }
+                    ]).toArray()
+                ]);
+                const options = Object.create(null);
+                const namedCompanies = new Set();
+                const addCompany = (key, name, fallback) => {
+                    const label = String(name ?? '').trim();
+                    if (label && label !== key) {
+                        options[key] = label;
+                        namedCompanies.add(key);
+                    } else if (!namedCompanies.has(key) && options[key] === undefined) {
+                        options[key] = String(fallback ?? '').trim() || key;
+                    }
+                };
+                const routeSets = Object.create(null);
+                for (const customer of customers) {
+                    const route = String(customer.route ?? '').trim() || String(customer.area ?? '').trim();
+                    const customerKeys = new Set();
+                    for (const company of Array.isArray(customer.companies) ? customer.companies : []) {
+                        if (!company || typeof company !== 'object') continue;
+                        const key = String(company.sysCompCode ?? company.companyCode ?? '').trim();
+                        if (key) {
+                            addCompany(key, company.companyName, company.companyCode);
+                            customerKeys.add(key);
+                        }
+                    }
+                    const key = String(customer.sysCompCode ?? customer.sys_comp_code ?? '').trim() ||
+                        String(customer.companyCode ?? customer.company_code ?? '').trim() || customerKeys.values().next().value || '__unmapped__';
+                    if (key) addCompany(key, customer.companyName ?? customer.company_name,
+                        key === '__unmapped__' ? 'Assigned Company' : customer.companyCode ?? customer.company_code);
+                    customerKeys.add(key);
+                    if (route) {
+                        for (const companyKey of customerKeys) {
+                            (routeSets[companyKey] ??= new Set()).add(route);
+                        }
+                    }
+                }
+                for (const product of products) {
+                    const key = String(product.sysCompCode ?? product.sys_comp_code ?? '').trim() ||
+                        String(product.companyCode ?? product.company_code ?? '').trim() || '__unmapped__';
+                    if (key) addCompany(key, product.companyName ?? product.company_name,
+                        key === '__unmapped__' ? 'Assigned Company' : product.companyCode ?? product.company_code);
+                }
+                return {
+                    companies: Object.fromEntries(Object.entries(options).sort((a, b) => a[1].toLowerCase().localeCompare(b[1].toLowerCase()))),
+                    routes: Object.fromEntries(Object.entries(routeSets).map(([key, values]) => [
+                        key,
+                        [...values].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+                    ]))
+                };
+            });
+            console.info(`[order-catalog] companies count=${Object.keys(companies.companies).length} ms=${Date.now() - companiesStartedAt}`);
+            return res.json({ ...base, ...companies });
+        }
+        if (section === 'dashboard') {
+            const todayStart = new Date(String(req.query.todayStart || ''));
+            const weekStart = new Date(String(req.query.weekStart || ''));
+            if (Number.isNaN(todayStart.getTime()) || Number.isNaN(weekStart.getTime())) {
+                return res.status(400).json({ error: 'Valid todayStart and weekStart are required' });
+            }
+            const todayIso = todayStart.toISOString();
+            const weekIso = weekStart.toISOString();
+            const [orderSummary, collectionSummary, orders, collectionHistory] = await Promise.all([
+                collections.order.aggregate([
+                    { $match: { salesman_id: salesmanId, createdAt: { $gte: weekIso } } },
+                    { $group: {
+                        _id: null,
+                        weekOrders: { $sum: 1 },
+                        todayOrders: { $sum: { $cond: [{ $gte: ['$createdAt', todayIso] }, 1, 0] } },
+                        weeklySales: { $sum: { $cond: [{ $ne: ['$status', 'cancelled'] }, '$grand_total', 0] } },
+                        weeklyCollected: { $sum: { $cond: [{ $ne: ['$status', 'cancelled'] }, '$paidAmount', 0] } },
+                        todaySales: { $sum: { $cond: [{ $and: [{ $gte: ['$createdAt', todayIso] }, { $ne: ['$status', 'cancelled'] }] }, '$grand_total', 0] } },
+                        todayPending: { $sum: { $cond: [{ $and: [{ $gte: ['$createdAt', todayIso] }, { $ne: ['$status', 'cancelled'] }] }, '$dueAmount', 0] } }
+                    } }
+                ]).next(),
+                collections.collectionHistory.aggregate([
+                    { $match: { 'salesman_details.id': salesmanId, collection_date: { $gte: todayIso } } },
+                    { $group: { _id: null, todayTransactions: { $sum: 1 }, todayCollected: { $sum: '$amount_collected' } } }
+                ]).next(),
+                collections.order.find({ salesman_id: salesmanId }).sort({ createdAt: -1 }).limit(5).toArray(),
+                collections.collectionHistory.find({ 'salesman_details.id': salesmanId }).sort({ collection_date: -1 }).limit(5).toArray()
+            ]);
+            return sendLargeJson(req, res, {
+                ...base,
+                orders,
+                collectionHistory,
+                summary: { ...orderSummary, ...collectionSummary }
+            });
+        }
+        if (['orders', 'customers', 'products', 'catalog'].includes(section)) {
+            const result = { ...base };
+            const tasks = [];
+            if (section === 'orders') {
+                const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+                const limit = 100;
+                const query = { salesman_id: salesmanId };
+                const search = String(req.query.search || '').trim().slice(0, 100);
+                if (search) {
+                    const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    query.$or = [
+                        { orderNumber: { $regex: escaped, $options: 'i' } },
+                        { customerName: { $regex: escaped, $options: 'i' } }
+                    ];
+                }
+                const status = String(req.query.status || '').trim();
+                if (status) query.status = status;
+                tasks.push(Promise.all([
+                    collections.order.find(query).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).toArray(),
+                    collections.order.countDocuments(query),
+                    collections.order.aggregate([{ $match: query }, { $group: { _id: null, totalAmount: { $sum: '$grand_total' } } }]).next(),
+                    collections.order.aggregate([{ $match: { salesman_id: salesmanId } }, { $group: { _id: '$status', count: { $sum: 1 } } }]).toArray()
+                ]).then(([rows, total, totals, byStatus]) => {
+                    result.orders = rows;
+                    result.orderPage = { page, total, totalAmount: totals?.totalAmount || 0, hasMore: page * limit < total };
+                    result.ordersByStatus = Object.fromEntries(byStatus.map(row => [row._id || 'pending', row.count]));
+                }));
+            }
+            if (section === 'customers' || section === 'catalog') tasks.push(loadSalesmanCustomers(distributorId, { orderCatalog: section === 'catalog' }).then(rows => { result.customers = rows; }));
+            if (section === 'products' || section === 'catalog') tasks.push(loadSalesmanProducts(distributorId, { orderCatalog: section === 'catalog' }).then(rows => { result.products = rows; }));
+            const catalogStartedAt = Date.now();
+            await Promise.all(tasks);
+            if (section === 'catalog') {
+                const elapsed = Date.now() - catalogStartedAt;
+                console.info(`[catalog] salesman=${salesmanId} customers=${result.customers?.length ?? 0} products=${result.products?.length ?? 0} queryMs=${elapsed}`);
+            }
+            return sendLargeJson(req, res, result);
+        }
+        if (section !== 'all') return res.status(400).json({ error: 'Unknown section' });
         
         const [salesmanDetails, customers, products, orders, collectionHistory,
             payments, collectionTotal] = await Promise.all([
             collections.salesman.findOne({ salesman_id: salesmanId }, { projection: { name: 1 } }),
-            collections.customer.find({ distributor_id: distributorId }).sort({ created_at: -1 }).toArray(),
-            collections.product.find({ distributorId, isActive: true }).sort({ createdAt: -1 }).toArray(),
+            loadSalesmanCustomers(distributorId),
+            loadSalesmanProducts(distributorId),
             collections.order.find({ salesman_id: salesmanId }).sort({ createdAt: -1 }).toArray(),
             collections.collectionHistory.find({ 'salesman_details.id': salesmanId }).sort({ collection_date: -1 }).toArray(),
             collections.payment.find({ 'salesman_details.id': salesmanId }).sort({ created_at: -1 }).toArray(),
@@ -2788,12 +3200,13 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
             canCreateOrder: true,
             canCollectPayment: true,
             canEditOrder: true,
-            canDeleteOrder: true
+            canDeleteOrder: true,
+            canEditBillingRate: false
         };
         
         const totalCollection = collectionTotal?.total || 0;
         
-        res.json({
+        sendLargeJson(req, res, {
             distributorId: distributorId,
             distributor_id: distributorId,
             customers: customers,
@@ -3130,7 +3543,7 @@ app.get('/api/orders/salesman/:salesmanId', async (req, res) => {
             .sort({ createdAt: -1, _id: -1 });
         if (limit) cursor.skip((page - 1) * limit).limit(limit);
         const orders = await cursor.toArray();
-        res.json(orders);
+        sendLargeJson(req, res, orders);
     } catch (error) {
         console.error('Error fetching orders:', error);
         res.status(500).json({ error: error.message });
@@ -3180,7 +3593,7 @@ app.get('/api/orders/distributor/:distributorId', async (req, res) => {
             .sort({ createdAt: -1, _id: -1 });
         if (limit) cursor.skip((page - 1) * limit).limit(limit);
         const orders = await cursor.toArray();
-        res.json(orders);
+        sendLargeJson(req, res, orders);
     } catch (error) {
         console.error('Error fetching orders:', error);
         res.status(500).json({ error: error.message });
@@ -3970,7 +4383,8 @@ app.get('/api/dashboard/stats/:distributorId', async (req, res) => {
                     _id: '$salesman_id',
                     count: { $sum: 1 },
                     value: { $sum: '$grand_total' }
-                } }]
+                } }],
+                byStatus: [{ $group: { _id: '$status', count: { $sum: 1 } } }]
             } }
         ];
         const collectionGroups = [
@@ -3995,8 +4409,16 @@ app.get('/api/dashboard/stats/:distributorId', async (req, res) => {
             collections.product.countDocuments({ distributorId, isActive: true }),
             collections.order.aggregate(orderGroups).next(),
             collections.collectionHistory.aggregate(collectionGroups).next(),
-            collections.order.find({ distributor_id: distributorId }).sort({ createdAt: -1 }).limit(10).toArray(),
-            collections.collectionHistory.find({ distributor_id: distributorId }).sort({ collection_date: -1 }).limit(10).toArray(),
+            collections.order.find({ distributor_id: distributorId }, { projection: {
+                orderNumber: 1, customerId: 1, customerName: 1, customerPhone: 1,
+                areaName: 1, routeName: 1, salesman_id: 1, salesmanName: 1,
+                grand_total: 1, totalAmount: 1, paidAmount: 1, dueAmount: 1,
+                status: 1, orderType: 1, paymentMode: 1, createdAt: 1, items: 1
+            } }).sort({ createdAt: -1 }).limit(10).toArray(),
+            collections.collectionHistory.find({ distributor_id: distributorId }, { projection: {
+                collection_id: 1, collection_date: 1, amount_collected: 1,
+                salesman_details: 1, customer_details: 1, payment_mode: 1
+            } }).sort({ collection_date: -1 }).limit(10).toArray(),
             collections.salesman.find({ distributor_id: distributorId }, { projection: { salesman_id: 1, name: 1 } }).toArray()
         ]);
         const orderSummary = orderStats?.summary[0] || {};
@@ -4045,6 +4467,7 @@ app.get('/api/dashboard/stats/:distributorId', async (req, res) => {
             },
             recent_orders: recentOrders,
             recent_collections: recentCollections,
+            orders_by_status: Object.fromEntries((orderStats?.byStatus || []).map(row => [row._id || 'pending', row.count])),
             salesman_performance: salesmanPerformance
         });
     } catch (error) {
@@ -5593,20 +6016,103 @@ async function loadOutstandingBillsForDistributor(req, res) {
         : 1;
       const pageSize = Number.isFinite(requestedLimit) && requestedLimit > 0
         ? Math.min(requestedLimit, 1000)
-        : 500;
+        : 10;
 
       // Older uploads used distributorId while current uploads use
       // distributor_id. Both represent the same distributor and no other
       // collection or field is used to decide which bills are returned.
-      const query = {
+      const distributorQuery = {
         $or: [
           { distributor_id: distributorId },
           { distributorId: distributorId }
         ]
       };
 
+      const search = outstandingSafeString(req.query.search).trim().slice(0, 100);
+      let query = distributorQuery;
+      if (search) {
+        const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const searchPattern = new RegExp(escapedSearch, 'i');
+        const billSearchFields = [
+          'TrnSeries', 'Series', 'BillSeries', 'TrnNo', 'BillNo', 'bill_no',
+          'customer_name', 'CustomerName', 'AcName', 'PartyName', 'SysAcCode',
+          'customer_id', 'customerId', 'mobile', 'phone', 'MobileNo', 'PhoneNo',
+          'Amt', 'Amount', 'BillAmount', 'Bamt', 'Balance', 'outstanding'
+        ];
+        const customerCodeFields = [
+          'SysAcCode', 'sysAcCode', 'sys_ac_code', 'customer_id', 'customerId',
+          'customer_code', 'CustomerCode', 'AcCode', 'acCode'
+        ];
+        const customerSearchFields = [
+          'name', 'customer_name', 'CustomerName', 'AcName', 'PartyName',
+          'mobile', 'phone', 'mobileNo', 'MobileNo', 'PhoneNo'
+        ];
+
+        const matchingCustomers = await collections.customer.find({
+          $and: [
+            distributorQuery,
+            { $or: customerSearchFields.map((field) => ({ [field]: searchPattern })) }
+          ]
+        }).project(Object.fromEntries(
+          customerCodeFields.map((field) => [field, 1])
+        )).toArray();
+        const matchingCustomerCodes = new Set();
+        for (const customer of matchingCustomers) {
+          for (const field of customerCodeFields) {
+            const code = outstandingSafeString(customer[field]);
+            if (!code) continue;
+            matchingCustomerCodes.add(code);
+            const separator = code.lastIndexOf('_');
+            if (separator >= 0 && separator < code.length - 1) {
+              matchingCustomerCodes.add(code.slice(separator + 1));
+            }
+          }
+        }
+
+        const searchConditions = billSearchFields.map((field) => ({
+          [field]: searchPattern
+        }));
+        if (/^\d+$/.test(search)) {
+          for (const field of [
+            'TrnNo', 'BillNo', 'bill_no', 'Amt', 'Amount', 'BillAmount',
+            'Bamt', 'Balance', 'outstanding'
+          ]) {
+            searchConditions.push({
+              $expr: {
+                $regexMatch: {
+                  input: {
+                    $convert: {
+                      input: `$${field}`,
+                      to: 'string',
+                      onError: '',
+                      onNull: ''
+                    }
+                  },
+                  regex: escapedSearch,
+                  options: 'i'
+                }
+              }
+            });
+          }
+        }
+        if (matchingCustomerCodes.size > 0) {
+          for (const field of customerCodeFields) {
+            searchConditions.push({
+              [field]: { $in: [...matchingCustomerCodes] }
+            });
+          }
+        }
+        query = {
+          $and: [
+            distributorQuery,
+            { $or: searchConditions }
+          ]
+        };
+      }
+
       const bills = await collections.outstanding
         .find(query)
+        .sort({ _id: -1 })
         .skip((page - 1) * pageSize)
         .limit(pageSize)
         .toArray();
@@ -5615,14 +6121,39 @@ async function loadOutstandingBillsForDistributor(req, res) {
       // Outstanding uploads do not always contain those fields, so enrich the
       // page in one customer query while keeping the distributor-only bill
       // selection used by Collection Payment.
-      const customerMasters = await collections.customer
-        .find({
-          $or: [
-            { distributor_id: distributorId },
-            { distributorId: distributorId }
-          ]
-        })
-        .toArray();
+      const billCodes = new Set();
+      for (const bill of bills) {
+        const code = outstandingSafeString(
+          bill.SysAcCode || bill.customer_id || bill.customerId || ''
+        );
+        if (!code) continue;
+        billCodes.add(code);
+        const separator = code.lastIndexOf('_');
+        if (separator >= 0 && separator < code.length - 1) {
+          billCodes.add(code.slice(separator + 1));
+        }
+      }
+      const customerCodeFields = [
+        'SysAcCode', 'sysAcCode', 'sys_ac_code', 'customer_id', 'customerId',
+        'customer_code', 'CustomerCode', 'AcCode', 'acCode'
+      ];
+      const customerMasters = billCodes.size === 0
+        ? []
+        : await collections.customer.find({
+            $and: [
+              {
+                $or: [
+                  { distributor_id: distributorId },
+                  { distributorId: distributorId }
+                ]
+              },
+              {
+                $or: customerCodeFields.map((field) => ({
+                  [field]: { $in: [...billCodes] }
+                }))
+              }
+            ]
+          }).toArray();
       const customersByCode = new Map();
 
       for (const customer of customerMasters) {
@@ -5694,6 +6225,11 @@ async function loadOutstandingBillsForDistributor(req, res) {
           customer_name: customerName,
           Address: address,
           address,
+          mobile: outstandingSafeString(
+            bill.mobile || bill.phone || bill.MobileNo || bill.PhoneNo ||
+            customer?.mobile || customer?.phone || customer?.mobileNo ||
+            customer?.MobileNo || customer?.PhoneNo || ''
+          ),
           GeoLatitude: latitude,
           GeoLongitude: longitude,
           latitude,
