@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io';
@@ -357,6 +357,146 @@ class ProductModel {
       companyName: (map['companyName'] ?? map['company_name'])?.toString(),
     );
   }
+}
+
+List<CustomerModel> _customersFromCatalog(Map<String, dynamic> data) {
+  final customers = data['customers'];
+  if (customers is! List) {
+    throw const FormatException('Catalog response has no customers list');
+  }
+  return customers.map((customer) {
+    if (customer is! Map) {
+      throw const FormatException('Catalog contains an invalid customer');
+    }
+    final customerData = Map<String, dynamic>.from(customer);
+    return CustomerModel.fromMap(
+      customerData,
+      customerData['_id']?.toString() ?? '',
+    );
+  }).toList();
+}
+
+List<ProductModel> _productsFromCatalog(Map<String, dynamic> data) {
+  final products = data['products'];
+  if (products is! List) {
+    throw const FormatException('Catalog response has no products list');
+  }
+  return products.map((product) {
+    if (product is! Map) {
+      throw const FormatException('Catalog contains an invalid product');
+    }
+    final productData = Map<String, dynamic>.from(product);
+    return ProductModel.fromMap(
+      productData,
+      productData['_id']?.toString() ?? '',
+    );
+  }).toList();
+}
+
+String _customerOrderCompanyKey(CustomerModel customer) {
+  final sysCode = customer.sysCompCode?.trim() ?? '';
+  if (sysCode.isNotEmpty) return sysCode;
+  final companyCode = customer.companyCode?.trim() ?? '';
+  return companyCode.isNotEmpty ? companyCode : '__unmapped__';
+}
+
+bool _customerBelongsToOrderCompany(
+  CustomerModel customer,
+  String companyKey,
+) {
+  final wanted = companyKey.trim().toLowerCase();
+  if (_customerOrderCompanyKey(customer).trim().toLowerCase() == wanted) {
+    return true;
+  }
+  return customer.companies.any((company) {
+    final sysCode = (company['sysCompCode'] ?? '').toString();
+    final code = (company['companyCode'] ?? '').toString();
+    return sysCode.trim().toLowerCase() == wanted ||
+        code.trim().toLowerCase() == wanted;
+  });
+}
+
+String _productOrderCompanyKey(ProductModel product) {
+  final sysCode = product.sysCompCode?.trim() ?? '';
+  if (sysCode.isNotEmpty) return sysCode;
+  final companyCode = product.companyCode?.trim() ?? '';
+  return companyCode.isNotEmpty ? companyCode : '__unmapped__';
+}
+
+Map<String, String> _orderCompanyOptions(
+  List<CustomerModel> customers,
+  List<ProductModel> products,
+) {
+  final companies = <String, String>{};
+  final namedKeys = <String>{};
+  void addCompany(String key, String? name, String? fallback) {
+    final label = name?.trim() ?? '';
+    if (label.isNotEmpty && label != key) {
+      companies[key] = label;
+      namedKeys.add(key);
+    } else if (!namedKeys.contains(key)) {
+      final fallbackLabel = fallback?.trim() ?? '';
+      companies.putIfAbsent(
+        key,
+        () => fallbackLabel.isNotEmpty ? fallbackLabel : key,
+      );
+    }
+  }
+  for (final customer in customers) {
+    for (final company in customer.companies) {
+      final key = (company['sysCompCode'] ?? company['companyCode'] ?? '')
+          .toString()
+          .trim();
+      if (key.isNotEmpty) {
+        addCompany(
+          key,
+          company['companyName']?.toString(),
+          company['companyCode']?.toString(),
+        );
+      }
+    }
+    final key = _customerOrderCompanyKey(customer);
+    if (key.isNotEmpty) {
+      addCompany(
+        key,
+        customer.companyName,
+        key == '__unmapped__' ? 'Assigned Company' : customer.companyCode,
+      );
+    }
+  }
+  for (final product in products) {
+    final key = _productOrderCompanyKey(product);
+    if (key.isNotEmpty) {
+      addCompany(
+        key,
+        product.companyName,
+        key == '__unmapped__' ? 'Assigned Company' : product.companyCode,
+      );
+    }
+  }
+  return Map.fromEntries(
+    companies.entries.toList()
+      ..sort((a, b) => a.value.toLowerCase().compareTo(b.value.toLowerCase())),
+  );
+}
+
+List<String> _orderRoutesForCompany(
+  List<CustomerModel> customers,
+  String company,
+) {
+  final routes = customers
+      .where((customer) => _customerBelongsToOrderCompany(customer, company))
+      .map(
+        (customer) =>
+            (customer.route != null && customer.route!.trim().isNotEmpty)
+            ? customer.route!.trim()
+            : customer.area.trim(),
+      )
+      .where((route) => route.isNotEmpty)
+      .toSet()
+      .toList()
+    ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  return routes;
 }
 
 List<ProductModel> _productsAfterOrder(
@@ -847,12 +987,10 @@ class CartItemData {
 class ApiService {
 
   // LOCAL URL (For Testing)
-  //static const String _remoteBaseUrl =
-   //   "http://localhost:3000/api";
+  //static const String _remoteBaseUrl = "http://localhost:3000/api";
 
-   PRODUCTION URL (Render)
-   static const String _remoteBaseUrl =
-       "https://totalmobileapp.onrender.com/api";
+   // PRODUCTION URL (Render)
+   static const String _remoteBaseUrl ="https://totalmobileapp.onrender.com/api";
 
   static String get apiUrl {
     return _remoteBaseUrl;
@@ -875,6 +1013,9 @@ class ApiService {
     }
     throw const FormatException('Expected a JSON object from the server');
   }
+
+  static List<dynamic> _decodeJsonArray(String body) =>
+      json.decode(body) as List<dynamic>;
 
   // ==================== GLOBAL SEARCH API ====================
   static Future<Map<String, dynamic>> searchGlobal(
@@ -1036,60 +1177,41 @@ class ApiService {
 
   static Future<List<dynamic>> getOutstandingBillsForDistributor(
     String distributorId,
-    String salesmanId,
-  ) async {
+    String salesmanId, {
+    String search = '',
+  }) async {
     try {
-      const pageSize = 500;
-      final allBills = <dynamic>[];
-      var page = 1;
-
-      while (true) {
-        // This URL exists on both the current deployed backend and the updated
-        // backend. The backend uses distributorId as the only bill filter.
-        final uri =
-            Uri.parse(
-              '$apiUrl/outstanding/salesman/${Uri.encodeComponent(salesmanId)}',
-            ).replace(
-              queryParameters: {
-                'distributorId': distributorId,
-                'page': '$page',
-                'limit': '$pageSize',
-              },
-            );
-
-        print('Outstanding API URL: $uri');
-
-        final response = await http
-            .get(uri)
-            .timeout(const Duration(seconds: 60));
-
-        print('Outstanding status: ${response.statusCode}');
-        print('Outstanding response size: ${response.bodyBytes.length} bytes');
-
-        if (response.statusCode != 200) {
-          throw Exception(
-            'Outstanding request failed with status ${response.statusCode}',
+      final normalizedSearch = search.trim();
+      final pageSize = normalizedSearch.isEmpty ? 10 : 1000;
+      final uri =
+          Uri.parse(
+            '$apiUrl/outstanding/salesman/${Uri.encodeComponent(salesmanId)}',
+          ).replace(
+            queryParameters: {
+              'distributorId': distributorId,
+              'page': '1',
+              'limit': '$pageSize',
+              if (normalizedSearch.isNotEmpty) 'search': normalizedSearch,
+            },
           );
-        }
 
-        final data = json.decode(response.body);
-        final bills = data['bills'];
-        if (bills is! List) {
-          throw const FormatException('Outstanding response has no bills list');
-        }
+      final response = await http
+          .get(uri)
+          .timeout(const Duration(seconds: 60));
 
-        allBills.addAll(bills.map(_normalizeOutstandingBill));
-
-        final pagination = data['pagination'];
-        final hasMore = pagination is Map
-            ? pagination['hasMore'] == true
-            : false;
-
-        if (!hasMore) break;
-        page++;
+      if (response.statusCode != 200) {
+        throw Exception(
+          'Outstanding request failed with status ${response.statusCode}',
+        );
       }
 
-      return allBills;
+      final data = json.decode(response.body);
+      final bills = data['bills'];
+      if (bills is! List) {
+        throw const FormatException('Outstanding response has no bills list');
+      }
+
+      return bills.map(_normalizeOutstandingBill).toList();
     } catch (e) {
       print('Error fetching outstanding bills: $e');
       rethrow;
@@ -1491,7 +1613,7 @@ class ApiService {
       final response = await http.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
-        return _decodeJsonObject(response.body);
+        return compute(_decodeJsonObject, response.body);
       }
       return {'collections': [], 'summary': {}};
     } catch (e) {
@@ -1655,7 +1777,10 @@ class ApiService {
     }
   }
 
-  static Future<List<dynamic>> getSalesmen(String distributorId) async {
+  static Future<List<dynamic>> getSalesmen(
+    String distributorId, {
+    bool throwOnError = false,
+  }) async {
     try {
       final response = await http.get(
         Uri.parse('$apiUrl/salesmen/$distributorId'),
@@ -1664,21 +1789,46 @@ class ApiService {
       if (response.statusCode == 200) {
         return json.decode(response.body);
       }
+      if (throwOnError) {
+        throw Exception('Unable to fetch salesmen (${response.statusCode})');
+      }
       return [];
     } catch (e) {
       print('Error fetching salesmen: $e');
+      if (throwOnError) rethrow;
       return [];
     }
   }
 
-  static Future<Map<String, dynamic>> getSalesmanData(String salesmanId) async {
+  static Future<Map<String, dynamic>> getSalesmanData(
+    String salesmanId, {
+    String section = 'all',
+    String? company,
+    String? route,
+    String? search,
+    int? page,
+    DateTime? todayStart,
+    DateTime? weekStart,
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
     try {
-      final response = await http.get(
-        Uri.parse('$apiUrl/salesman-data/$salesmanId'),
+      final uri = Uri.parse('$apiUrl/salesman-data/$salesmanId').replace(
+        queryParameters: {
+          'section': section,
+          if (company != null) 'company': company,
+          if (route != null) 'route': route,
+          if (search != null && search.isNotEmpty) 'search': search,
+          if (page != null) 'page': '$page',
+          if (todayStart != null) 'todayStart': todayStart.toUtc().toIso8601String(),
+          if (weekStart != null) 'weekStart': weekStart.toUtc().toIso8601String(),
+        },
       );
+      final response = await http.get(
+        uri,
+      ).timeout(timeout);
 
       if (response.statusCode == 200) {
-        return _decodeJsonObject(response.body);
+        return compute(_decodeJsonObject, response.body);
       }
       throw Exception('Failed to fetch salesman data: ${response.statusCode}');
     } catch (e) {
@@ -1745,16 +1895,19 @@ class ApiService {
     DateTime? startDate,
     DateTime? endDate,
     String? search,
+    int page = 1,
+    int limit = 100,
+    bool throwOnError = false,
   }) async {
     try {
       var url = '$apiUrl/orders/distributor/$distributorId';
-      var queryParams = <String>[];
+      var queryParams = <String>['page=$page', 'limit=$limit'];
 
       if (search != null && search.isNotEmpty) {
-        queryParams.add('search=$search');
+        queryParams.add('search=${Uri.encodeQueryComponent(search)}');
       }
       if (customerName != null && customerName.isNotEmpty) {
-        queryParams.add('customerName=$customerName');
+        queryParams.add('customerName=${Uri.encodeQueryComponent(customerName)}');
       }
       if (salesmanId != null && salesmanId.isNotEmpty && salesmanId != 'all') {
         queryParams.add('salesmanId=$salesmanId');
@@ -1770,14 +1923,18 @@ class ApiService {
         url += '?${queryParams.join('&')}';
       }
 
-      final response = await http.get(Uri.parse(url));
+      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 25));
 
       if (response.statusCode == 200) {
-        return json.decode(response.body);
+        return compute(_decodeJsonArray, response.body);
+      }
+      if (throwOnError) {
+        throw Exception('Unable to fetch orders (${response.statusCode})');
       }
       return [];
     } catch (e) {
       print('Error fetching orders: $e');
+      if (throwOnError) rethrow;
       return [];
     }
   }
@@ -2030,10 +2187,9 @@ class ApiService {
       if (response.statusCode == 200) {
         return json.decode(response.body);
       }
-      return {'permissions': {}};
+      throw Exception('Failed to load permissions: ${response.statusCode}');
     } catch (e) {
-      print('Error fetching permissions: $e');
-      return {'permissions': {}};
+      throw Exception('Error fetching permissions: $e');
     }
   }
 
@@ -2302,7 +2458,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse('$apiUrl/dashboard/stats/$distributorId'),
-      );
+      ).timeout(const Duration(seconds: 25));
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -2523,11 +2679,14 @@ class SalesmanService {
     _currentCreatedBy = createdBy;
   }
 
-  Future<List<SalesmanModel>> getSalesmen() async {
+  Future<List<SalesmanModel>> getSalesmen({bool throwOnError = false}) async {
     if (_currentDistributorId == null) return [];
 
     try {
-      final response = await ApiService.getSalesmen(_currentDistributorId!);
+      final response = await ApiService.getSalesmen(
+        _currentDistributorId!,
+        throwOnError: throwOnError,
+      );
       print('Salesmen response: ${response.length} salesmen');
       _salesmen = response.map((data) {
         final id = data['_id']?.toString() ?? data['id']?.toString() ?? '';
@@ -2537,6 +2696,7 @@ class SalesmanService {
       return _salesmen;
     } catch (e) {
       print('Error in getSalesmen: $e');
+      if (throwOnError) rethrow;
       return [];
     }
   }
@@ -2603,6 +2763,8 @@ class SalesmanService {
 class OrderService {
   List<OrderModel> _orders = [];
   List<OrderModel> _draftOrders = [];
+  static const int pageSize = 100;
+  bool hasMoreOrders = false;
   String? _currentDistributorId;
   String? _currentSalesmanId;
 
@@ -2620,6 +2782,8 @@ class OrderService {
     DateTime? startDate,
     DateTime? endDate,
     String? search,
+    int page = 1,
+    bool append = false,
   }) async {
     if (_currentDistributorId != null) {
       try {
@@ -2630,13 +2794,19 @@ class OrderService {
           startDate: startDate,
           endDate: endDate,
           search: search,
+          page: page,
+          limit: pageSize,
+          throwOnError: append,
         );
-        _orders = _parseOrdersFromResponse(response);
+        final fetched = _parseOrdersFromResponse(response);
+        hasMoreOrders = fetched.length == pageSize;
+        _orders = append ? [..._orders, ...fetched] : fetched;
         print(
           'Fetched ${_orders.length} orders for distributor $_currentDistributorId',
         );
       } catch (e) {
         print('Error fetching distributor orders: $e');
+        if (append) rethrow;
       }
     } else if (_currentSalesmanId != null) {
       try {
@@ -5974,7 +6144,7 @@ class _DistributorDashboardEnhancedState
   List<NotificationModel> _notifications = [];
   List<Map<String, dynamic>> _adminDeliveryLoads = [];
   bool _isLoadingAdminLoads = false;
-  bool _isLoading = true;
+  bool _isLoading = false;
   final Set<String> _loadedSections = {};
   final Set<String> _loadingSections = {};
   int _unreadNotificationCount = 0;
@@ -6003,6 +6173,9 @@ class _DistributorDashboardEnhancedState
   String _searchType = 'All';
   final TextEditingController _orderSearchController = TextEditingController();
   String _orderSearchQuery = '';
+  Timer? _orderSearchDebounce;
+  int _orderPage = 1;
+  bool _isLoadingMoreOrders = false;
 
   String? _selectedOrderSalesmanId;
   String _orderCustomerFilter = '';
@@ -6325,6 +6498,7 @@ class _DistributorDashboardEnhancedState
 
   Future<void> _loadOrders() async {
     if (_currentDistributor.distributorId != null) {
+      _orderPage = 1;
       final orders = await _orderService.getOrders(
         customerName: _orderCustomerFilter.isNotEmpty
             ? _orderCustomerFilter
@@ -6334,9 +6508,38 @@ class _DistributorDashboardEnhancedState
         endDate: _orderEndDate,
         search: _orderSearchQuery.isNotEmpty ? _orderSearchQuery : null,
       );
+      if (!mounted) return;
       setState(() {
         _orders = orders;
       });
+    }
+  }
+
+  Future<void> _loadMoreOrders() async {
+    if (_isLoadingMoreOrders || !_orderService.hasMoreOrders) return;
+    setState(() => _isLoadingMoreOrders = true);
+    try {
+      final orders = await _orderService.getOrders(
+        customerName: _orderCustomerFilter.isNotEmpty ? _orderCustomerFilter : null,
+        salesmanId: _selectedOrderSalesmanId,
+        startDate: _orderStartDate,
+        endDate: _orderEndDate,
+        search: _orderSearchQuery.isNotEmpty ? _orderSearchQuery : null,
+        page: _orderPage + 1,
+        append: true,
+      );
+      if (!mounted) return;
+      setState(() {
+        _orderPage++;
+        _orders = orders;
+      });
+    } catch (error) {
+      if (mounted) {
+        showSafeSnackBar(context, 'Unable to load more orders: $error',
+            backgroundColor: errorRed);
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingMoreOrders = false);
     }
   }
 
@@ -7345,6 +7548,12 @@ class _DistributorDashboardEnhancedState
   }
 
   @override
+  void dispose() {
+    _orderSearchDebounce?.cancel();
+    super.dispose();
+  }
+
+  @override
   void initState() {
     super.initState();
     if (widget.loggedInUser != null) {
@@ -7502,10 +7711,18 @@ class _DistributorDashboardEnhancedState
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
 
+    _orderPage = 1;
+
     final results = await Future.wait([
       _customerService.getCustomers(),
       _productService.getProducts(),
-      _orderService.getOrders(),
+      _orderService.getOrders(
+        customerName: _orderCustomerFilter.isNotEmpty ? _orderCustomerFilter : null,
+        salesmanId: _selectedOrderSalesmanId,
+        startDate: _orderStartDate,
+        endDate: _orderEndDate,
+        search: _orderSearchQuery.isNotEmpty ? _orderSearchQuery : null,
+      ),
       _salesmanService.getSalesmen(),
     ]);
 
@@ -7524,6 +7741,7 @@ class _DistributorDashboardEnhancedState
   }
 
   Future<void> _loadSections(List<String> sections) async {
+    final reportSalesmenErrors = _selectedIndex == 13;
     try {
       final results = await Future.wait(sections.map((section) async {
         switch (section) {
@@ -7534,7 +7752,9 @@ class _DistributorDashboardEnhancedState
           case 'orders':
             return await _orderService.getOrders();
           case 'salesmen':
-            return await _salesmanService.getSalesmen();
+            return await _salesmanService.getSalesmen(
+              throwOnError: reportSalesmenErrors,
+            );
           default:
             return null;
         }
@@ -7551,6 +7771,7 @@ class _DistributorDashboardEnhancedState
               break;
             case 'orders':
               _orders = results[i] as List<OrderModel>;
+              _orderPage = 1;
               break;
             case 'salesmen':
               _salesmen = results[i] as List<SalesmanModel>;
@@ -7606,9 +7827,12 @@ class _DistributorDashboardEnhancedState
             children: [
               DropdownButtonFormField<String>(
                 value: salesmanId,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'Salesman',
-                  border: OutlineInputBorder(),
+                  border: const OutlineInputBorder(),
+                  helperText: _salesmen.isEmpty
+                      ? 'No salesmen found for this distributor'
+                      : null,
                 ),
                 items: _salesmen
                     .map(
@@ -9180,6 +9404,7 @@ class _DistributorDashboardEnhancedState
                 'canCollectPayment': true,
                 'canEditOrder': true,
                 'canDeleteOrder': true,
+                'canEditBillingRate': false,
               };
 
               try {
@@ -9219,7 +9444,7 @@ class _DistributorDashboardEnhancedState
     );
   }
 
-  void _showPermissionsDialog(SalesmanModel salesman) {
+  Future<void> _showPermissionsDialog(SalesmanModel salesman) async {
     final permissions = Map<String, bool>.from({
       'canAddProduct': false,
       'canEditProduct': false,
@@ -9232,7 +9457,29 @@ class _DistributorDashboardEnhancedState
       'canCollectPayment': true,
       'canEditOrder': true,
       'canDeleteOrder': true,
+      'canEditBillingRate': false,
     });
+
+    Map<String, dynamic> saved;
+    try {
+      saved = await ApiService.getSalesmanPermissions(salesman.salesmanId);
+    } catch (e) {
+      if (mounted) {
+        showSafeSnackBar(
+          context,
+          'Error loading permissions: $e',
+          backgroundColor: errorRed,
+        );
+      }
+      return;
+    }
+    final savedPermissions = Map<String, dynamic>.from(
+      saved['permissions'] ?? {},
+    );
+    for (final entry in savedPermissions.entries) {
+      if (entry.value is bool) permissions[entry.key] = entry.value as bool;
+    }
+    if (!mounted) return;
 
     showDialog(
       context: context,
@@ -9314,6 +9561,18 @@ class _DistributorDashboardEnhancedState
                     () => permissions['canDeleteOrder'] = val ?? false,
                   ),
                 ),
+                const Divider(),
+                const Text(
+                  'Billing Permissions:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                CheckboxListTile(
+                  title: const Text('Edit Rate During Billing'),
+                  value: permissions['canEditBillingRate'],
+                  onChanged: (val) => setDialogState(
+                    () => permissions['canEditBillingRate'] = val ?? false,
+                  ),
+                ),
               ],
             ),
           ),
@@ -9327,7 +9586,7 @@ class _DistributorDashboardEnhancedState
                 try {
                   await ApiService.updateSalesmanPermissions(
                     salesman.salesmanId,
-                    permissions,
+                    {...savedPermissions, ...permissions},
                   );
                   if (mounted) {
                     Navigator.pop(context);
@@ -10992,6 +11251,7 @@ class _DistributorDashboardEnhancedState
       5 || 10 => <String>['orders'],
       6 => <String>['customers', 'products', 'salesmen'],
       7 => <String>['customers', 'orders'],
+      13 => <String>['salesmen'],
       _ => <String>[],
     };
     final missing = requiredSections
@@ -11160,20 +11420,10 @@ class _DistributorDashboardEnhancedState
 
   Widget _buildDashboard() {
     final summary = Map<String, dynamic>.from(_dashboardStats['summary'] ?? {});
-    final totalRevenue = _loadedSections.contains('orders') ? _orders
-        .where((o) => o.status == OrderStatus.delivered)
-        .fold<double>(0, (sum, o) => sum + o.totalAmount)
-        : (summary['delivered_revenue'] as num? ?? 0).toDouble();
-    final todayOrders = _loadedSections.contains('orders')
-        ? _orderService.todayOrders
-        : (summary['today_orders'] as num? ?? 0).toInt();
-    final totalCollection = _loadedSections.contains('orders') ? _orders.fold<double>(
-      0,
-      (sum, o) => sum + o.paidAmount,
-    ) : (summary['total_order_paid'] as num? ?? 0).toDouble();
-    final totalPending = _loadedSections.contains('orders')
-        ? _orders.fold<double>(0, (sum, o) => sum + o.dueAmount)
-        : (summary['total_outstanding'] as num? ?? 0).toDouble();
+    final totalRevenue = (summary['delivered_revenue'] as num? ?? 0).toDouble();
+    final todayOrders = (summary['today_orders'] as num? ?? 0).toInt();
+    final totalCollection = (summary['total_order_paid'] as num? ?? 0).toDouble();
+    final totalPending = (summary['total_outstanding'] as num? ?? 0).toDouble();
     final achievementPercentage = _monthlyTarget > 0
         ? (totalRevenue / _monthlyTarget * 100).clamp(0, 100)
         : 0.0;
@@ -11546,8 +11796,7 @@ class _DistributorDashboardEnhancedState
   }
 
   Widget _buildRecentOrders() {
-    final recentOrders = (_loadedSections.contains('orders')
-            ? _orders : _recentDashboardOrders).take(5).toList();
+    final recentOrders = _recentDashboardOrders.take(5).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -11692,10 +11941,9 @@ class _DistributorDashboardEnhancedState
   }
 
   Widget _buildOverviewSection() {
-    final totalRevenue = _orders
-        .where((o) => o.status == OrderStatus.delivered)
-        .fold<double>(0, (sum, o) => sum + o.totalAmount);
-    final totalOrders = _orders.length;
+    final summary = _dashboardStats['summary'] as Map<String, dynamic>? ?? {};
+    final totalRevenue = (summary['delivered_revenue'] as num?)?.toDouble() ?? 0;
+    final totalOrders = (summary['total_orders'] as num?)?.toInt() ?? 0;
     final avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0.0;
 
     return SingleChildScrollView(
@@ -11748,7 +11996,7 @@ class _DistributorDashboardEnhancedState
               Expanded(
                 child: _buildOverviewCard(
                   'Active Customers',
-                  '${_customers.length}',
+                  '${summary['total_customers'] ?? _customers.length}',
                   Icons.people,
                   cardPurple,
                 ),
@@ -11824,11 +12072,14 @@ class _DistributorDashboardEnhancedState
 
   Widget _buildOrderStatusChart() {
     final statusCounts = <OrderStatus, int>{};
-    for (var order in _orders) {
-      statusCounts[order.status] = (statusCounts[order.status] ?? 0) + 1;
+    final counts = _dashboardStats['orders_by_status'] as Map? ?? {};
+    for (final entry in counts.entries) {
+      final status = _orderService._parseOrderStatus(entry.key.toString());
+      statusCounts[status] = (statusCounts[status] ?? 0) +
+          ((entry.value as num?)?.toInt() ?? 0);
     }
 
-    final total = _orders.length;
+    final total = statusCounts.values.fold<int>(0, (sum, count) => sum + count);
     if (total == 0) {
       return Container(
         padding: const EdgeInsets.all(20),
@@ -11921,14 +12172,15 @@ class _DistributorDashboardEnhancedState
     final salesmanPerformance = <SalesmanModel, Map<String, dynamic>>{};
 
     for (var salesman in _salesmen) {
-      final orders = _orders.where((o) => o.salesmanId == salesman.id).toList();
-      final revenue = orders.fold<double>(0, (sum, o) => sum + o.totalAmount);
-      final collection = orders.fold<double>(0, (sum, o) => sum + o.paidAmount);
+      final serverStats = _salesmanPerformance.firstWhere(
+        (row) => row['salesman_id'] == salesman.salesmanId,
+        orElse: () => <String, dynamic>{},
+      );
 
       salesmanPerformance[salesman] = {
-        'orders': orders.length,
-        'revenue': revenue,
-        'collection': collection,
+        'orders': serverStats['orders_count'] ?? 0,
+        'revenue': (serverStats['total_sales'] as num?)?.toDouble() ?? 0.0,
+        'collection': (serverStats['total_collection'] as num?)?.toDouble() ?? 0.0,
       };
     }
 
@@ -13505,7 +13757,7 @@ class _DistributorDashboardEnhancedState
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
-                      '${filteredOrders.length} Orders',
+                      'Showing ${filteredOrders.length} Orders',
                       style: const TextStyle(
                         color: cardPurple,
                         fontWeight: FontWeight.w600,
@@ -13560,7 +13812,14 @@ class _DistributorDashboardEnhancedState
                   ),
                   isDense: true,
                 ),
-                onChanged: (value) => setState(() => _orderSearchQuery = value),
+                onChanged: (value) {
+                  setState(() => _orderSearchQuery = value);
+                  _orderSearchDebounce?.cancel();
+                  _orderSearchDebounce = Timer(
+                    const Duration(milliseconds: 350),
+                    () => unawaited(_loadOrders()),
+                  );
+                },
               ),
               const SizedBox(height: 12),
               Row(
@@ -13690,8 +13949,19 @@ class _DistributorDashboardEnhancedState
                   ),
                 )
               : ListView.builder(
-                  itemCount: filteredOrders.length,
+                  itemCount: filteredOrders.length +
+                      (_orderService.hasMoreOrders ? 1 : 0),
                   itemBuilder: (context, index) {
+                    if (index == filteredOrders.length) {
+                      return Center(
+                        child: TextButton(
+                          onPressed: _isLoadingMoreOrders ? null : _loadMoreOrders,
+                          child: Text(_isLoadingMoreOrders
+                              ? 'Loading more orders...'
+                              : 'Load more orders'),
+                        ),
+                      );
+                    }
                     final order = filteredOrders[index];
                     final isSelected = _selectedOrderIds.contains(order.id);
                     return _buildOrderTableRow(order, index + 1, isSelected);
@@ -15099,19 +15369,56 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   // This is UI-only state and does not change any existing data/API logic.
   bool _isHeaderSearchVisible = false;
 
-  bool _isLoading = true;
+  bool _isLoading = false;
+  bool _isLoadingDashboard = true;
 
   late UserModel _currentSalesman;
 
   List<CustomerModel> _customers = [];
   List<ProductModel> _products = [];
   List<OrderModel> _orders = [];
+  List<OrderModel> _recentSalesmanOrders = [];
   Map<String, dynamic> _permissions = {};
   List<CollectionHistoryModel> _collectionHistory = [];
+  Map<String, dynamic> _salesmanDashboardSummary = {};
+  // Create Order: preserve stable dropdown choices between rebuilds.
+  Map<String, String>? _cachedOrderCompanies;
+  Map<String, String> _quickOrderCompanies = {};
+  Map<String, List<String>> _quickOrderRoutes = {};
+  bool _loadingOrderCompanies = true;
+  String? _orderCompaniesError;
+  String? _cachedOrderRoutesCompany;
+  List<String>? _cachedOrderRoutes;
+  void _invalidateOrderDropdowns() {
+    _cachedOrderCompanies = null;
+    _cachedOrderRoutesCompany = null;
+    _cachedOrderRoutes = null;
+  }
+
+  final Set<String> _loadedSalesmanSections = {};
+  final Set<String> _loadingSalesmanSections = {};
+  final Map<String, String> _salesmanSectionErrors = {};
+  String? _orderCustomerRequestKey;
+  String? _orderProductRequestKey;
+  String? _scheduledOrderCustomerKey;
+  String? _scheduledOrderProductKey;
+  bool _loadingOrderCustomers = false;
+  bool _loadingOrderProducts = false;
+  bool _moreOrderCustomers = false;
+  bool _moreOrderProducts = false;
+  String? _orderCustomerError;
+  String? _orderProductError;
+  int _orderCustomerPage = 0;
+  int _orderProductPage = 0;
+  int _orderCustomerGeneration = 0;
+  int _orderProductGeneration = 0;
+  Timer? _orderCustomerSearchDebounce;
+  Timer? _orderProductSearchDebounce;
   List<dynamic> _outstandingBills = [];
   bool _isLoadingOutstanding = false;
   String? _outstandingLoadError;
   int _outstandingLoadGeneration = 0;
+  Timer? _outstandingSearchDebounce;
   List<dynamic> _deliveryBills = [];
   final Set<String> _pendingLoadPayments = {};
   final Set<String> _paidLoadBills = {};
@@ -15282,92 +15589,43 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   // ==================== ADDED: Filtered customers for salesman create order ====================
   String _cleanText(String v) => v.trim().toLowerCase();
 
-  String _customerCompanyKey(CustomerModel customer) {
-    final sysCode = customer.sysCompCode?.trim() ?? '';
-    if (sysCode.isNotEmpty) return sysCode;
-    final companyCode = customer.companyCode?.trim() ?? '';
-    return companyCode.isNotEmpty ? companyCode : '__unmapped__';
-  }
-
   bool _customerBelongsToCompany(CustomerModel customer, String companyKey) {
-    final wanted = _cleanText(companyKey);
-    if (_cleanText(_customerCompanyKey(customer)) == wanted) return true;
-    return customer.companies.any((company) {
-      final sysCode = (company['sysCompCode'] ?? '').toString();
-      final code = (company['companyCode'] ?? '').toString();
-      return _cleanText(sysCode) == wanted || _cleanText(code) == wanted;
-    });
+    return _customerBelongsToOrderCompany(customer, companyKey);
   }
 
   String _productCompanyKey(ProductModel product) {
-    final sysCode = product.sysCompCode?.trim() ?? '';
-    if (sysCode.isNotEmpty) return sysCode;
-    final companyCode = product.companyCode?.trim() ?? '';
-    return companyCode.isNotEmpty ? companyCode : '__unmapped__';
+    return _productOrderCompanyKey(product);
   }
 
   Map<String, String> get orderCompanies {
-    final companies = <String, String>{};
-    for (final customer in _customers) {
-      for (final company in customer.companies) {
-        final key = (company['sysCompCode'] ?? company['companyCode'] ?? '')
-            .toString()
-            .trim();
-        if (key.isNotEmpty) {
-          companies[key] =
-              (company['companyName'] ?? company['companyCode'] ?? key)
-                  .toString()
-                  .trim();
-        }
-      }
-      final key = _customerCompanyKey(customer);
-      if (key.isNotEmpty) {
-        companies[key] = key == '__unmapped__'
-            ? 'Assigned Company'
-            : (customer.companyName?.trim().isNotEmpty ?? false)
-            ? customer.companyName!.trim()
-            : (customer.companyCode?.trim().isNotEmpty ?? false)
-            ? customer.companyCode!.trim()
-            : key;
+    final cached = _cachedOrderCompanies;
+    if (cached != null) return cached;
+    final catalogCompanies = _orderCompanyOptions(_customers, _products);
+    final companies = {..._quickOrderCompanies};
+    for (final entry in catalogCompanies.entries) {
+      final current = companies[entry.key];
+      if (current == null || current == entry.key || entry.value != entry.key) {
+        companies[entry.key] = entry.value;
       }
     }
-    for (final product in _products) {
-      final key = _productCompanyKey(product);
-      if (key.isNotEmpty) {
-        companies.putIfAbsent(
-          key,
-          () => key == '__unmapped__'
-              ? 'Assigned Company'
-              : (product.companyName?.trim().isNotEmpty ?? false)
-              ? product.companyName!.trim()
-              : (product.companyCode?.trim().isNotEmpty ?? false)
-              ? product.companyCode!.trim()
-              : key,
-        );
-      }
-    }
-    return Map.fromEntries(
-      companies.entries.toList()..sort(
-        (a, b) => a.value.toLowerCase().compareTo(b.value.toLowerCase()),
-      ),
-    );
+    return _cachedOrderCompanies = companies;
   }
 
   List<String> get orderRoutes {
     final company = _selectedOrderCompany;
     if (company == null || company.trim().isEmpty) return [];
-    final routes = _customers
-        .where((c) => _customerBelongsToCompany(c, company))
-        .map(
-          (c) => (c.route != null && c.route!.trim().isNotEmpty)
-              ? c.route!.trim()
-              : c.area.trim(),
-        )
-        .where((r) => r.isNotEmpty)
-        .toSet()
-        .toList();
+    if (_cachedOrderRoutesCompany == company && _cachedOrderRoutes != null) {
+      return _cachedOrderRoutes!;
+    }
+    final routes = _orderRoutesForSelection(company);
+    _cachedOrderRoutesCompany = company;
+    return _cachedOrderRoutes = routes;
+  }
 
-    routes.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+  List<String> _orderRoutesForSelection(String company) {
+    final catalogRoutes = _orderRoutesForCompany(_customers, company);
+    final routes = <String>{...?_quickOrderRoutes[company], ...catalogRoutes}.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     return routes;
   }
 
@@ -15401,7 +15659,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     customers.sort(
       (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
     );
-    return customers.take(80).toList();
+    return customers;
   }
 
   List<ProductModel> get orderFilteredProducts {
@@ -15485,12 +15743,242 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       _orderService.setSalesmanId('SM0001');
       _collectionHistoryService.setSalesmanId('SM0001');
     }
+    unawaited(_initializeOrderCatalog());
     _loadData();
     _loadBankAndUpiLists();
-    _loadCollectionHistory();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _ensureGpsReadyAfterLogin();
     });
+  }
+
+  Future<void> _initializeOrderCatalog() async {
+    String? savedCompany;
+    Map<String, String> savedCompanies = {};
+    Map<String, List<String>> savedRoutes = {};
+    final salesmanId = _currentSalesman.salesmanId ?? _currentSalesman.id;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      savedCompany = prefs.getString(
+        'salesman_order_company_$salesmanId',
+      );
+      final cachedCompanies = prefs.getString('salesman_order_companies_$salesmanId');
+      if (cachedCompanies != null) {
+        savedCompanies = Map<String, String>.from(json.decode(cachedCompanies) as Map);
+      }
+      final cachedRoutes = prefs.getString('salesman_order_routes_$salesmanId');
+      if (cachedRoutes != null) {
+        savedRoutes = (json.decode(cachedRoutes) as Map).map(
+          (key, value) => MapEntry(key.toString(), List<String>.from(value as List)),
+        );
+      }
+    } catch (error) {
+      debugPrint('Unable to restore salesman order company: $error');
+      if (mounted) {
+        showSafeSnackBar(
+          context,
+          'Could not restore the saved company. Select it again to continue.',
+          backgroundColor: errorRed,
+        );
+      }
+    }
+    if (!mounted) return;
+
+    setState(() {
+      if (savedCompany != null && savedCompany!.trim().isNotEmpty &&
+          _selectedOrderCompany == null) {
+        _selectedOrderCompany = savedCompany;
+      }
+      _quickOrderCompanies = savedCompanies;
+      _quickOrderRoutes = savedRoutes;
+      _invalidateOrderDropdowns();
+    });
+    try {
+      final data = await ApiService.getSalesmanData(
+        salesmanId,
+        section: 'companies',
+        timeout: const Duration(seconds: 30),
+      );
+      final companies = Map<String, String>.from(data['companies'] as Map);
+      final routes = (data['routes'] as Map).map(
+        (key, value) => MapEntry(key.toString(), List<String>.from(value as List)),
+      );
+      if (!mounted) return;
+      setState(() {
+        _quickOrderCompanies = companies;
+        _quickOrderRoutes = routes;
+        _orderCompaniesError = null;
+        _invalidateOrderDropdowns();
+      });
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('salesman_order_companies_$salesmanId', json.encode(companies));
+      await prefs.setString('salesman_order_routes_$salesmanId', json.encode(routes));
+    } catch (error) {
+      debugPrint('Unable to load quick order companies: $error');
+      if (mounted) setState(() => _orderCompaniesError = error.toString());
+    } finally {
+      if (mounted) setState(() => _loadingOrderCompanies = false);
+    }
+    if (!mounted) return;
+
+    final company = _selectedOrderCompany;
+    final routes = company == null || !orderCompanies.containsKey(company)
+        ? <String>[]
+        : _orderRoutesForSelection(company);
+    setState(() {
+      if (routes.length == 1) {
+        _selectedOrderRoute = routes.single;
+        _persistedSelectedRoute = routes.single;
+      }
+    });
+  }
+
+  String? get _selectedOrderCustomerQueryKey {
+    final company = _selectedOrderCompany?.trim() ?? '';
+    final route = _selectedOrderRoute?.trim() ?? '';
+    if (company.isEmpty || route.isEmpty) return null;
+    return json.encode([company, route, _customerSearchQuery.trim()]);
+  }
+
+  String? get _selectedOrderProductQueryKey {
+    final company = _selectedOrderCompany?.trim() ?? '';
+    if (company.isEmpty || _selectedCustomerId == null) return null;
+    return json.encode([company, _productSearchQuery.trim()]);
+  }
+
+  Future<void> _loadOrderCustomers({bool more = false}) async {
+    final company = _selectedOrderCompany?.trim() ?? '';
+    final route = _selectedOrderRoute?.trim() ?? '';
+    final key = _selectedOrderCustomerQueryKey;
+    if (key == null) return;
+    final append = more && key == _orderCustomerRequestKey && _orderCustomerPage > 0;
+    if (_loadingOrderCustomers && append) return;
+    final page = append ? _orderCustomerPage + 1 : 1;
+    final generation = append ? _orderCustomerGeneration : ++_orderCustomerGeneration;
+    setState(() {
+      _orderCustomerRequestKey = key;
+      _loadingOrderCustomers = true;
+      _orderCustomerError = null;
+      if (!append) {
+        _orderCustomerPage = 0;
+        _moreOrderCustomers = false;
+      }
+    });
+    try {
+      final data = await ApiService.getSalesmanData(
+        _currentSalesman.salesmanId ?? _currentSalesman.id,
+        section: 'order-customers', company: company, route: route,
+        search: _customerSearchQuery.trim(), page: page,
+        timeout: const Duration(seconds: 45),
+      );
+      if (!mounted || generation != _orderCustomerGeneration) return;
+      final rows = _customersFromCatalog(data);
+      setState(() {
+        final byId = {for (final customer in _customers) customer.id: customer};
+        for (final customer in rows) { byId[customer.id] = customer; }
+        _customers = byId.values.toList();
+        _orderCustomerPage = page;
+        _moreOrderCustomers = data['hasMore'] == true;
+        _invalidateOrderDropdowns();
+      });
+    } catch (error) {
+      if (mounted && generation == _orderCustomerGeneration) {
+        setState(() => _orderCustomerError = error.toString());
+      }
+    } finally {
+      if (mounted && generation == _orderCustomerGeneration) {
+        setState(() => _loadingOrderCustomers = false);
+      }
+    }
+  }
+
+  Future<void> _loadOrderProducts({bool more = false}) async {
+    final company = _selectedOrderCompany?.trim() ?? '';
+    final key = _selectedOrderProductQueryKey;
+    if (key == null) return;
+    final append = more && key == _orderProductRequestKey && _orderProductPage > 0;
+    if (_loadingOrderProducts && append) return;
+    final page = append ? _orderProductPage + 1 : 1;
+    final generation = append ? _orderProductGeneration : ++_orderProductGeneration;
+    setState(() {
+      _orderProductRequestKey = key;
+      _loadingOrderProducts = true;
+      _orderProductError = null;
+      if (!append) {
+        _orderProductPage = 0;
+        _moreOrderProducts = false;
+      }
+    });
+    try {
+      final data = await ApiService.getSalesmanData(
+        _currentSalesman.salesmanId ?? _currentSalesman.id,
+        section: 'order-products', company: company,
+        search: _productSearchQuery.trim(), page: page,
+        timeout: const Duration(seconds: 45),
+      );
+      if (!mounted || generation != _orderProductGeneration) return;
+      final rows = _productsFromCatalog(data);
+      setState(() {
+        final byId = {for (final product in _products) product.id: product};
+        for (final product in rows) { byId[product.id] = product; }
+        _products = byId.values.toList();
+        _orderProductPage = page;
+        _moreOrderProducts = data['hasMore'] == true;
+        _invalidateOrderDropdowns();
+      });
+    } catch (error) {
+      if (mounted && generation == _orderProductGeneration) {
+        setState(() => _orderProductError = error.toString());
+      }
+    } finally {
+      if (mounted && generation == _orderProductGeneration) {
+        setState(() => _loadingOrderProducts = false);
+      }
+    }
+  }
+
+  void _onOrderCustomerSearchChanged(String value) {
+    setState(() {
+      _customerSearchQuery = value;
+      _orderCustomerRequestKey = _selectedOrderCustomerQueryKey;
+      _orderCustomerPage = 0;
+      _moreOrderCustomers = false;
+    });
+    _orderCustomerSearchDebounce?.cancel();
+    _orderCustomerSearchDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (mounted) unawaited(_loadOrderCustomers());
+    });
+  }
+
+  void _onOrderProductSearchChanged(String value) {
+    setState(() {
+      _productSearchQuery = value;
+      _orderProductRequestKey = _selectedOrderProductQueryKey;
+      _orderProductPage = 0;
+      _moreOrderProducts = false;
+    });
+    _orderProductSearchDebounce?.cancel();
+    _orderProductSearchDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (mounted) unawaited(_loadOrderProducts());
+    });
+  }
+
+  Future<void> _saveOrderCompany(String company) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'salesman_order_company_${_currentSalesman.salesmanId ?? _currentSalesman.id}',
+        company,
+      );
+    } catch (error) {
+      debugPrint('Unable to save salesman order company: $error');
+      if (mounted) {
+        showSafeSnackBar(
+          context,
+          'Company selected, but it could not be saved for your next login.',
+          backgroundColor: errorRed,
+        );
+      }
+    }
   }
 
   Future<void> _ensureGpsReadyAfterLogin() async {
@@ -16421,6 +16909,13 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   Future<void> _loadOutstandingBills(String distributorId) async {
+    await _fetchOutstandingBills(distributorId);
+  }
+
+  Future<void> _fetchOutstandingBills(
+    String distributorId, {
+    String search = '',
+  }) async {
     final generation = ++_outstandingLoadGeneration;
 
     if (mounted) {
@@ -16435,6 +16930,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
           await ApiService.getOutstandingBillsForDistributor(
             distributorId,
             _currentSalesman.salesmanId ?? _currentSalesman.id,
+            search: search,
           );
 
       if (mounted && generation == _outstandingLoadGeneration) {
@@ -16453,6 +16949,41 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         setState(() => _isLoadingOutstanding = false);
       }
     }
+  }
+
+  String get _outstandingDistributorId =>
+      _deliveryDistributorId.trim().isNotEmpty
+      ? _deliveryDistributorId.trim()
+      : (_currentSalesman.distributorId?.trim() ?? '');
+
+  Future<void> _refreshOutstandingBills() async {
+    final distributorId = _outstandingDistributorId;
+    if (distributorId.isEmpty) {
+      setState(() {
+        _outstandingLoadError = 'Distributor ID is not available.';
+      });
+      return;
+    }
+    await _fetchOutstandingBills(
+      distributorId,
+      search: _outstandingSearchQuery.trim(),
+    );
+  }
+
+  void _onOutstandingSearchChanged(String value) {
+    final search = value.trim();
+    setState(() => _outstandingSearchQuery = value);
+    _outstandingSearchDebounce?.cancel();
+
+    final distributorId = _outstandingDistributorId;
+    if (distributorId.isEmpty) return;
+
+    _outstandingSearchDebounce = Timer(
+      const Duration(milliseconds: 350),
+      () => unawaited(
+        _fetchOutstandingBills(distributorId, search: search),
+      ),
+    );
   }
 
   Future<void> _loadDeliveryBills(String distributorId) async {
@@ -16550,21 +17081,41 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     unawaited(_loadDeliveryBills(distributorId));
   }
 
-  Future<void> _loadData() async {
-    setState(() => _isLoading = true);
+  String? _sectionForSalesmanIndex(int index) => switch (index) {
+    0 => 'dashboard',
+    1 => 'orders',
+    2 => null,
+    4 => 'products',
+    5 => 'customers',
+    _ => null,
+  };
+
+  Future<void> _loadData({String? section}) async {
+    final requestedSection = section ??
+        _sectionForSalesmanIndex(_selectedIndex) ?? 'dashboard';
+    final showFullPageLoading =
+        requestedSection == 'dashboard' &&
+        !_loadedSalesmanSections.contains('dashboard');
+    _loadingSalesmanSections.add(requestedSection);
+    setState(() {
+      if (showFullPageLoading) _isLoadingDashboard = true;
+    });
 
     try {
       if (_currentSalesman.salesmanId != null) {
         final loginDistributorId = _currentSalesman.distributorId?.trim() ?? '';
-
-        // Do not wait for customers/products/orders before requesting bills.
-        if (loginDistributorId.isNotEmpty) {
-          unawaited(_loadOutstandingBills(loginDistributorId));
-        }
+        final now = DateTime.now();
+        final todayStart = DateTime(now.year, now.month, now.day);
+        final weekStart = todayStart.subtract(Duration(days: now.weekday - 1));
 
         final data = await ApiService.getSalesmanData(
           _currentSalesman.salesmanId!,
+          section: requestedSection,
+          todayStart: requestedSection == 'dashboard' ? todayStart : null,
+          weekStart: requestedSection == 'dashboard' ? weekStart : null,
+          timeout: const Duration(seconds: 30),
         );
+        if (!mounted) return;
         final distributorId =
             [
                   _currentSalesman.distributorId,
@@ -16586,27 +17137,33 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
           'canCollectPayment': true,
           'canEditOrder': true,
           'canDeleteOrder': true,
+          'canEditBillingRate': false,
         };
 
         setState(() {
           _deliveryDistributorId = distributorId;
-          _customers =
-              (data['customers'] as List?)?.map((c) {
-                final customer = Map<String, dynamic>.from(c as Map);
-                final id = customer['_id']?.toString() ?? '';
-                return CustomerModel.fromMap(customer, id);
-              }).toList() ??
-              [];
+          if (data.containsKey('customers') || data.containsKey('products')) {
+            _invalidateOrderDropdowns();
+          }
+          if (data.containsKey('customers')) {
+            _customers = _customersFromCatalog(data);
+            if (_selectedOrderCompany != null && _selectedOrderRoute == null) {
+              final routes = _orderRoutesForCompany(
+                _customers,
+                _selectedOrderCompany!,
+              );
+              if (routes.length == 1) {
+                _selectedOrderRoute = routes.single;
+                _persistedSelectedRoute = routes.single;
+              }
+            }
+          }
+          if (data.containsKey('products')) {
+            _products = _productsFromCatalog(data);
+          }
 
-          _products =
-              (data['products'] as List?)?.map((p) {
-                final product = Map<String, dynamic>.from(p as Map);
-                final id = product['_id']?.toString() ?? '';
-                return ProductModel.fromMap(product, id);
-              }).toList() ??
-              [];
-
-          _orders =
+          if (data.containsKey('orders')) {
+            final fetchedOrders =
               (data['orders'] as List?)?.map((o) {
                 final id = o['_id']?.toString() ?? '';
                 return OrderModel(
@@ -16656,8 +17213,14 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                 );
               }).toList() ??
               [];
+            if (requestedSection == 'dashboard') {
+              _recentSalesmanOrders = fetchedOrders;
+            } else {
+              _orders = fetchedOrders;
+            }
+          }
 
-          _collectionHistory =
+          if (data.containsKey('collectionHistory')) _collectionHistory =
               (data['collectionHistory'] as List?)?.map((c) {
                 final collection = Map<String, dynamic>.from(c as Map);
                 final id = collection['_id']?.toString() ?? '';
@@ -16669,38 +17232,54 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             ...defaultPermissions,
             ...Map<String, dynamic>.from(data['permissions'] ?? {}),
           };
+          if (data['summary'] is Map) {
+            _salesmanDashboardSummary =
+                Map<String, dynamic>.from(data['summary'] as Map);
+          }
+          _loadedSalesmanSections.add(requestedSection);
+          if (requestedSection != 'dashboard' &&
+              requestedSection != 'catalog') {
+            _loadedSalesmanSections.remove('dashboard');
+          }
+          if (requestedSection == 'catalog') {
+            _loadedSalesmanSections.addAll(['customers', 'products']);
+            _loadedSalesmanSections.remove('orders');
+          }
+          if (requestedSection == 'customers' ||
+              requestedSection == 'products') {
+            // Full catalog is only complete if both datasets were received.
+            if (_loadedSalesmanSections.contains('customers') &&
+                _loadedSalesmanSections.contains('products')) {
+              _loadedSalesmanSections.add('catalog');
+            }
+          }
+          _salesmanSectionErrors.remove(requestedSection);
+          if (_loadedSalesmanSections.contains('catalog')) {
+            _salesmanSectionErrors.remove('catalog');
+            _salesmanSectionErrors.remove('customers');
+            _salesmanSectionErrors.remove('products');
+          }
         });
 
         // If login data did not contain the distributor (or contained a stale
         // value), load using the authoritative ID returned by the backend.
-        if (distributorId.isNotEmpty && distributorId != loginDistributorId) {
+        if (requestedSection == 'dashboard' &&
+            distributorId.isNotEmpty &&
+            distributorId != loginDistributorId) {
           unawaited(_loadOutstandingBills(distributorId));
         }
       }
     } catch (e) {
       print('Error loading salesman data: $e');
-
-      setState(() {
-        _customers = [];
-        _products = [];
-        _orders = [];
-        _permissions = {
-          'canAddProduct': false,
-          'canEditProduct': false,
-          'canDeleteProduct': false,
-          'canAddCustomer': false,
-          'canEditCustomer': false,
-          'canDeleteCustomer': false,
-          'canViewOrders': true,
-          'canCreateOrder': true,
-          'canCollectPayment': true,
-          'canEditOrder': true,
-          'canDeleteOrder': true,
-        };
-      });
+      if (mounted) {
+        setState(() => _salesmanSectionErrors[requestedSection] = e.toString());
+      }
     } finally {
       if (mounted) {
-        setState(() => _isLoading = false);
+        setState(() {
+          _loadingSalesmanSections.remove(requestedSection);
+          if (showFullPageLoading) _isLoadingDashboard = false;
+        });
       }
     }
   }
@@ -16766,6 +17345,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
 
   bool get canEditOrder => _permissionEnabled('canEditOrder');
   bool get canDeleteOrder => _permissionEnabled('canDeleteOrder');
+  bool get canEditBillingRate => _permissionEnabled('canEditBillingRate');
 
   Future<Map<String, dynamic>?> getLastSaleForProduct(String productId) async {
     if (_lastSaleCache.containsKey(productId)) {
@@ -16998,6 +17578,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   void updateCartRate(String productId, double rate) {
+    if (!canEditBillingRate) return;
     setState(() {
       if (_cart.containsKey(productId)) {
         _cart[productId]!.rate = rate;
@@ -17671,6 +18252,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                                   child: TextField(
                                                     controller:
                                                         rateControllers[productId],
+                                                    readOnly: !canEditBillingRate,
                                                     textAlign: TextAlign.center,
                                                     keyboardType:
                                                         const TextInputType.numberWithOptions(
@@ -18469,7 +19051,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             children: [
               _buildHeader(),
               Expanded(
-                child: _isLoading
+                child: _isLoadingDashboard && _selectedIndex == 0
                     ? const Center(child: CircularProgressIndicator())
                     : _buildContent(),
               ),
@@ -18947,6 +19529,12 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             _paymentsSubTab = 1;
             _isSidebarOpen = false;
           });
+          final distributorId = _deliveryDistributorId.isNotEmpty
+              ? _deliveryDistributorId
+              : (_currentSalesman.distributorId?.trim() ?? '');
+          if (distributorId.isNotEmpty) {
+            unawaited(_loadOutstandingBills(distributorId));
+          }
         } else if (index == 6) {
           setState(() {
             _selectedIndex = 3;
@@ -18966,6 +19554,53 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   Widget _buildContent() {
+    final section = _sectionForSalesmanIndex(_selectedIndex);
+    if (section == 'catalog' && !_loadedSalesmanSections.contains('catalog')) {
+      // The customer/product tabs can have already loaded both datasets.
+      // Do not download thousands of records a second time.
+      final customersReady = _loadedSalesmanSections.contains('customers');
+      final productsReady = _loadedSalesmanSections.contains('products');
+      if (customersReady && productsReady) {
+        _loadedSalesmanSections.add('catalog');
+      } else {
+        final missing = customersReady ? 'products' : productsReady ? 'customers' : 'catalog';
+        if (!_loadingSalesmanSections.contains(missing) &&
+            !_salesmanSectionErrors.containsKey(missing)) {
+          _loadingSalesmanSections.add(missing);
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) unawaited(_loadData(section: missing));
+          });
+        }
+      }
+    }
+    if (section != null && section != 'catalog' && !_loadedSalesmanSections.contains(section)) {
+      final error = _salesmanSectionErrors[section];
+      if (error != null) {
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Unable to load this section'),
+              const SizedBox(height: 8),
+              TextButton(
+                onPressed: () {
+                  setState(() => _salesmanSectionErrors.remove(section));
+                  unawaited(_loadData(section: section));
+                },
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        );
+      }
+      if (!_loadingSalesmanSections.contains(section)) {
+        _loadingSalesmanSections.add(section);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_loadData(section: section));
+        });
+      }
+      return const Center(child: CircularProgressIndicator());
+    }
     switch (_selectedIndex) {
       case 0:
         return _buildDashboard();
@@ -20520,28 +21155,17 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   Widget _buildDashboard() {
-    bool sameDay(DateTime a, DateTime b) =>
-        a.year == b.year && a.month == b.month && a.day == b.day;
     final now = DateTime.now();
-    final todayStart = DateTime(now.year, now.month, now.day);
-    final weekStart = todayStart.subtract(Duration(days: now.weekday - 1));
-    final weekEnd = weekStart.add(const Duration(days: 7));
-    final todayOrders = _orders.where((o) => sameDay(o.createdAt, now)).toList();
-    final weekOrders = _orders.where((o) =>
-      !o.createdAt.isBefore(weekStart) && o.createdAt.isBefore(weekEnd)).toList();
-    final todayCollections = _collectionHistory.where((item) =>
-      sameDay(item.collectionDate, now)).toList();
-    double sales(Iterable<OrderModel> orders) => orders
-      .where((o) => o.status != OrderStatus.cancelled)
-      .fold<double>(0, (sum, o) => sum + o.totalAmount);
-    final todaySales = sales(todayOrders);
-    final todayPending = todayOrders
-      .where((o) => o.status != OrderStatus.cancelled)
-      .fold<double>(0, (sum, o) => sum + o.dueAmount);
-    final weeklySales = sales(weekOrders);
-    final weeklyCollected = weekOrders
-      .where((o) => o.status != OrderStatus.cancelled)
-      .fold<double>(0, (sum, o) => sum + o.paidAmount);
+    final summary = _salesmanDashboardSummary;
+    int count(String key) => (summary[key] as num?)?.toInt() ?? 0;
+    double amount(String key) => (summary[key] as num?)?.toDouble() ?? 0;
+    final todayOrders = count('todayOrders');
+    final weekOrders = count('weekOrders');
+    final todayCollections = count('todayTransactions');
+    final todaySales = amount('todaySales');
+    final todayPending = amount('todayPending');
+    final weeklySales = amount('weeklySales');
+    final weeklyCollected = amount('weeklyCollected');
     final recovery = weeklySales <= 0 ? 0.0 :
       (weeklyCollected / weeklySales * 100).clamp(0.0, 100.0).toDouble();
     final target = double.tryParse(
@@ -20561,12 +21185,11 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       return sum + (raw is num ? raw.toDouble() :
         double.tryParse(raw.toString()) ?? 0);
     });
-    final collected = todayCollections.fold<double>(
-      0, (sum, item) => sum + item.amountCollected);
+    final collected = amount('todayCollected');
     final hour = now.hour;
     final greeting = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
     final firstName = _currentSalesman.name.trim().split(' ').first;
-    final recentOrders = [..._orders]
+    final recentOrders = [..._recentSalesmanOrders]
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     final recentCollections = [..._collectionHistory]
       ..sort((a, b) => b.collectionDate.compareTo(a.collectionDate));
@@ -20668,7 +21291,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
               _openLoadDelivery),
             _referenceTitle('Today Summary'),
             _referenceSurface(child: SizedBox(height: 44, child: Row(children: [
-              _referenceMetric('Orders', '${todayOrders.length}',
+               _referenceMetric('Orders', '$todayOrders',
                 Icons.receipt_long_outlined, const Color(0xFF006BF0)),
               _referenceMetric('Sales', _dashboardMoney(todaySales),
                 Icons.currency_rupee_rounded, const Color(0xFF00A85A)),
@@ -20685,7 +21308,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                 _dashboardMoney(weeklyCollected),
                 Icons.currency_rupee_rounded, const Color(0xFF00A85A),
                 compact: true),
-              _referenceMetric('Weekly Orders', '${weekOrders.length}',
+               _referenceMetric('Weekly Orders', '$weekOrders',
                 Icons.assignment_outlined, const Color(0xFF006BF0),
                 compact: true),
               _referenceMetric('Recovery',
@@ -20720,8 +21343,8 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             _referenceSurface(child: SizedBox(height: 36, child: Row(children: [
               _referenceMetric('Today Collected', _dashboardMoney(collected),
                 Icons.currency_rupee_rounded, const Color(0xFF00A85A)),
-              _referenceMetric('${todayCollections.length} Transactions',
-                '${todayCollections.length}', Icons.receipt_long_outlined,
+               _referenceMetric('$todayCollections Transactions',
+                 '$todayCollections', Icons.receipt_long_outlined,
                 const Color(0xFFE9203C), divider: false),
             ]))),
             _referenceTitle('Recent activity'),
@@ -21894,7 +22517,7 @@ Thank you.
     return Container(
       color: const Color(0xFFF5F7FB),
       child: RefreshIndicator(
-        onRefresh: _refreshLoadDelivery,
+        onRefresh: _loadData,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 95),
           children: [
@@ -23431,8 +24054,30 @@ Thank you.
   // -----------------------------------------------------------------------------
 
   Widget _buildRedesignedCustomerSelectionStep() {
-    final routeSelected =
-        _selectedOrderRoute != null && _selectedOrderRoute!.trim().isNotEmpty;
+    final companyOptions = orderCompanies;
+    final selectedCompany = companyOptions.containsKey(_selectedOrderCompany)
+        ? _selectedOrderCompany : null;
+    final routeOptions = selectedCompany == null ? <String>[] : orderRoutes;
+    final selectedRoute = routeOptions.contains(_selectedOrderRoute)
+        ? _selectedOrderRoute : null;
+    final routeSelected = selectedRoute != null && selectedRoute.trim().isNotEmpty;
+    final customerKey = routeSelected ? _selectedOrderCustomerQueryKey : null;
+    final waitingForCustomers = customerKey != null &&
+        (customerKey != _orderCustomerRequestKey ||
+            _loadingOrderCustomers ||
+            _orderCustomerSearchDebounce?.isActive == true);
+    if (customerKey != null && customerKey != _orderCustomerRequestKey &&
+        customerKey != _scheduledOrderCustomerKey) {
+      _scheduledOrderCustomerKey = customerKey;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scheduledOrderCustomerKey == customerKey) {
+          _scheduledOrderCustomerKey = null;
+        }
+        if (mounted && customerKey == _selectedOrderCustomerQueryKey) {
+          unawaited(_loadOrderCustomers());
+        }
+      });
+    }
 
     final customers = orderFilteredCustomers;
     final visibleCustomers =
@@ -23443,6 +24088,22 @@ Thank you.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (companyOptions.isEmpty && _loadingOrderCompanies)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 8),
+            child: Text('Loading companies and routes...'),
+          ),
+        if (companyOptions.isEmpty && _orderCompaniesError != null)
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _loadingOrderCompanies = true;
+                _orderCompaniesError = null;
+              });
+              unawaited(_initializeOrderCatalog());
+            },
+            child: const Text('Could not load companies. Tap to retry'),
+          ),
         // COMPANY
         Container(
           height: 51,
@@ -23470,7 +24131,7 @@ Thank you.
               Expanded(
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
-                    value: _selectedOrderCompany,
+                    value: selectedCompany,
                     isExpanded: true,
                     hint: const Text(
                       'Select Company',
@@ -23480,7 +24141,7 @@ Thank you.
                         fontWeight: FontWeight.w900,
                       ),
                     ),
-                    items: orderCompanies.entries
+                    items: companyOptions.entries
                         .map(
                           (entry) => DropdownMenuItem<String>(
                             value: entry.key,
@@ -23498,10 +24159,20 @@ Thank you.
                         )
                         .toList(),
                     onChanged: (value) {
+                      if (value == null) return;
+                      final routes = _orderRoutesForSelection(value);
                       setState(() {
                         _selectedOrderCompany = value;
-                        _selectedOrderRoute = null;
-                        _persistedSelectedRoute = null;
+                        _orderCustomerRequestKey = null;
+                        _orderProductRequestKey = null;
+                        _cachedOrderRoutesCompany = null;
+                        _cachedOrderRoutes = null;
+                        _selectedOrderRoute = routes.length == 1
+                            ? routes.single
+                            : null;
+                        _persistedSelectedRoute = routes.length == 1
+                            ? routes.single
+                            : null;
                         _selectedCustomerId = null;
                         _cart.clear();
                         _showAllOrderCustomers = false;
@@ -23510,6 +24181,7 @@ Thank you.
                         _productSearchQuery = '';
                         _productSearchController.clear();
                       });
+                      unawaited(_saveOrderCompany(value));
                     },
                   ),
                 ),
@@ -23546,7 +24218,7 @@ Thank you.
               Expanded(
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
-                    value: _selectedOrderRoute,
+                    value: selectedRoute,
                     isExpanded: true,
                     disabledHint: const Text('Select company first'),
                     icon: const Icon(
@@ -23579,7 +24251,7 @@ Thank you.
                         ),
                       ],
                     ),
-                    selectedItemBuilder: (context) => orderRoutes
+                    selectedItemBuilder: (context) => routeOptions
                         .map(
                           (route) => Column(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -23610,7 +24282,7 @@ Thank you.
                           ),
                         )
                         .toList(),
-                    items: orderRoutes
+                    items: routeOptions
                         .map(
                           (route) => DropdownMenuItem<String>(
                             value: route,
@@ -23622,12 +24294,13 @@ Thank you.
                           ),
                         )
                         .toList(),
-                    onChanged: _selectedOrderCompany == null
+                    onChanged: selectedCompany == null
                         ? null
                         : (value) {
                             setState(() {
                               _persistedSelectedRoute = value;
                               _selectedOrderRoute = value;
+                              _orderCustomerRequestKey = null;
                               _selectedCustomerId = null;
                               _showAllOrderCustomers = false;
                               _customerSearchQuery = '';
@@ -23645,7 +24318,7 @@ Thank you.
           controller: _customerSearchController,
           hint: 'Search customer by name, code...',
           enabled: routeSelected,
-          onChanged: (value) => setState(() => _customerSearchQuery = value),
+          onChanged: _onOrderCustomerSearchChanged,
         ),
         const SizedBox(height: 10),
         Row(
@@ -23698,6 +24371,13 @@ Thank you.
                 ),
               ),
             ),
+          )
+        else if (waitingForCustomers && visibleCustomers.isEmpty)
+          const Center(child: CircularProgressIndicator())
+        else if (_orderCustomerError != null && visibleCustomers.isEmpty)
+          TextButton(
+            onPressed: () => unawaited(_loadOrderCustomers()),
+            child: const Text('Could not load customers. Tap to retry'),
           )
         else if (visibleCustomers.isEmpty)
           _orderCard(
@@ -23922,6 +24602,12 @@ Thank you.
               ),
             );
           }),
+        if (routeSelected && _moreOrderCustomers)
+          TextButton(
+            onPressed: _loadingOrderCustomers
+                ? null : () => unawaited(_loadOrderCustomers(more: true)),
+            child: Text(_loadingOrderCustomers ? 'Loading...' : 'Load more customers'),
+          ),
         const SizedBox(height: 7),
         SizedBox(
           width: double.infinity,
@@ -24285,6 +24971,9 @@ Thank you.
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (context, setSheetState) {
+            final keyboardInset = MediaQuery.viewInsetsOf(sheetContext).bottom;
+            final availableHeight =
+                MediaQuery.sizeOf(sheetContext).height - keyboardInset;
             final qty = int.tryParse(quantityController.text.trim()) ?? 0;
             final rate = double.tryParse(rateController.text.trim()) ?? 0;
             final gross = qty * rate;
@@ -24366,14 +25055,14 @@ Thank you.
 
             return Padding(
               padding: EdgeInsets.only(
-                bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+                bottom: keyboardInset,
               ),
               child: Align(
                 alignment: Alignment.bottomCenter,
                 child: Container(
                   width: double.infinity,
                   constraints: BoxConstraints(
-                    maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.77,
+                    maxHeight: availableHeight * 0.9,
                   ),
                   decoration: const BoxDecoration(
                     color: Colors.white,
@@ -24491,6 +25180,7 @@ Thank you.
                             fieldBox(
                               label: 'Rate (₹)',
                               controller: rateController,
+                              readOnly: !canEditBillingRate,
                               decimal: true,
                             ),
                             const SizedBox(width: 8),
@@ -24858,11 +25548,31 @@ Thank you.
   }
 
   Widget _buildProductSelectionStepWithScheme() {
-    if (_selectedCustomerId == null) return const SizedBox.shrink();
+    if (_selectedCustomerId == null ||
+        !_customers.any((item) => item.id == _selectedCustomerId)) {
+      return const Center(child: Text('Select a customer to continue'));
+    }
 
     final customer = _customers.firstWhere(
       (item) => item.id == _selectedCustomerId,
     );
+    final productKey = _selectedOrderProductQueryKey;
+    final waitingForProducts = productKey != null &&
+        (productKey != _orderProductRequestKey ||
+            _loadingOrderProducts ||
+            _orderProductSearchDebounce?.isActive == true);
+    if (productKey != null && productKey != _orderProductRequestKey &&
+        productKey != _scheduledOrderProductKey) {
+      _scheduledOrderProductKey = productKey;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scheduledOrderProductKey == productKey) {
+          _scheduledOrderProductKey = null;
+        }
+        if (mounted && productKey == _selectedOrderProductQueryKey) {
+          unawaited(_loadOrderProducts());
+        }
+      });
+    }
     final products = orderFilteredProducts;
 
     return Column(
@@ -24876,8 +25586,7 @@ Thank you.
               child: _buildOrderSearchBox(
                 controller: _productSearchController,
                 hint: 'Search product by name or code...',
-                onChanged: (value) =>
-                    setState(() => _productSearchQuery = value),
+                onChanged: _onOrderProductSearchChanged,
               ),
             ),
             const SizedBox(width: 7),
@@ -24924,7 +25633,14 @@ Thank you.
           ],
         ),
         const SizedBox(height: 8),
-        if (products.isEmpty)
+        if (waitingForProducts && products.isEmpty)
+          const Center(child: CircularProgressIndicator())
+        else if (_orderProductError != null && products.isEmpty)
+          TextButton(
+            onPressed: () => unawaited(_loadOrderProducts()),
+            child: const Text('Could not load products. Tap to retry'),
+          )
+        else if (products.isEmpty)
           _orderCard(
             child: const Padding(
               padding: EdgeInsets.symmetric(vertical: 22),
@@ -25169,6 +25885,12 @@ Thank you.
               ),
             );
           }),
+        if (_moreOrderProducts)
+          TextButton(
+            onPressed: _loadingOrderProducts
+                ? null : () => unawaited(_loadOrderProducts(more: true)),
+            child: Text(_loadingOrderProducts ? 'Loading...' : 'Load more products'),
+          ),
         const SizedBox(height: 5),
         if (_orderStep != 2)
           Container(
@@ -25379,6 +26101,7 @@ Thank you.
                                         child: TextFormField(
                                           controller:
                                               rateControllers[product.id],
+                                          readOnly: !canEditBillingRate,
                                           keyboardType:
                                               const TextInputType.numberWithOptions(
                                                 decimal: true,
@@ -27191,7 +27914,7 @@ Thank you.
     return Container(
       color: const Color(0xFFF4F7FB),
       child: RefreshIndicator(
-        onRefresh: _loadData,
+        onRefresh: _refreshOutstandingBills,
         child: ListView(
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 95),
           children: [
@@ -27231,7 +27954,7 @@ Thank you.
                   ),
                 ),
                 ElevatedButton.icon(
-                  onPressed: _loadData,
+                  onPressed: _refreshOutstandingBills,
                   icon: const Icon(Icons.sync, size: 14),
                   label: const Text('Sync Data'),
                   style: ElevatedButton.styleFrom(
@@ -27334,11 +28057,7 @@ Thank you.
                         borderSide: const BorderSide(color: primaryBlue),
                       ),
                     ),
-                    onChanged: (v) {
-                      setState(() {
-                        _outstandingSearchQuery = v;
-                      });
-                    },
+                    onChanged: _onOutstandingSearchChanged,
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -31843,7 +32562,7 @@ Thank you.
                     borderSide: BorderSide.none,
                   ),
                 ),
-                onChanged: (v) => setState(() => _outstandingSearchQuery = v),
+                onChanged: _onOutstandingSearchChanged,
               ),
               const SizedBox(height: 10),
               Align(
@@ -32551,6 +33270,9 @@ Thank you.
   @override
   void dispose() {
     _deliveryPositionSubscription?.cancel();
+    _orderCustomerSearchDebounce?.cancel();
+    _orderProductSearchDebounce?.cancel();
+    _outstandingSearchDebounce?.cancel();
     _outstandingSearchController.dispose();
     _deliverySearchController.dispose();
     _loadNumberController.dispose();
@@ -33014,18 +33736,22 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           );
         } else if (userRole == 'salesman') {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(
-              builder: (context) =>
-                  SalesmanDashboardEnhanced(loggedInUser: user),
-            ),
-          );
+          _openSalesmanDashboard(user);
         }
       } catch (e) {
         // Error parsing user data
       }
     }
+  }
+
+  void _openSalesmanDashboard(UserModel user) {
+    if (!mounted) return;
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SalesmanDashboardEnhanced(loggedInUser: user),
+      ),
+    );
   }
 
   @override
@@ -33110,13 +33836,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               );
             } else if (backendRoleStr == 'salesman') {
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) =>
-                      SalesmanDashboardEnhanced(loggedInUser: user),
-                ),
-              );
+              _openSalesmanDashboard(user);
             } else {
               showSafeSnackBar(
                 context,
