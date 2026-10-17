@@ -71,18 +71,41 @@ app.use('/api', (req, res, next) => {
     next();
 });
 
+// Efficient transport for large API responses. The JSON content and shape are
+// unchanged, so existing installed mobile applications remain compatible.
+// Select compression only when the client advertises support for it.
 function sendLargeJson(req, res, value) {
     const body = JSON.stringify(value);
     res.type('json');
     res.vary('Accept-Encoding');
-    if (!String(req.headers['accept-encoding'] || '').includes('gzip') || body.length < 8192) {
-        return res.send(body);
-    }
-    zlib.gzip(body, { level: zlib.constants.Z_BEST_SPEED }, (error, compressed) => {
-        if (error) return res.send(body);
-        res.set('Content-Encoding', 'gzip');
+    const bytes = Buffer.byteLength(body, 'utf8');
+    const acceptEncoding = String(req.headers['accept-encoding'] || '');
+    if (bytes < 8192) return res.send(body);
+
+    // Preserve gzip for older Android/iOS clients. Brotli is opt-in only.
+    const brotli = /(?:^|,)\s*br\s*(?:;\s*q\s*=\s*(?!0(?:\.0*)?(?:,|$))[^,]+)?(?:,|$)/i.test(acceptEncoding);
+    const gzip = /(?:^|,)\s*gzip\s*(?:;\s*q\s*=\s*(?!0(?:\.0*)?(?:,|$))[^,]+)?(?:,|$)/i.test(acceptEncoding);
+    if (!brotli && !gzip) return res.send(body);
+
+    const start = process.hrtime.bigint();
+    const onCompressed = (encoding) => (error, compressed) => {
+        if (error || res.headersSent || res.writableEnded) {
+            if (!res.headersSent && !res.writableEnded) res.send(body);
+            return;
+        }
+        res.set('Content-Encoding', encoding);
         res.send(compressed);
-    });
+        if (bytes >= 512 * 1024) {
+            const ms = Number(process.hrtime.bigint() - start) / 1e6;
+            console.info(`[api-compression] path=${req.path} encoding=${encoding} original=${bytes} compressed=${compressed.length} ms=${ms.toFixed(0)}`);
+        }
+    };
+    if (brotli) {
+        return zlib.brotliCompress(Buffer.from(body), {
+            params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 }
+        }, onCompressed('br'));
+    }
+    return zlib.gzip(body, { level: zlib.constants.Z_BEST_SPEED }, onCompressed('gzip'));
 }
 
 
@@ -2898,8 +2921,10 @@ function loadSalesmanCustomers(distributorId, { orderCatalog = false } = {}) {
             { distributor_id: distributorId },
             orderCatalog ? { projection: ORDER_CUSTOMER_PROJECTION } : {}
         );
+        // Larger cursor batches reduce MongoDB round trips for distributors
+        // with 10,000+ customers; no records are dropped or reordered.
         return query.hint('distributor_id_1_created_at_-1')
-            .sort({ created_at: -1 }).toArray();
+            .sort({ created_at: -1 }).batchSize(1000).toArray();
     });
 }
 
