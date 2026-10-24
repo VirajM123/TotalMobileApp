@@ -7,6 +7,10 @@ const path = require('path');
 const fs = require('fs');
 const zlib = require('zlib');
 const XLSX = require('xlsx');
+const {
+    buildSalesmanCustomerBrowseQuery,
+    buildSalesmanProductBrowseQuery
+} = require('./salesman_catalog_filters');
 require('dotenv').config();
 
 const app = express();
@@ -3136,6 +3140,79 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
         }
         if (['orders', 'customers', 'products', 'catalog'].includes(section)) {
             const result = { ...base };
+            const shouldPaginateCatalog = (section === 'customers' || section === 'products') && (
+                Object.prototype.hasOwnProperty.call(req.query, 'page') ||
+                Object.prototype.hasOwnProperty.call(req.query, 'limit') ||
+                req.query.paginated === 'true'
+            );
+            if (shouldPaginateCatalog) {
+                const requestedPage = Number.parseInt(req.query.page, 10);
+                const requestedLimit = Number.parseInt(req.query.limit, 10);
+                const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+                const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+                    ? Math.min(Math.max(requestedLimit, 1), 500)
+                    : 200;
+                const company = String(req.query.company || '').trim().slice(0, 100);
+                const route = String(req.query.route || '').trim().slice(0, 150);
+                const search = String(req.query.search || '').trim().slice(0, 100);
+
+                if (section === 'customers') {
+                    const customerStatus = String(req.query.customerStatus || 'all');
+                    const createdAfter = String(req.query.createdAfter || '');
+                    if (!['all', 'active', 'inactive', 'new'].includes(customerStatus)) {
+                        return res.status(400).json({ error: 'Invalid customer status filter' });
+                    }
+                    if (customerStatus === 'new' &&
+                        (!createdAfter || !Number.isFinite(Date.parse(createdAfter)))) {
+                        return res.status(400).json({ error: 'A valid createdAfter is required for new customers' });
+                    }
+                    const customerQuery = buildSalesmanCustomerBrowseQuery({
+                        distributorId,
+                        company,
+                        route,
+                        search,
+                        status: customerStatus,
+                        createdAfter
+                    });
+                    const rows = await collections.customer.find(customerQuery, { projection: ORDER_CUSTOMER_PROJECTION })
+                        .sort({ name: 1, _id: 1 })
+                        .skip((page - 1) * limit)
+                        .limit(limit + 1)
+                        .toArray();
+                    const total = await collections.customer.countDocuments(customerQuery);
+                    result.customers = rows.slice(0, limit);
+                    result.customerPage = {
+                        page, limit, total, hasMore: rows.length > limit,
+                        filters: { customerStatus, createdAfter, company, route, search }
+                    };
+                    result.hasMore = rows.length > limit;
+                    return sendLargeJson(req, res, result);
+                }
+
+                const productStock = String(req.query.productStock || 'all');
+                if (!['all', 'in', 'low', 'out'].includes(productStock)) {
+                    return res.status(400).json({ error: 'Invalid product stock filter' });
+                }
+                const productQuery = buildSalesmanProductBrowseQuery({
+                    distributorId,
+                    company,
+                    search,
+                    stock: productStock
+                });
+                const rows = await collections.product.find(productQuery, { projection: ORDER_PRODUCT_PROJECTION })
+                    .sort({ productName: 1, _id: 1 })
+                    .skip((page - 1) * limit)
+                    .limit(limit + 1)
+                    .toArray();
+                const total = await collections.product.countDocuments(productQuery);
+                result.products = rows.slice(0, limit);
+                result.productPage = {
+                    page, limit, total, hasMore: rows.length > limit,
+                    filters: { productStock, company, search }
+                };
+                result.hasMore = rows.length > limit;
+                return sendLargeJson(req, res, result);
+            }
             const tasks = [];
             if (section === 'orders') {
                 const page = Math.max(1, parseInt(req.query.page, 10) || 1);
