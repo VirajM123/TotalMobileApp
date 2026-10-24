@@ -1043,10 +1043,10 @@ class CartItemData {
 class ApiService {
 
   // LOCAL URL (For Testing)
-  static const String _remoteBaseUrl = "http://localhost:3000/api";
+  //static const String _remoteBaseUrl = "http://localhost:3000/api";
 
    // PRODUCTION URL (Render)
-  // static const String _remoteBaseUrl ="https://totalmobileapp.onrender.com/api";
+  static const String _remoteBaseUrl ="https://totalmobileapp.onrender.com/api";
 
   static String get apiUrl {
     return _remoteBaseUrl;
