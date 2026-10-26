@@ -472,6 +472,31 @@ bool _customerBelongsToOrderCompany(
   });
 }
 
+Map<String, dynamic>? _customerCompanyForOrderSelection(
+  CustomerModel customer,
+  String companyKey,
+) {
+  final wanted = companyKey.trim().toLowerCase();
+  for (final company in customer.companies) {
+    final sysCode = (company['sysCompCode'] ?? '').toString().trim();
+    final code = (company['companyCode'] ?? '').toString().trim();
+    if (sysCode.toLowerCase() == wanted || code.toLowerCase() == wanted) {
+      return company;
+    }
+  }
+
+  if (_customerOrderCompanyKey(customer).trim().toLowerCase() == wanted) {
+    return {
+      'sysCompCode': customer.sysCompCode,
+      'companyCode': customer.companyCode,
+      'companyName': customer.companyName,
+      'route': customer.route,
+      'area': customer.area,
+    };
+  }
+  return null;
+}
+
 String _productOrderCompanyKey(ProductModel product) {
   final sysCode = product.sysCompCode?.trim() ?? '';
   if (sysCode.isNotEmpty) return sysCode;
@@ -542,12 +567,21 @@ List<String> _orderRoutesForCompany(
 ) {
   final routes = customers
       .where((customer) => _customerBelongsToOrderCompany(customer, company))
-      .map(
-        (customer) =>
-            (customer.route != null && customer.route!.trim().isNotEmpty)
+      .map((customer) {
+        final companyDetails = _customerCompanyForOrderSelection(
+          customer,
+          company,
+        );
+        final route = companyDetails?['route']?.toString().trim() ?? '';
+        final area = companyDetails?['area']?.toString().trim() ?? '';
+        return route.isNotEmpty
+            ? route
+            : area.isNotEmpty
+            ? area
+            : (customer.route != null && customer.route!.trim().isNotEmpty)
             ? customer.route!.trim()
-            : customer.area.trim(),
-      )
+            : customer.area.trim();
+      })
       .where((route) => route.isNotEmpty)
       .toSet()
       .toList()
@@ -1043,7 +1077,7 @@ class CartItemData {
 class ApiService {
 
   // LOCAL URL (For Testing)
-  //static const String _remoteBaseUrl = "http://localhost:3000/api";
+ //static const String _remoteBaseUrl = "http://localhost:3000/api";
 
    // PRODUCTION URL (Render)
   static const String _remoteBaseUrl ="https://totalmobileapp.onrender.com/api";
@@ -7181,7 +7215,7 @@ class _DistributorDashboardEnhancedState
                                       ),
                                     ),
                                     Text(
-                                      'Rate: ₹${cartItem.rate.toStringAsFixed(0)}',
+                                      'Rate: ₹${cartItem.rate}',
                                       style: const TextStyle(fontSize: 11),
                                     ),
                                   ],
@@ -7233,7 +7267,7 @@ class _DistributorDashboardEnhancedState
                               ),
                               const SizedBox(width: 8),
                               Text(
-                                '₹${cartItem.netAmt.toStringAsFixed(0)}',
+                                '₹${cartItem.netAmt.toStringAsFixed(2)}',
                                 style: const TextStyle(
                                   fontWeight: FontWeight.bold,
                                 ),
@@ -7257,7 +7291,7 @@ class _DistributorDashboardEnhancedState
                         ),
                       ),
                       Text(
-                        '₹${_getEditCartTotal().toStringAsFixed(0)}',
+                        '₹${_getEditCartTotal().toStringAsFixed(2)}',
                         style: const TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 16,
@@ -15729,7 +15763,17 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       if (!_customerBelongsToCompany(c, _selectedOrderCompany ?? '')) {
         return false;
       }
-      final customerRoute = (c.route != null && c.route!.trim().isNotEmpty)
+      final companyDetails = _customerCompanyForOrderSelection(
+        c,
+        _selectedOrderCompany ?? '',
+      );
+      final companyRoute = companyDetails?['route']?.toString().trim() ?? '';
+      final companyArea = companyDetails?['area']?.toString().trim() ?? '';
+      final customerRoute = companyRoute.isNotEmpty
+          ? companyRoute
+          : companyArea.isNotEmpty
+          ? companyArea
+          : (c.route != null && c.route!.trim().isNotEmpty)
           ? c.route!.trim()
           : c.area.trim();
 
@@ -18018,7 +18062,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
               rateControllers.putIfAbsent(
                 entry.key,
                 () => TextEditingController(
-                  text: entry.value.rate.toStringAsFixed(0),
+                  text: entry.value.rate.toString(),
                 ),
               );
             }
@@ -18296,7 +18340,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                             ),
                                           ),
                                           subtitle: Text(
-                                            'MRP: ₹${product.mrp.toStringAsFixed(0)} | Rate: ₹${product.price.toStringAsFixed(0)}',
+                                            'MRP: ₹${product.mrp.toStringAsFixed(2)} | Rate: ₹${product.price}',
                                             style: const TextStyle(
                                               fontSize: 11,
                                             ),
@@ -18600,7 +18644,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                                 ),
                                                 const SizedBox(width: 10),
                                                 Text(
-                                                  '₹${item.netAmt.toStringAsFixed(0)}',
+                                                  '₹${item.netAmt.toStringAsFixed(2)}',
                                                   style: const TextStyle(
                                                     fontSize: 13,
                                                     fontWeight: FontWeight.w900,
@@ -18628,7 +18672,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                                           ),
                                         ),
                                         Text(
-                                          '₹${_getEditCartTotal().toStringAsFixed(0)}',
+                                          '₹${_getEditCartTotal().toStringAsFixed(2)}',
                                           style: const TextStyle(
                                             fontSize: 16,
                                             fontWeight: FontWeight.w900,
@@ -18943,6 +18987,12 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
       final customer = _customers.firstWhere(
         (c) => c.id == _selectedCustomerId,
       );
+      final selectedCompany = _selectedOrderCompany?.trim() ?? '';
+      final companyDetails = selectedCompany.isEmpty
+          ? null
+          : _customerCompanyForOrderSelection(customer, selectedCompany);
+      final companyArea = companyDetails?['area']?.toString().trim() ?? '';
+      final orderRoute = _selectedOrderRoute?.trim();
 
       final orderNumber =
           'ORD${DateTime.now().millisecondsSinceEpoch.toString().substring(5)}';
@@ -18953,8 +19003,10 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         customerId: _selectedCustomerId!,
         customerName: customer.name,
         customerPhone: customer.phone ?? customer.mobile ?? '',
-        areaName: customer.area,
-        routeName: customer.route ?? '',
+        areaName: companyArea.isNotEmpty ? companyArea : customer.area,
+        routeName: orderRoute != null && orderRoute.isNotEmpty
+            ? orderRoute
+            : customer.route ?? '',
         salesmanId: _currentSalesman.salesmanId ?? _currentSalesman.id,
         salesmanName: _currentSalesman.name,
         items: _cart.entries.map((entry) {
@@ -19007,9 +19059,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         order,
         _currentSalesman.distributorId,
         _currentSalesman.salesmanId ?? _currentSalesman.id,
-        sysCompCode: customer.sysCompCode,
-        companyCode: customer.companyCode,
-        companyName: customer.companyName,
+        sysCompCode: companyDetails?['sysCompCode']?.toString(),
+        companyCode: companyDetails?['companyCode']?.toString(),
+        companyName: companyDetails?['companyName']?.toString(),
       );
 
       if (mounted) {
@@ -25340,7 +25392,7 @@ Thank you.
             const SizedBox(width: 7),
             Expanded(
               child: Text(
-                '$uniqueProductCount Items  |  â‚¹ ${cartTotal.toStringAsFixed(0)}',
+                '$uniqueProductCount Items  |  â‚¹ ${cartTotal.toStringAsFixed(2)}',
                 style: const TextStyle(
                   color: Color(0xFF17356F),
                   fontSize: 11.4,
@@ -25474,7 +25526,7 @@ Thank you.
     final existing = _cart[product.id];
 
     final rateController = TextEditingController(
-      text: (existing?.rate ?? product.price).toStringAsFixed(0),
+      text: (existing?.rate ?? product.price).toString(),
     );
     final quantityController = TextEditingController(
       text: (existing?.quantity ?? 1).toString(),
@@ -25485,7 +25537,7 @@ Thank you.
     );
 
     final schemeController = TextEditingController(
-      text: (existing?.schPer ?? 0).toStringAsFixed(0),
+      text: (existing?.schPer ?? 0).toString(),
     );
 
     bool schemeAsPercent = true;
@@ -25895,8 +25947,8 @@ Thank you.
                               Expanded(
                                 child: Text(
                                   schemeAsPercent
-                                      ? '${schemeInput.toStringAsFixed(0)}% will be calculated on this product amount (₹ ${gross.toStringAsFixed(0)})'
-                                      : '₹${schemeInput.toStringAsFixed(0)} discount will be applied on this product amount (₹ ${gross.toStringAsFixed(0)})',
+                                      ? '${schemeInput.toStringAsFixed(2)}% will be calculated on this product amount (₹ ${gross.toStringAsFixed(2)})'
+                                      : '₹${schemeInput.toStringAsFixed(2)} discount will be applied on this product amount (₹ ${gross.toStringAsFixed(2)})',
                                   style: const TextStyle(
                                     color: Color(0xFF4D6898),
                                     fontSize: 9.5,
@@ -26281,7 +26333,7 @@ Thank you.
                             ),
                             const SizedBox(width: 10),
                             Text(
-                              'Rate: ₹ ${product.price.toStringAsFixed(0)}',
+                              'Rate: ₹ ${product.price}',
                               style: const TextStyle(
                                 color: Color(0xFF17356F),
                                 fontSize: 9.7,
@@ -26446,7 +26498,7 @@ Thank you.
                 const SizedBox(width: 7),
                 Expanded(
                   child: Text(
-                    '$uniqueProductCount Items  |  ₹ ${cartTotal.toStringAsFixed(0)}',
+                    '$uniqueProductCount Items  |  ₹ ${cartTotal.toStringAsFixed(2)}',
                     style: const TextStyle(
                       color: Color(0xFF17356F),
                       fontSize: 11.4,
@@ -27219,7 +27271,7 @@ Thank you.
                     style: TextStyle(color: Colors.grey[600]),
                   ),
                   Text(
-                    'Total: ₹${cartTotal.toStringAsFixed(0)}',
+                    'Total: ₹${cartTotal.toStringAsFixed(2)}',
                     style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -27448,7 +27500,7 @@ Thank you.
                         Expanded(
                           flex: 14,
                           child: Text(
-                            '₹ ${item.rate.toStringAsFixed(0)}',
+                            '₹ ${item.rate}',
                             textAlign: TextAlign.center,
                             style: const TextStyle(
                               color: Color(0xFF17356F),
@@ -27477,7 +27529,7 @@ Thank you.
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               Text(
-                                '₹ ${item.grossAmt.toStringAsFixed(0)}',
+                                '₹ ${item.grossAmt.toStringAsFixed(2)}',
                                 style: const TextStyle(
                                   color: Color(0xFF17356F),
                                   fontSize: 9.3,
@@ -27488,7 +27540,7 @@ Thank you.
                               if (item.schAmt > 0) ...[
                                 const SizedBox(height: 2),
                                 Text(
-                                  '- ₹ ${item.schAmt.toStringAsFixed(0)}',
+                                  '- ₹ ${item.schAmt.toStringAsFixed(2)}',
                                   style: const TextStyle(
                                     color: Color(0xFFD43F3F),
                                     fontSize: 8.6,
@@ -27499,7 +27551,7 @@ Thank you.
                               ],
                               const SizedBox(height: 2),
                               Text(
-                                '₹ ${item.netAmt.toStringAsFixed(0)}',
+                                '₹ ${item.netAmt.toStringAsFixed(2)}',
                                 style: const TextStyle(
                                   color: Color(0xFF17356F),
                                   fontSize: 9.7,
@@ -27581,16 +27633,16 @@ Thank you.
               summaryRow('Total Items', '$uniqueProductCount'),
               summaryRow('Total Qty (Main)', '$cartItemCount'),
               summaryRow('Total Free Qty', '0'),
-              summaryRow('Gross Amount', '₹ ${grossTotal.toStringAsFixed(0)}'),
+              summaryRow('Gross Amount', '₹ ${grossTotal.toStringAsFixed(2)}'),
               summaryRow(
                 'Total Discount',
-                '- ₹ ${discountTotal.toStringAsFixed(0)}',
+                '- ₹ ${discountTotal.toStringAsFixed(2)}',
                 color: const Color(0xFFD43F3F),
               ),
               const Divider(height: 10, color: Color(0xFFE5EBF3)),
               summaryRow(
                 'Net Amount',
-                '₹ ${cartTotal.toStringAsFixed(0)}',
+                '₹ ${cartTotal.toStringAsFixed(2)}',
                 color: const Color(0xFF168B39),
                 bold: true,
               ),
@@ -27908,7 +27960,7 @@ Thank you.
               ),
               const Spacer(),
               Text(
-                '₹ ${cartTotal.toStringAsFixed(0)}',
+                '₹ ${cartTotal.toStringAsFixed(2)}',
                 style: const TextStyle(
                   color: Color(0xFF16813A),
                   fontSize: 21,
@@ -33695,7 +33747,7 @@ Thank you.
                                     ),
                                   ),
                                   Text(
-                                    '₹${cartItem.rate.toStringAsFixed(0)} each',
+                                    '₹${cartItem.rate} each',
                                     style: TextStyle(
                                       color: Colors.grey[600],
                                       fontSize: 12,
@@ -33738,7 +33790,7 @@ Thank you.
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              '₹${cartItem.netAmt.toStringAsFixed(0)}',
+                              '₹${cartItem.netAmt.toStringAsFixed(2)}',
                               style: const TextStyle(
                                 fontWeight: FontWeight.bold,
                                 color: primaryBlue,
@@ -33763,7 +33815,7 @@ Thank you.
                       ),
                     ),
                     Text(
-                      '₹${cartTotal.toStringAsFixed(0)}',
+                      '₹${cartTotal.toStringAsFixed(2)}',
                       style: const TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.bold,
