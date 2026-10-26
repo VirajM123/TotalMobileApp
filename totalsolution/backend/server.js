@@ -1326,17 +1326,32 @@ if (existingCustomer) {
     }
 });
 
-// Canonical two-decimal SKU: keep distributor/company separately scoped.
-function canonicalProductSku(code, mrp) {
-    const match = /^(.+)_([0-9]+(?:\.[0-9]{1,2})?)$/.exec(String(code ?? '').trim());
+// Accept both legacy SysProdCode_MRP and rate-specific SysProdCode_MRP_SRate.
+// Preserve the rate suffix verbatim so stock-only and sync-state use identical keys.
+function canonicalProductSku(code, mrp, price) {
+    const sku = String(code ?? '').trim();
+    const parts = sku.split('_');
     const amount = Number(mrp);
-    if (!match || !Number.isFinite(amount) || amount < 0 || Math.abs(amount * 100 - Math.round(amount * 100)) > 0.000001) {
+    if ((parts.length !== 2 && parts.length !== 3) || !/^\d+$/.test(parts[0]) ||
+        !Number.isFinite(amount) || amount < 0 ||
+        Math.abs(amount * 100 - Math.round(amount * 100)) > 0.000001 ||
+        !/^[0-9]+(?:\.[0-9]{1,2})?$/.test(parts[1])) {
         throw new Error(`Invalid product SKU/MRP pair: ${code} / ${mrp}`);
     }
-    if (Math.round(Number(match[2]) * 100) !== Math.round(amount * 100)) {
+    if (Math.round(Number(parts[1]) * 100) !== Math.round(amount * 100)) {
         throw new Error(`Product SKU does not match MRP: ${code} / ${mrp}`);
     }
-    return `${match[1]}_${amount.toFixed(2)}`;
+    if (parts.length === 3) {
+        if (!/^[0-9]+(?:\.[0-9]+)?$/.test(parts[2]) || !Number.isFinite(Number(parts[2]))) {
+            throw new Error(`Invalid product SKU selling rate: ${code}`);
+        }
+        if (price !== undefined && price !== null && price !== '' &&
+            (!Number.isFinite(Number(price)) || Math.abs(Number(parts[2]) - Number(price)) > 0.0000001)) {
+            throw new Error(`Product SKU selling rate does not match Price: ${code} / ${price}`);
+        }
+        return `${parts[0]}_${amount.toFixed(2)}_${parts[2]}`;
+    }
+    return `${parts[0]}_${amount.toFixed(2)}`;
 }
 
 // Import products from Excel
@@ -1419,7 +1434,7 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 }
                 
                 const trimmedProductName = productName.toString().trim();
-                const trimmedProductCode = canonicalProductSku(productCode, mrp);
+                const trimmedProductCode = canonicalProductSku(productCode, mrp, price);
                 const trimmedCategory = category ? category.toString().trim() : 'General';
                 const trimmedDescription = description ? description.toString().trim() : null;
                 const validMRP = isNaN(mrp) || mrp <= 0 ? price : mrp;
@@ -1433,8 +1448,9 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
                 
                 const productScope = { distributorId: trimmedDistributorId, sysCompCode: String(sysCompCode).trim() };
                 let existingProduct = await collections.product.findOne({ ...productScope, sku: trimmedProductCode });
-                if (!existingProduct) {
-                    // Upgrade a legacy truncated SKU in place only if both original code and MRP agree.
+                if (!existingProduct && trimmedProductCode.split('_').length === 2) {
+                    // Upgrade legacy truncated SKUs only for legacy two-part product codes.
+                    // Never rename an old SKU into a rate-specific variant; other rates may coexist.
                     const baseCode = trimmedProductCode.slice(0, trimmedProductCode.lastIndexOf('_'));
                     const legacySku = `${baseCode}_${Math.trunc(validMRP)}`;
                     const legacyMatches = await collections.product.find({ ...productScope, sku: legacySku, mrp: validMRP }).limit(2).toArray();
@@ -1579,7 +1595,7 @@ app.get('/api/import/sync-state', async (req, res) => {
             }
         } else {
             const productRows = await collections.product
-                .find({ distributorId }, { projection: { _id: 0, sku: 1, sysCompCode: 1, mrp: 1, stockQuantity: 1, stock: 1 } })
+                .find({ distributorId }, { projection: { _id: 0, sku: 1, sysCompCode: 1, mrp: 1, price: 1, stockQuantity: 1, stock: 1 } })
                 .toArray();
             const keys = new Set();
             records = [];
@@ -1590,7 +1606,7 @@ app.get('/api/import/sync-state', async (req, res) => {
                     return res.status(409).json({ success: false, error: 'A product lacks SKU or company code; sync comparison unsafe', code: rawCode });
                 }
                 let code;
-                try { code = canonicalProductSku(rawCode, row.mrp); }
+                try { code = canonicalProductSku(rawCode, row.mrp, row.price); }
                 catch (err) { return res.status(409).json({ success: false, error: err.message, code: rawCode }); }
                 const key = `${sysCompCode}|${code}`;
                 if (keys.has(key)) {
