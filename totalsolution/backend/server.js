@@ -1,4 +1,7 @@
 const express = require('express');
+const { CatalogCache } = require('./catalog_cache');
+const { requestLookup } = require('./request_lookup');
+const { transactionalCollection, reliableWrite, issueSession, revokeSession, authorization, paymentBalance, adjustStock, readCoordinate, writes } = require('./salesman_reliability');
 const { MongoClient, ObjectId } = require('mongodb');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
@@ -12,6 +15,7 @@ const {
     buildSalesmanProductBrowseQuery
 } = require('./salesman_catalog_filters');
 require('dotenv').config();
+const catalogCache = new CatalogCache({ ttlMs: Number(process.env.CATALOG_CACHE_TTL_MS ?? 5000) });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -59,7 +63,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key']
 }));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ extended: true, limit: "100mb" }));
@@ -74,6 +78,27 @@ app.use('/api', (req, res, next) => {
     });
     next();
 });
+
+app.use('/api', authorization(() => db, () => collections));
+
+// Invalidate before and after writes, including imports and stock deductions.
+// Scope conservatively across tenants for compatibility with legacy clients.
+app.use('/api', (req, res, next) => {
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) &&
+        /^\/(?:import\/(?:customers|products)|customers|products|orders)(?:\/|$)/.test(req.path)) {
+        const endWrite = catalogCache.beginWrite();
+        res.once('finish', endWrite);
+        // On a disconnect, the handler can still be writing. res.end runs when
+        // that handler completes, even if the socket can no longer emit finish.
+        const originalEnd = res.end;
+        res.end = function (...args) {
+            endWrite();
+            return originalEnd.apply(this, args);
+        };
+    }
+    next();
+});
+
 
 function sendLargeJson(req, res, value) {
     const body = JSON.stringify(value);
@@ -114,6 +139,7 @@ OUTSTANDING: 'Mas_Outstanding'
 };
 
 let db;
+let mongoClient;
 let collections = {};
 
 async function connectToMongoDB() {
@@ -131,6 +157,7 @@ async function connectToMongoDB() {
                 await new Promise(resolve => setTimeout(resolve, 3000));
             }
         }
+        mongoClient = client;
         db = client.db(DB_NAME);
         
         collections.register = db.collection(COLLECTIONS.REGISTER);
@@ -144,6 +171,8 @@ async function connectToMongoDB() {
         collections.collectionHistory = db.collection(COLLECTIONS.COLLECTION_HISTORY);
         collections.outstanding = db.collection(COLLECTIONS.OUTSTANDING);
         
+        for (const name of Object.keys(collections)) collections[name] = transactionalCollection(collections[name]);
+        await db.collection('App_Sessions').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
         console.log('Connected to MongoDB successfully');
         console.log(`Database: ${DB_NAME}`);
         
@@ -203,6 +232,11 @@ async function connectToMongoDB() {
         await collections.notification.createIndex({ distributor_id: 1 });
         await collections.notification.createIndex({ isRead: 1 });
         await collections.notification.createIndex({ createdAt: -1 });
+        // Cover the tenant filter with count/list ordering for frequent polls.
+        await collections.notification.createIndex({ distributor_id: 1, isRead: 1 });
+        await collections.notification.createIndex({ distributor_id: 1, createdAt: -1 });
+        await collections.order.createIndex({ salesman_id: 1, createdAt: -1, _id: -1 });
+        await collections.order.createIndex({ distributor_id: 1, createdAt: -1, _id: -1 });
         await collections.collectionHistory.createIndex({ distributor_id: 1 });
         await collections.collectionHistory.createIndex({ salesman_id: 1 });
         await collections.collectionHistory.createIndex({ created_at: -1 });
@@ -403,7 +437,8 @@ async function getProductMrp(productId, sku) {
 
 // Helper function to process order items and ensure MRP is included
 async function processOrderItems(items) {
-    return Promise.all(items.map(async item => {
+    const processed = [];
+    for (const item of items) {
         // Get MRP from database if not provided
         let mrpValue = item.mrp || 0;
         
@@ -418,7 +453,7 @@ async function processOrderItems(items) {
 // No rounding - keep as is
         const amount = item.amount ?? (quantity * rate);
         
-        return {
+        processed.push({
             productId: item.productId,
             productName: item.productName,
             sku: item.sku,
@@ -431,10 +466,14 @@ async function processOrderItems(items) {
             schAmt: parseFloat(item.schAmt) || 0,
             grossAmt: parseFloat(item.grossAmt) || (quantity * rate),
             netAmt: parseFloat(item.netAmt) || amount,
+            ...(item.sysCompCode != null ? { sysCompCode: item.sysCompCode } : {}),
+            ...(item.companyCode != null ? { companyCode: item.companyCode } : {}),
+            ...(item.companyName != null ? { companyName: item.companyName } : {}),
             price: rate, // For backward compatibility
             product_id: item.productId // For backward compatibility
-        };
-    }));
+        });
+    }
+    return processed;
 }
 
 // ==================== COLLECTION HISTORY APIs ====================
@@ -504,6 +543,7 @@ async function createCollectionHistory(order, paymentAmount, paymentMode, collec
         return collectionHistory;
     } catch (error) {
         console.error('Error creating collection history:', error);
+        if (writes.getStore()) throw error;
     }
 }
 
@@ -1743,8 +1783,9 @@ app.delete('/api/customers/:id', async (req, res) => {
         
         const customer = await collections.customer.findOne({ _id: new ObjectId(id) });
         if (customer) {
-            const orders = await collections.order.find({ customerId: customer.customer_id }).toArray();
-            if (orders.length > 0) {
+            const existingOrder = await collections.order.findOne(
+                { customerId: customer.customer_id }, { projection: { _id: 1 } });
+            if (existingOrder) {
                 return res.status(400).json({ error: 'Cannot delete customer with existing orders. Please delete orders first or deactivate the customer.' });
             }
         }
@@ -2055,6 +2096,7 @@ async function createOrderNotification(order, distributorId, salesmanId, salesma
         return notification;
     } catch (error) {
         console.error('Error creating notification:', error);
+        if (writes.getStore()) throw error;
     }
 }
 
@@ -2110,6 +2152,7 @@ async function createOrderUpdateNotification(order, distributorId, salesmanId, s
         return notification;
     } catch (error) {
         console.error('Error creating order update notification:', error);
+        if (writes.getStore()) throw error;
     }
 }
 
@@ -2140,6 +2183,7 @@ async function createPaymentNotification(order, paymentAmount, paymentMode, sale
         return notification;
     } catch (error) {
         console.error('Error creating payment notification:', error);
+        if (writes.getStore()) throw error;
     }
 }
 
@@ -2708,8 +2752,9 @@ app.delete('/api/salesmen/:id', async (req, res) => {
         
         const salesman = await collections.salesman.findOne({ _id: new ObjectId(id) });
         if (salesman) {
-            const orders = await collections.order.find({ salesman_id: salesman.salesman_id }).toArray();
-            if (orders.length > 0) {
+            const existingOrder = await collections.order.findOne(
+                { salesman_id: salesman.salesman_id }, { projection: { _id: 1 } });
+            if (existingOrder) {
                 return res.status(400).json({ error: 'Cannot delete salesman with existing orders. Deactivate the salesman instead.' });
             }
         }
@@ -2785,31 +2830,8 @@ app.get('/api/salesmen/permissions/:salesmanId', async (req, res) => {
 // Catalog performance: bounded TTL cache and single-flight queries prevent the same
 // distributor from making repeated expensive MongoDB reads on screen navigation.
 // Records are not filtered, rounded, deduplicated, or reordered by this cache.
-const CATALOG_CACHE_TTL_MS = Math.max(0, Number(process.env.CATALOG_CACHE_TTL_MS ?? 5000));
-const CATALOG_CACHE_MAX_ENTRIES = 50;
-const catalogCache = new Map();
-const catalogInFlight = new Map();
-
 function getCachedCatalog(key, fetchRows) {
-    const now = Date.now();
-    const hit = catalogCache.get(key);
-    if (hit && hit.expires > now) return Promise.resolve(hit.rows);
-    if (catalogInFlight.has(key)) return catalogInFlight.get(key);
-    const started = Date.now();
-    const promise = Promise.resolve().then(fetchRows).then(rows => {
-        // Caching only successful queries. Preserve all documents and their order.
-        if (CATALOG_CACHE_TTL_MS > 0) {
-            catalogCache.delete(key);
-            catalogCache.set(key, { rows, expires: Date.now() + CATALOG_CACHE_TTL_MS });
-            while (catalogCache.size > CATALOG_CACHE_MAX_ENTRIES) {
-                catalogCache.delete(catalogCache.keys().next().value);
-            }
-        }
-        console.info(`[catalog-db] ${key} rows=${rows.length} ms=${Date.now() - started}`);
-        return rows;
-    }).finally(() => catalogInFlight.delete(key));
-    catalogInFlight.set(key, promise);
-    return promise;
+    return catalogCache.get(key, fetchRows);
 }
 
 const ORDER_CUSTOMER_PROJECTION = {
@@ -2919,9 +2941,8 @@ function loadSalesmanProducts(distributorId, { orderCatalog = false } = {}) {
     });
 }
 
-// Cache expires automatically. Set CATALOG_CACHE_TTL_MS=0 to disable it.
-// For near-immediate catalog updates, invalidate the relevant cache on a
-// successful mutation or set the TTL to zero.
+// Cache expires automatically and is invalidated by catalog/stock writes.
+// Set CATALOG_CACHE_TTL_MS=0 to disable retained catalog data.
 
 app.get('/api/salesman-data/:salesmanId', async (req, res) => {
     try {
@@ -2950,35 +2971,43 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
             const orderPageStartedAt = Date.now();
             const company = String(req.query.company || '').trim().slice(0, 100);
             if (!company) return res.status(400).json({ error: 'Company is required' });
+            const isMixBillingCatalog = section === 'order-products' && company === '__mix__';
             const page = Math.max(1, Math.min(10000, parseInt(req.query.page, 10) || 1));
             const limit = 100;
             const search = String(req.query.search || '').trim().slice(0, 100);
             const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             if (section === 'order-customers') {
                 const route = String(req.query.route || '').trim().slice(0, 150);
-                if (!route) return res.status(400).json({ error: 'Route is required' });
-                const query = {
-                    distributor_id: distributorId,
-                    $and: [
+                const isMixCustomerCatalog = company === '__mix__';
+                if (!isMixCustomerCatalog && !route) {
+                    return res.status(400).json({ error: 'Route is required' });
+                }
+                const customerFilters = [];
+                if (!isMixCustomerCatalog) {
+                    customerFilters.push(
                         { $or: [{ route }, { route: { $in: ['', null] }, area: route }] },
                         { $or: [
                             { sysCompCode: company }, { sys_comp_code: company },
                             { companyCode: company }, { company_code: company },
                             { 'companies.sysCompCode': company }, { 'companies.companyCode': company },
                             ...(company === '__unmapped__' ? [{ sysCompCode: { $in: ['', null] }, companyCode: { $in: ['', null] }, companies: { $in: [[], null] } }] : [])
-                        ] },
-                        ...(search ? [{ $or: [
+                        ] }
+                    );
+                }
+                if (search) {
+                    customerFilters.push({ $or: [
                             { name: { $regex: escapedSearch, $options: 'i' } },
                             { customer_id: { $regex: escapedSearch, $options: 'i' } },
                             { phone: { $regex: escapedSearch, $options: 'i' } },
                             { mobile: { $regex: escapedSearch, $options: 'i' } },
                             { area: { $regex: escapedSearch, $options: 'i' } }
-                        ] }] : [])
-                    ]
-                };
+                    ] });
+                }
+                const query = { distributor_id: distributorId };
+                if (customerFilters.length) query.$and = customerFilters;
                 let rows = await collections.customer.find(query, { projection: ORDER_CUSTOMER_PROJECTION })
                     .sort({ name: 1, _id: 1 }).skip((page - 1) * limit).limit(limit + 1).toArray();
-                if (rows.length === 0) {
+                if (rows.length === 0 && !isMixCustomerCatalog) {
                     const escapedRoute = route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                     query.$and[0] = { $or: [
                         { route: { $regex: `^\\s*${escapedRoute}\\s*$`, $options: 'i' } },
@@ -2990,7 +3019,9 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
                 console.info(`[order-catalog] ${section} page=${page} rows=${Math.min(rows.length, limit)} ms=${Date.now() - orderPageStartedAt}`);
                 return sendLargeJson(req, res, { ...base, customers: rows.slice(0, limit), hasMore: rows.length > limit });
             }
-            const companyMatch = company === '__unmapped__'
+            const companyMatch = isMixBillingCatalog
+                ? null
+                : company === '__unmapped__'
                 ? { sysCompCode: { $in: ['', null] }, sys_comp_code: { $in: ['', null] }, companyCode: { $in: ['', null] }, company_code: { $in: ['', null] } }
                 : { $or: [
                     { sysCompCode: company },
@@ -2998,15 +3029,17 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
                     { sysCompCode: { $in: ['', null] }, sys_comp_code: { $in: ['', null] }, companyCode: company },
                     { sysCompCode: { $in: ['', null] }, sys_comp_code: { $in: ['', null] }, companyCode: { $in: ['', null] }, company_code: company }
                 ] };
-            const query = {
-                distributorId, isActive: true,
-                $and: [companyMatch, ...(search ? [{ $or: [
+            const productFilters = [
+                ...(companyMatch ? [companyMatch] : []),
+                ...(search ? [{ $or: [
                     { productName: { $regex: escapedSearch, $options: 'i' } },
                     { name: { $regex: escapedSearch, $options: 'i' } },
                     { sku: { $regex: escapedSearch, $options: 'i' } },
                     { category: { $regex: escapedSearch, $options: 'i' } }
-                ] }] : [])]
-            };
+                ] }] : [])
+            ];
+            const query = { distributorId, isActive: true };
+            if (productFilters.length) query.$and = productFilters;
             const rows = await collections.product.find(query, { projection: ORDER_PRODUCT_PROJECTION })
                 .sort({ productName: 1, _id: 1 }).skip((page - 1) * limit).limit(limit + 1).toArray();
             console.info(`[order-catalog] ${section} page=${page} rows=${Math.min(rows.length, limit)} ms=${Date.now() - orderPageStartedAt}`);
@@ -3303,7 +3336,7 @@ app.get('/api/salesman-data/:salesmanId', async (req, res) => {
 
 // ==================== ORDER APIs ====================
 
-app.post('/api/orders', async (req, res) => {
+app.post('/api/orders', reliableWrite(() => mongoClient, () => db, async (req, res) => {
     try {
         const orderData = req.body;
         
@@ -3361,47 +3394,16 @@ app.post('/api/orders', async (req, res) => {
         orderData.status = orderData.status || 'pending';
         orderData.payment_status = orderData.payment_status || 'pending';
         orderData.paidAmount = orderData.paidAmount || 0;
-        orderData.dueAmount = orderData.grand_total || 0;
+        Object.assign(orderData, paymentBalance(orderData.grand_total ?? orderData.totalAmount, orderData.paidAmount));
+        if (!Array.isArray(orderData.items) || !orderData.items.length) return res.status(400).json({ error: 'Order items are required' });
         
         const result = await collections.order.insertOne(orderData);
         
         console.log(`Order created: ${orderNumber} with ID: ${result.insertedId}`);
         console.log(`Order created by: ${orderData.created_by_type}, Distributor ID: ${distributorId}, Salesman ID: ${orderData.salesman_id || 'N/A'}, Customer ID: ${orderData.customerId}`);
         
-        if (Array.isArray(orderData.items) && orderData.items.length > 0) {
-            const stockUpdates = orderData.items.flatMap(item => {
-                const quantitySold = parseInt(item.quantity, 10) || parseInt(item.qty, 10) || 0;
-                if (quantitySold <= 0) return [];
-                let filter;
-                if (item.productId && ObjectId.isValid(item.productId)) {
-                    filter = { _id: new ObjectId(item.productId) };
-                } else if (item.sku) {
-                    filter = distributorId ? { sku: item.sku, distributorId } : { sku: item.sku };
-                } else if (item.product_id && ObjectId.isValid(item.product_id)) {
-                    filter = { _id: new ObjectId(item.product_id) };
-                } else {
-                    console.warn(`Product not found for stock update: ${item.productId || item.sku}`);
-                    return [];
-                }
-                // The pipeline calculates from the current value at update time,
-                // so concurrent orders cannot overwrite each other's deductions.
-                return [{ updateOne: {
-                    filter,
-                    update: [{ $set: {
-                        stock: { $max: [0, { $subtract: [{ $ifNull: ['$stock', 0] }, quantitySold] }] },
-                        updatedAt: new Date().toISOString()
-                    } }]
-                } }];
-            });
-            if (stockUpdates.length > 0) {
-                try {
-                    await collections.product.bulkWrite(stockUpdates, { ordered: false });
-                } catch (stockError) {
-                    console.error(`Error updating stock for order ${orderNumber}:`, stockError);
-                }
-            }
-        }
-        
+        await adjustStock(collections.product, orderData.items, distributorId);
+
         if (distributorId && orderData.salesman_id && orderData.created_by_type === 'salesman') {
             let salesmanName = orderData.salesmanName;
             if (!salesmanName && orderData.salesman_id) {
@@ -3415,8 +3417,7 @@ app.post('/api/orders', async (req, res) => {
                     }
                 }
             }
-            void createOrderNotification(orderData, distributorId, orderData.salesman_id, salesmanName)
-                .catch(error => console.error('Error creating order notification:', error));
+            await createOrderNotification(orderData, distributorId, orderData.salesman_id, salesmanName);
         } else {
             console.log(`No notification created for order ${orderNumber} - created by distributor or no salesman associated`);
         }
@@ -3429,11 +3430,12 @@ app.post('/api/orders', async (req, res) => {
         });
     } catch (error) {
         console.error('Error creating order:', error);
+        if (writes.getStore()) throw error;
         res.status(500).json({ error: error.message });
     }
-});
+}));
 
-app.put('/api/orders/:orderId', async (req, res) => {
+app.put('/api/orders/:orderId', reliableWrite(() => mongoClient, () => db, async (req, res) => {
     try {
         const { orderId } = req.params;
         const updateData = req.body;
@@ -3453,31 +3455,8 @@ app.put('/api/orders/:orderId', async (req, res) => {
         const oldItems = order.items || [];
         const newItems = updateData.items || [];
         
-        for (const item of oldItems) {
-            try {
-                let product = null;
-                if (item.productId && ObjectId.isValid(item.productId)) {
-                    product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
-                } else if (item.sku) {
-                    product = await collections.product.findOne({ sku: item.sku });
-                }
-                
-                if (product) {
-                    const oldQuantity = parseInt(item.quantity) || parseInt(item.qty) || 0;
-                    const currentStock = product.stock || 0;
-                    const newStock = currentStock + oldQuantity;
-                    
-                    await collections.product.updateOne(
-                        { _id: product._id },
-                        { $set: { stock: newStock, updatedAt: new Date().toISOString() } }
-                    );
-                    console.log(`Stock restored for product ${product.productName}: +${oldQuantity}, New stock: ${newStock}`);
-                }
-            } catch (stockError) {
-                console.error(`Error restoring stock for product ${item.productId}:`, stockError);
-            }
-        }
-        
+        await adjustStock(collections.product, oldItems, order.distributor_id || order.distributorId, true);
+
         // Process new items to ensure MRP is included
         let processedNewItems = newItems;
         if (newItems && newItems.length > 0) {
@@ -3485,32 +3464,12 @@ app.put('/api/orders/:orderId', async (req, res) => {
             updateData.items = processedNewItems;
         }
         
-        for (const item of processedNewItems) {
-            try {
-                let product = null;
-                if (item.productId && ObjectId.isValid(item.productId)) {
-                    product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
-                } else if (item.sku) {
-                    product = await collections.product.findOne({ sku: item.sku });
-                }
-                
-                if (product) {
-                    const newQuantity = parseInt(item.quantity) || parseInt(item.qty) || 0;
-                    const currentStock = product.stock || 0;
-                    const newStock = currentStock - newQuantity;
-                    const finalStock = newStock < 0 ? 0 : newStock;
-                    
-                    await collections.product.updateOne(
-                        { _id: product._id },
-                        { $set: { stock: finalStock, updatedAt: new Date().toISOString() } }
-                    );
-                    console.log(`Stock deducted for product ${product.productName}: -${newQuantity}, New stock: ${finalStock}`);
-                }
-            } catch (stockError) {
-                console.error(`Error deducting stock for product ${item.productId}:`, stockError);
-            }
-        }
-        
+        await adjustStock(collections.product, processedNewItems, order.distributor_id || order.distributorId);
+        Object.assign(updateData, paymentBalance(updateData.grand_total ?? updateData.totalAmount ?? order.grand_total, order.paidAmount));
+        updateData.distributor_id = order.distributor_id;
+        updateData.distributorId = order.distributorId || order.distributor_id;
+        updateData.salesman_id = order.salesman_id;
+
         updateData.updatedAt = new Date().toISOString();
         delete updateData._id;
         
@@ -3533,11 +3492,12 @@ app.put('/api/orders/:orderId', async (req, res) => {
         res.json({ success: true, message: 'Order updated successfully' });
     } catch (error) {
         console.error('Error updating order:', error);
+        if (writes.getStore()) throw error;
         res.status(500).json({ error: error.message });
     }
-});
+}));
 
-app.delete('/api/orders/:orderId', async (req, res) => {
+app.delete('/api/orders/:orderId', reliableWrite(() => mongoClient, () => db, async (req, res) => {
     try {
         const { orderId } = req.params;
         
@@ -3557,33 +3517,8 @@ app.delete('/api/orders/:orderId', async (req, res) => {
             return res.status(400).json({ error: 'Cannot delete order with payments already made. Please refund the payment first.' });
         }
         
-        if (order.items && Array.isArray(order.items)) {
-            for (const item of order.items) {
-                try {
-                    let product = null;
-                    if (item.productId && ObjectId.isValid(item.productId)) {
-                        product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
-                    } else if (item.sku) {
-                        product = await collections.product.findOne({ sku: item.sku });
-                    }
-                    
-                    if (product) {
-                        const quantity = parseInt(item.quantity) || parseInt(item.qty) || 0;
-                        const currentStock = product.stock || 0;
-                        const newStock = currentStock + quantity;
-                        
-                        await collections.product.updateOne(
-                            { _id: product._id },
-                            { $set: { stock: newStock, updatedAt: new Date().toISOString() } }
-                        );
-                        console.log(`Stock restored for product ${product.productName}: +${quantity}, New stock: ${newStock}`);
-                    }
-                } catch (stockError) {
-                    console.error(`Error restoring stock for product ${item.productId}:`, stockError);
-                }
-            }
-        }
-        
+        await adjustStock(collections.product, order.items || [], order.distributor_id || order.distributorId, true);
+
         await collections.notification.deleteMany({ order_id: order.orderNumber });
         
         const result = await collections.order.deleteOne({ _id: order._id });
@@ -3606,9 +3541,10 @@ app.delete('/api/orders/:orderId', async (req, res) => {
         res.json({ success: true, message: 'Order deleted successfully' });
     } catch (error) {
         console.error('Error deleting order:', error);
+        if (writes.getStore()) throw error;
         res.status(500).json({ error: error.message });
     }
-});
+}));
 
 app.get('/api/orders/salesman/:salesmanId', async (req, res) => {
     try {
@@ -3786,17 +3722,18 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
         }
         
         const excelData = [];
+        const lookup = requestLookup();
         
         for (const order of orders) {
             let salesmanCode = order.salesman_id || '';
             let salesmanName = order.salesmanName || '';
             
             if (!salesmanName && order.salesman_id) {
-                const salesman = await collections.salesman.findOne({ salesman_id: order.salesman_id });
+                const salesman = await lookup(`salesman:${order.salesman_id}`, () => collections.salesman.findOne({ salesman_id: order.salesman_id }));
                 if (salesman) {
                     salesmanName = salesman.name;
                 } else {
-                    const registerUser = await collections.register.findOne({ salesman_id: order.salesman_id });
+                    const registerUser = await lookup(`register:${order.salesman_id}`, () => collections.register.findOne({ salesman_id: order.salesman_id }));
                     if (registerUser) {
                         salesmanName = registerUser.fullName;
                     }
@@ -3810,9 +3747,9 @@ app.get('/api/orders/download/:distributorId', async (req, res) => {
                         try {
                             let product = null;
                             if (ObjectId.isValid(item.productId)) {
-                                product = await collections.product.findOne({ _id: new ObjectId(item.productId) });
+                                product = await lookup(`product:id:${item.productId}`, () => collections.product.findOne({ _id: new ObjectId(item.productId) }));
                             } else if (item.sku) {
-                                product = await collections.product.findOne({ sku: item.sku });
+                                product = await lookup(`product:sku:${item.sku}`, () => collections.product.findOne({ sku: item.sku }));
                             }
                             if (product && product.mrp) {
                                 mrpValue = product.mrp;
@@ -3893,7 +3830,7 @@ app.get('/api/orders/customer/:customerId', async (req, res) => {
         const { customerId } = req.params;
         
         const orders = await collections.order
-            .find({ customerId: customerId })
+            .find({ customerId: customerId, distributor_id: req.auth.distributor_id, ...(req.auth.role === 'salesman' ? { salesman_id: req.auth.salesman_id } : {}) })
             .sort({ createdAt: -1 })
             .toArray();
         res.json(orders);
@@ -3908,7 +3845,7 @@ app.get('/api/orders/customer/:customerId/last', async (req, res) => {
         const { customerId } = req.params;
         
         const order = await collections.order
-            .find({ customerId: customerId })
+            .find({ customerId: customerId, distributor_id: req.auth.distributor_id, ...(req.auth.role === 'salesman' ? { salesman_id: req.auth.salesman_id } : {}) })
             .sort({ createdAt: -1 })
             .limit(1)
             .toArray();
@@ -4115,7 +4052,7 @@ app.get('/api/payments/order/:orderId', async (req, res) => {
 });
 
 // FIXED: Payment recording with correct IDs and cheque/UPI details
-app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (req, res) => {
+app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), reliableWrite(() => mongoClient, () => db, async (req, res) => {
     try {
         const { orderId } = req.params;
         
@@ -4132,8 +4069,8 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
         const collectedBy = req.body.collectedBy;
         const collectedByName = req.body.collectedByName;
         const collectedByType = req.body.collectedByType;
-        const salesmanId = req.body.salesmanId;
-        const salesmanName = req.body.salesmanName;
+        const salesmanId = req.auth?.role === 'salesman' ? req.auth.salesman_id : req.body.salesmanId;
+        const salesmanName = req.auth?.role === 'salesman' ? req.auth.fullName : req.body.salesmanName;
         const chequeNumber = req.body.chequeNumber;
         const chequeDate = req.body.chequeDate;
         const bankName = req.body.bankName;
@@ -4210,9 +4147,11 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
             }
         }
         
-        const paymentAmount = parseFloat(amount);
-        const newPaidAmount = (order.paidAmount || 0) + paymentAmount;
-        const newDueAmount = order.grand_total - newPaidAmount;
+        const paymentAmount = Number(amount);
+        if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) return res.status(400).json({ error: 'Payment must be a positive amount' });
+        const balance = paymentBalance(order.grand_total ?? order.totalAmount, Number(order.paidAmount || 0) + paymentAmount);
+        const newPaidAmount = balance.paidAmount;
+        const newDueAmount = balance.dueAmount;
         
         const collectionId = generateCollectionId();
         
@@ -4398,9 +4337,10 @@ app.post('/api/orders/:orderId/payment', upload.single('paymentPhoto'), async (r
         });
     } catch (error) {
         console.error('Error recording payment:', error);
+        if (writes.getStore()) throw error;
         res.status(500).json({ error: error.message });
     }
-});
+}));
 
 app.get('/api/customers/:customerId/outstanding', async (req, res) => {
     try {
@@ -4708,6 +4648,7 @@ app.post('/api/login', async (req, res) => {
         res.json({ 
             success: true, 
             message: 'Login successful',
+            token: await issueSession(db, user),
             user: userResponse 
         });
     } catch (error) {
@@ -4716,8 +4657,11 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+app.get('/api/session', (req, res) => res.json({ success: true }));
+
 app.post('/api/logout', async (req, res) => {
     try {
+        await revokeSession(db, req.get('Authorization'));
         res.json({ 
             success: true, 
             message: 'Logout successful' 
@@ -10932,6 +10876,7 @@ app.post('/api/load-delivery/route', async (req, res) => {
         const routesResponse = await fetch(
             'https://routes.googleapis.com/directions/v2:computeRoutes',
             {
+                signal: AbortSignal.timeout(15000),
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -10995,6 +10940,13 @@ app.put('/api/load-delivery/delivery-status', async (req, res) => {
         const deliveryLatitude = Number(req.body?.deliveryLatitude);
         const deliveryLongitude = Number(req.body?.deliveryLongitude);
         const deliveryAccuracy = Number(req.body?.deliveryAccuracy);
+        const capturedAt = new Date(req.body?.locationCapturedAt).getTime();
+        const exceptionReason = String(req.body?.exceptionReason || '').trim();
+        if (!Number.isFinite(deliveryAccuracy) || deliveryAccuracy <= 0 || deliveryAccuracy > 100 ||
+            !Number.isFinite(capturedAt) || Date.now() - capturedAt > 60000 || capturedAt - Date.now() > 5000 ||
+            (deliveryLatitude === 0 && deliveryLongitude === 0)) {
+            return res.status(400).json({ success: false, message: 'A recent, accurate GPS position is required. Refresh GPS and retry.' });
+        }
 
         if (
             !distributorId ||
@@ -11028,20 +10980,20 @@ app.put('/api/load-delivery/delivery-status', async (req, res) => {
             return res.status(404).json({ success: false, message: 'Load delivery bill not found' });
         }
 
-        const storeLatitude = Number(
-            bill.GeoLatitude ?? bill.geoLatitude ?? bill.latitude ?? bill.Latitude ?? bill.lat
-        );
-        const storeLongitude = Number(
-            bill.GeoLongitude ?? bill.geoLongitude ?? bill.longitude ?? bill.Longitude ?? bill.lng ?? bill.lon
-        );
-        if (
+        if (bill.delivery_status === 'completed') {
+            return res.json({ success: true, message: 'Delivery already completed', delivered_at: bill.delivered_at });
+        }
+        const storeLatitude = readCoordinate(bill, ['GeoLatitude', 'geoLatitude', 'latitude', 'Latitude', 'lat']);
+        const storeLongitude = readCoordinate(bill, ['GeoLongitude', 'geoLongitude', 'longitude', 'Longitude', 'lng', 'lon']);
+        const missingStoreLocation = (
             !Number.isFinite(storeLatitude) || storeLatitude < -90 || storeLatitude > 90 ||
             !Number.isFinite(storeLongitude) || storeLongitude < -180 || storeLongitude > 180 ||
             (storeLatitude === 0 && storeLongitude === 0)
-        ) {
+        );
+        if (missingStoreLocation && (exceptionReason.length < 10 || exceptionReason.length > 500)) {
             return res.status(400).json({
                 success: false,
-                message: 'This store does not have a valid location. Delivery cannot be completed.'
+                message: 'A reason of 10 to 500 characters is required to complete an outlet with no valid pin.'
             });
         }
 
@@ -11051,8 +11003,8 @@ app.put('/api/load-delivery/delivery-status', async (req, res) => {
         const a = Math.sin(latitudeDelta / 2) ** 2 +
             Math.cos(toRadians(deliveryLatitude)) * Math.cos(toRadians(storeLatitude)) *
             Math.sin(longitudeDelta / 2) ** 2;
-        const distanceFromStoreMeters = 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        if (distanceFromStoreMeters > DELIVERY_COMPLETION_RADIUS_METERS) {
+        const distanceFromStoreMeters = missingStoreLocation ? null : 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        if (!missingStoreLocation && distanceFromStoreMeters > DELIVERY_COMPLETION_RADIUS_METERS) {
             return res.status(403).json({
                 success: false,
                 message: `You are ${Math.round(distanceFromStoreMeters)} m away from the store. Move within ${DELIVERY_COMPLETION_RADIUS_METERS} m to mark it delivered.`
@@ -11064,17 +11016,22 @@ app.put('/api/load-delivery/delivery-status', async (req, res) => {
             {
                 _id: new ObjectId(loadDocumentId),
                 distributorId,
+                ...(req.auth.role === 'salesman' ? { assignedSalesmanId: req.auth.salesman_id } : {}),
                 bills: {
                     $elemMatch: {
                         TrnSeries: trnSeries,
                         TrnNo: trnNo,
-                        SysAcCode: sysAcCode
+                        SysAcCode: sysAcCode,
+                        delivery_status: { $ne: 'completed' }
                     }
                 }
             },
             {
                 $set: {
                     'bills.$.delivery_status': 'completed',
+                    'bills.$.delivery_completed_by': req.auth.salesman_id || req.auth.distributor_id,
+                    'bills.$.delivery_location_captured_at': new Date(capturedAt),
+                    'bills.$.delivery_exception': missingStoreLocation ? { type: 'missing_outlet_location', reason: exceptionReason, actor: String(req.auth._id), recordedAt: deliveredAt } : null,
                     'bills.$.delivered_at': deliveredAt,
                     'bills.$.delivery_latitude': deliveryLatitude,
                     'bills.$.delivery_longitude': deliveryLongitude,
@@ -11085,6 +11042,9 @@ app.put('/api/load-delivery/delivery-status', async (req, res) => {
         );
 
         if (result.matchedCount === 0) {
+            const latest = await db.collection('Mas_Delivery').findOne({ _id: new ObjectId(loadDocumentId), distributorId });
+            const saved = latest?.bills?.find(item => String(item.TrnSeries).trim() === trnSeries && Number(item.TrnNo) === trnNo && String(item.SysAcCode).trim() === sysAcCode);
+            if (saved?.delivery_status === 'completed') return res.json({ success: true, delivered_at: saved.delivered_at });
             return res.status(404).json({
                 success: false,
                 message: 'Load delivery bill not found'
@@ -11105,14 +11065,18 @@ app.put('/api/load-delivery/delivery-status', async (req, res) => {
     }
 });
 
-app.listen(PORT, async () => {
-    try {
-        await connectToMongoDB();
-        console.log(`Server running on http://localhost:${PORT}`);
-        console.log(`API endpoints available at http://localhost:${PORT}/api`);
-        // ... rest of your startup logs
-    } catch (error) {
-        console.error('Failed to start server:', error);
+// Accept business requests only after collections and indexes are ready.
+async function startServer() {
+    await connectToMongoDB();
+    const server = app.listen(PORT, () => {
+        console.log('Server running on port ' + PORT);
+    });
+    server.on('error', error => {
+        console.error('HTTP server error:', error);
         process.exit(1);
-    }
+    });
+}
+startServer().catch(error => {
+    console.error('Failed to start server:', error);
+    process.exit(1);
 });

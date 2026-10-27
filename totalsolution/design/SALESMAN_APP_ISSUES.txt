@@ -1,0 +1,237 @@
+SALESMAN APP - ISSUE ANALYSIS
+Review date: 27 October 2026
+
+Scope: Active salesman flow in lib/screens/auth/login_screen.dart and its
+backend dependencies in backend/server.js. Paths below are relative to
+the totalsolution folder.
+
+This report records all 11 findings from the code review. It is based on
+static analysis, not device testing or verification against the live
+database. Runtime frequency and production impact remain unverified.
+No application code was changed as part of this analysis.
+
+======================================================================
+1. CRITICAL - MISSING SERVER-SIDE AUTHENTICATION AND AUTHORIZATION
+======================================================================
+Problem:
+The reviewed salesman APIs trust salesman/distributor IDs supplied by the
+client rather than deriving identity from an authenticated caller.
+Delivery completion looks up a load using its ID and distributor ID but
+does not verify that the caller is the salesman assigned to that load.
+Route-plan assignment checks also use client-supplied identity fields.
+
+Impact:
+A caller who obtains the relevant IDs could access or modify another
+salesman's work. Restricting actions in the mobile UI does not enforce
+permissions on the server.
+
+References:
+- backend/server.js:11002 - delivery-status endpoint
+- backend/server.js:10804 - assigned-load lookup
+- backend/server.js:3321  - order creation endpoint
+
+======================================================================
+2. HIGH - ORDER RETRIES CAN CREATE DUPLICATE ORDERS
+======================================================================
+Problem:
+Every order POST generates a new order number and inserts a new record.
+There is no stable idempotency key checked by this endpoint.
+
+Example:
+The server saves an order, but the response is lost during a network
+failure. The app shows an error. Retrying submits another order.
+
+Impact:
+Duplicate orders, repeated stock deductions, and duplicate downstream
+processing can occur even though the salesman intended one order.
+
+Reference:
+- backend/server.js:3321 - order creation
+
+======================================================================
+3. HIGH - PAID ORDERS CAN RETAIN THE FULL OUTSTANDING BALANCE
+======================================================================
+Problem:
+The app sends paidAmount and dueAmount. The backend overwrites dueAmount
+with grand_total instead of calculating the remaining balance.
+
+Example:
+For a fully paid order of Rs. 1,000, the saved record can contain:
+  paidAmount = 1000
+  dueAmount = 1000
+  payment_status = paid
+
+Impact:
+Outstanding balances and collection reports can disagree with payment
+status. A paid customer may appear to owe the full order value.
+
+References:
+- backend/server.js:3377 - payment defaults and dueAmount assignment
+- lib/screens/auth/login_screen.dart:3049 - order payload construction
+
+======================================================================
+4. HIGH - ORDER ACCEPTANCE DOES NOT GUARANTEE CORRECT STOCK
+======================================================================
+Problem:
+The backend inserts the order before updating stock. Stock-update errors
+are caught and logged, while the order endpoint still returns success.
+Stock deductions clamp the result to zero instead of rejecting an order
+that exceeds available stock.
+
+Impact:
+An accepted order may have no corresponding stock deduction, or only
+some deductions. Orders can exceed available stock without recording a
+negative quantity that would expose the shortage.
+
+Example:
+With 3 units available, an order for 5 units can be accepted and stock
+set to zero.
+
+Reference:
+- backend/server.js:3381 - insert followed by stock updates
+
+======================================================================
+5. HIGH - ORDER EDITING CAN CORRUPT STOCK UNDER CONCURRENCY
+======================================================================
+Problem:
+Editing restores old item quantities and deducts new quantities through
+separate reads and writes. These steps and the order update are not one
+transaction. Stock errors are caught separately.
+
+Impact:
+Concurrent orders or edits can overwrite each other's stock changes.
+A failure after restoring stock but before completing the edit can leave
+inventory inconsistent with the saved order.
+
+Reference:
+- backend/server.js:3451 - order edit endpoint
+
+======================================================================
+6. HIGH - PAYMENT RECORDING IS NOT ATOMIC OR RETRY-SAFE
+======================================================================
+Problem:
+Payment insertion, collection-history creation, and order-balance
+updates are separate operations. There is no deduplication check for a
+retried payment request. The new balance is calculated from a previously
+read order value and then written back.
+
+Impact:
+- A partial failure can leave payment/history/order records inconsistent.
+- A retry can insert another payment for the same intended collection.
+- Concurrent payments can overwrite each other's balance updates.
+
+Example:
+Two payments read paidAmount = 0. One adds Rs. 100 and another Rs. 200.
+Separate writes can leave paidAmount at Rs. 200 instead of Rs. 300.
+
+References:
+- backend/server.js:4228 - payment balance calculation
+- backend/server.js:4331 - payment insertion and subsequent operations
+
+======================================================================
+7. HIGH - MISSING OUTLET COORDINATES BLOCK DELIVERY COMPLETION
+======================================================================
+Problem:
+Both the app and backend reject delivery completion when the outlet has
+missing or invalid coordinates. This completion flow provides no
+reasoned exception or alternate completion path.
+
+Impact:
+A salesman may physically deliver the goods but remain unable to close
+the bill because the stored outlet location is missing or incorrect.
+
+References:
+- lib/screens/auth/login_screen.dart:29336 - completion validation
+- backend/server.js:11002 - server completion validation
+
+======================================================================
+8. MEDIUM - GPS FAILURE BLOCKS STARTING A LOAD
+======================================================================
+Problem:
+Starting a load requires a fresh location before activating the selected
+load. Disabled GPS, denied permission, or the 20-second location timeout
+causes the start operation to fail.
+
+Impact:
+The salesman cannot enter the active delivery workflow when GPS is
+unavailable. Road-routing failure is handled separately, but that
+fallback does not remove the GPS requirement.
+
+References:
+- lib/screens/auth/login_screen.dart:31617 - location request
+- lib/screens/auth/login_screen.dart:31646 - delivery-start preparation
+
+======================================================================
+9. MEDIUM - AN OLD ROUTE RESPONSE CAN OVERWRITE A NEW LOAD'S MAP
+======================================================================
+Problem:
+Initial route requests carry a load key so stale results can be ignored.
+Movement-triggered recalculation calls the route updater without that
+key. The response can therefore update route state after a load switch.
+
+Example:
+Load A is recalculating. The salesman switches to load B. Load A's
+request finishes later and replaces the map route shown for load B.
+
+Impact:
+The active load and displayed route can disagree, confusing navigation.
+
+Reference:
+- lib/screens/auth/login_screen.dart:32075 - active-route recalculation
+
+======================================================================
+10. MEDIUM - GPS ACCURACY AND SAMPLE AGE ARE NOT ENFORCED
+======================================================================
+Problem:
+Position updates and completion proximity checks use coordinates without
+rejecting samples based on accuracy or age. The backend stores reported
+deliveryAccuracy but does not enforce an accuracy threshold or require
+a location capture timestamp in this completion request.
+
+Impact:
+Poor readings can move the map marker incorrectly or cause incorrect
+delivery-proximity decisions. Requesting high accuracy does not guarantee
+that every returned position is sufficiently accurate.
+
+References:
+- lib/screens/auth/login_screen.dart:32053 - position-update handler
+- lib/screens/auth/login_screen.dart:29336 - delivery completion
+- backend/server.js:11002 - delivery-status validation
+
+======================================================================
+11. MEDIUM - MOVEMENT CAN TRIGGER EXCESSIVE ROUTING REQUESTS
+======================================================================
+Problem:
+Movement of 100 metres can trigger road-route recalculation. Additional
+stop replanning can occur after 500 metres. Large loads require multiple
+route requests per refresh because stops are divided into chunks.
+
+Impact:
+Long delivery runs and large loads can increase mobile data use,
+route-provider costs, backend traffic, and route-refresh latency.
+This is a code-level exposure; actual cost and latency need measurement.
+
+Reference:
+- lib/screens/auth/login_screen.dart:32053 - movement thresholds
+
+======================================================================
+EXISTING BEHAVIOR THAT SHOULD NOT BE REPORTED AS MISSING
+======================================================================
+The reviewed code already includes:
+- Assigned-load cards.
+- A fallback that lets a load open when road routing fails.
+- Route chunking for loads with more than 25 stops.
+
+Older planning documents may not fully reflect this current behavior.
+
+======================================================================
+PRIORITY ORDER
+======================================================================
+1. Server-side authentication and assignment/tenant authorization.
+2. Correct outstanding balances on paid orders.
+3. Retry-safe order and payment recording.
+4. Stock consistency during creation and editing.
+5. Delivery exceptions and GPS failure handling.
+6. Route state isolation, GPS quality checks, and routing frequency.
+
+END OF REPORT

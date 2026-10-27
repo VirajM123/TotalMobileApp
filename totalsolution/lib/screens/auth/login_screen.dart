@@ -19,6 +19,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geolocator/geolocator.dart';
 import '../../services/salesman_catalog_pager.dart';
+import '../../services/authenticated_http_client.dart';
 
 // Define models inline if missing
 enum UserRole { distributor, salesman }
@@ -883,6 +884,9 @@ class OrderItemModel {
   final double schAmt;
   final double grossAmt;
   final double netAmt;
+  final String? sysCompCode;
+  final String? companyCode;
+  final String? companyName;
 
   OrderItemModel({
     required this.id,
@@ -898,6 +902,9 @@ class OrderItemModel {
     this.schAmt = 0,
     this.grossAmt = 0,
     this.netAmt = 0,
+    this.sysCompCode,
+    this.companyCode,
+    this.companyName,
   });
 }
 
@@ -939,6 +946,7 @@ class OrderModel {
   final double? latitude;
   final double? longitude;
   final List<OrderTimelineEvent> timeline;
+  final bool isMixBilling;
 
   OrderModel({
     required this.id,
@@ -964,6 +972,7 @@ class OrderModel {
     this.latitude,
     this.longitude,
     required this.timeline,
+    this.isMixBilling = false,
   });
 
   String get statusDisplay {
@@ -1075,9 +1084,17 @@ class CartItemData {
 
 // ==================== API Service for backend communication ====================
 class ApiService {
+  static final client = AuthenticatedHttpClient(_remoteBaseUrl);
+
+  static Future<void> clearSessionPreferences(SharedPreferences prefs) async {
+    // Uncertain writes must keep their retry keys even after logout.
+    for (final key in prefs.getKeys().where((key) => !key.startsWith('pending_write_')).toList()) {
+      await prefs.remove(key);
+    }
+  }
 
   // LOCAL URL (For Testing)
- //static const String _remoteBaseUrl = "http://localhost:3000/api";
+  //static const String _remoteBaseUrl = 'http://localhost:3000/api';
 
    // PRODUCTION URL (Render)
   static const String _remoteBaseUrl ="https://totalmobileapp.onrender.com/api";
@@ -1113,7 +1130,7 @@ class ApiService {
     String query,
   ) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse(
           '$apiUrl/search/$distributorId?query=${Uri.encodeComponent(query)}',
         ),
@@ -1134,7 +1151,7 @@ class ApiService {
     Map<String, dynamic> customerData,
   ) async {
     try {
-      final response = await http.post(
+      final response = await ApiService.client.post(
         Uri.parse('$apiUrl/customers'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(customerData),
@@ -1151,7 +1168,7 @@ class ApiService {
 
   static Future<List<dynamic>> getCustomers(String distributorId) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/customers/$distributorId'),
       );
 
@@ -1170,7 +1187,7 @@ class ApiService {
     Map<String, dynamic> customerData,
   ) async {
     try {
-      final response = await http.put(
+      final response = await ApiService.client.put(
         Uri.parse('$apiUrl/customers/$customerId'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(customerData),
@@ -1191,7 +1208,7 @@ class ApiService {
     Map<String, dynamic> productData,
   ) async {
     try {
-      final response = await http.post(
+      final response = await ApiService.client.post(
         Uri.parse('$apiUrl/products'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(productData),
@@ -1285,8 +1302,7 @@ class ApiService {
             },
           );
 
-      final response = await http
-          .get(uri)
+      final response = await ApiService.client.get(uri)
           .timeout(const Duration(seconds: 60));
 
       if (response.statusCode != 200) {
@@ -1329,7 +1345,7 @@ class ApiService {
           await http.MultipartFile.fromPath('paymentPhoto', paymentPhoto.path),
         );
       }
-      final streamedResponse = await request.send().timeout(
+      final streamedResponse = await client.send(request).timeout(
         const Duration(seconds: 30),
       );
       final response = await http.Response.fromStream(streamedResponse);
@@ -1397,8 +1413,7 @@ class ApiService {
   static Future<Map<String, dynamic>> completeOutstandingDelivery(
     Map<String, dynamic> deliveryData,
   ) async {
-    final response = await http
-        .put(
+    final response = await ApiService.client.put(
           Uri.parse('$apiUrl/outstanding/delivery-status'),
           headers: const {
             'Content-Type': 'application/json',
@@ -1425,8 +1440,7 @@ class ApiService {
     final query = salesmanId == null || salesmanId.trim().isEmpty
         ? ''
         : '?salesmanId=${Uri.encodeQueryComponent(salesmanId.trim())}';
-    final response = await http
-        .get(
+    final response = await ApiService.client.get(
           Uri.parse(
             '$apiUrl/load-delivery/${Uri.encodeComponent(distributorId)}$query',
           ),
@@ -1492,7 +1506,7 @@ class ApiService {
     required String salesmanId,
     required String groupingMode,
   }) async {
-    final response = await http.put(
+    final response = await ApiService.client.put(
       Uri.parse('$apiUrl/load-delivery/${Uri.encodeComponent(loadId)}/assign'),
       headers: const {
         'Content-Type': 'application/json',
@@ -1522,7 +1536,7 @@ class ApiService {
       'distributorId': distributorId,
       'salesmanId': salesmanId,
     });
-    final response = await http.get(uri).timeout(const Duration(seconds: 20));
+    final response = await ApiService.client.get(uri).timeout(const Duration(seconds: 20));
     final data = _decodeJsonObject(response.body);
     if (response.statusCode != 200 || data['success'] != true) {
       throw Exception(data['message'] ?? 'Unable to load delivery plan');
@@ -1538,7 +1552,7 @@ class ApiService {
     required double longitude,
     bool recalculate = false,
   }) async {
-    final response = await http.post(
+    final response = await ApiService.client.post(
       Uri.parse('$apiUrl/load-delivery/${Uri.encodeComponent(loadId)}/plan'),
       headers: const {'Content-Type': 'application/json', 'Accept': 'application/json'},
       body: json.encode({
@@ -1558,7 +1572,7 @@ class ApiService {
   static Future<List<Map<String, dynamic>>> getLoadDocuments(
     String distributorId,
   ) async {
-    final response = await http.get(
+    final response = await ApiService.client.get(
       Uri.parse('$apiUrl/load-delivery/${Uri.encodeComponent(distributorId)}'),
     );
     final data = response.body.trim().isEmpty
@@ -1577,7 +1591,7 @@ class ApiService {
     required String loadId,
     required String distributorId,
   }) async {
-    final response = await http.get(
+    final response = await ApiService.client.get(
       Uri.parse(
         '$apiUrl/load-delivery/${Uri.encodeComponent(loadId)}/reconciliation'
         '?distributorId=${Uri.encodeQueryComponent(distributorId)}',
@@ -1595,8 +1609,7 @@ class ApiService {
   static Future<Map<String, dynamic>> completeLoadDelivery(
     Map<String, dynamic> deliveryData,
   ) async {
-    final response = await http
-        .put(
+    final response = await ApiService.client.put(
           Uri.parse('$apiUrl/load-delivery/delivery-status'),
           headers: const {
             'Content-Type': 'application/json',
@@ -1621,8 +1634,7 @@ class ApiService {
     required double originLongitude,
     required List<LatLng> stops,
   }) async {
-    final response = await http
-        .post(
+    final response = await ApiService.client.post(
           Uri.parse('$apiUrl/load-delivery/route'),
           headers: const {
             'Content-Type': 'application/json',
@@ -1659,7 +1671,7 @@ class ApiService {
 
   static Future<List<dynamic>> getProducts(String distributorId) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/products/$distributorId'),
       );
 
@@ -1700,7 +1712,7 @@ class ApiService {
         url += '?${queryParams.join('&')}';
       }
 
-      final response = await http.get(Uri.parse(url));
+      final response = await ApiService.client.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
         return compute(_decodeJsonObject, response.body);
@@ -1732,7 +1744,7 @@ class ApiService {
         url += '?${queryParams.join('&')}';
       }
 
-      final response = await http.get(Uri.parse(url));
+      final response = await ApiService.client.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
         return _decodeJsonObject(response.body);
@@ -1756,7 +1768,7 @@ class ApiService {
         url += '&date=${date.toIso8601String().split('T')[0]}';
       }
 
-      final response = await http.get(Uri.parse(url));
+      final response = await ApiService.client.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -1796,7 +1808,7 @@ class ApiService {
 
       request.files.add(await http.MultipartFile.fromPath('file', filePath));
 
-      final streamedResponse = await request.send();
+      final streamedResponse = await client.send(request);
       final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200) {
@@ -1827,7 +1839,7 @@ class ApiService {
 
       request.files.add(await http.MultipartFile.fromPath('file', filePath));
 
-      final streamedResponse = await request.send();
+      final streamedResponse = await client.send(request);
       final response = await http.Response.fromStream(streamedResponse);
 
       if (response.statusCode == 200) {
@@ -1845,7 +1857,7 @@ class ApiService {
     Map<String, dynamic> salesmanData,
   ) async {
     try {
-      final response = await http.post(
+      final response = await ApiService.client.post(
         Uri.parse('$apiUrl/salesmen'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(salesmanData),
@@ -1872,7 +1884,7 @@ class ApiService {
     bool throwOnError = false,
   }) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/salesmen/$distributorId'),
       );
 
@@ -1922,7 +1934,7 @@ class ApiService {
           if (weekStart != null) 'weekStart': weekStart.toUtc().toIso8601String(),
         },
       );
-      final response = await http.get(
+      final response = await ApiService.client.get(
         uri,
       ).timeout(timeout);
 
@@ -1955,7 +1967,7 @@ class ApiService {
         orderData['items'] = items;
       }
 
-      final response = await http.post(
+      final response = await ApiService.client.post(
         Uri.parse('$apiUrl/orders'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(orderData),
@@ -1973,7 +1985,7 @@ class ApiService {
 
   static Future<List<dynamic>> getOrdersBySalesman(String salesmanId) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/orders/salesman/$salesmanId'),
       );
 
@@ -2022,7 +2034,7 @@ class ApiService {
         url += '?${queryParams.join('&')}';
       }
 
-      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 25));
+      final response = await ApiService.client.get(Uri.parse(url)).timeout(const Duration(seconds: 25));
 
       if (response.statusCode == 200) {
         return compute(_decodeJsonArray, response.body);
@@ -2064,7 +2076,7 @@ class ApiService {
         url += '?${queryParams.join('&')}';
       }
 
-      final response = await http.get(Uri.parse(url));
+      final response = await ApiService.client.get(Uri.parse(url));
 
       if (response.statusCode == 200) {
         return {
@@ -2089,7 +2101,7 @@ class ApiService {
     String customerId,
   ) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/orders/customer/$customerId/last'),
       );
 
@@ -2107,7 +2119,7 @@ class ApiService {
     String productId,
   ) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/products/$productId/last-sale'),
       );
 
@@ -2126,7 +2138,7 @@ class ApiService {
     Map<String, dynamic> paymentData,
   ) async {
     try {
-      final response = await http.post(
+      final response = await ApiService.client.post(
         Uri.parse('$apiUrl/orders/$orderId/payment'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(paymentData),
@@ -2208,7 +2220,7 @@ class ApiService {
         print('Adding payment photo: ${paymentPhoto.path}');
       }
 
-      final streamedResponse = await request.send();
+      final streamedResponse = await client.send(request);
       final response = await http.Response.fromStream(streamedResponse);
 
       print('Payment API response status: ${response.statusCode}');
@@ -2229,7 +2241,7 @@ class ApiService {
 
   static Future<List<dynamic>> getBanks() async {
     try {
-      final response = await http.get(Uri.parse('$apiUrl/banks'));
+      final response = await ApiService.client.get(Uri.parse('$apiUrl/banks'));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         return data['banks'] ?? [];
@@ -2243,7 +2255,7 @@ class ApiService {
 
   static Future<List<dynamic>> getUpiTypes() async {
     try {
-      final response = await http.get(Uri.parse('$apiUrl/upi-types'));
+      final response = await ApiService.client.get(Uri.parse('$apiUrl/upi-types'));
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         return data['upiTypes'] ?? [];
@@ -2260,7 +2272,7 @@ class ApiService {
     Map<String, dynamic> permissions,
   ) async {
     try {
-      final response = await http.put(
+      final response = await ApiService.client.put(
         Uri.parse('$apiUrl/salesmen/permissions/$salesmanId'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'permissions': permissions}),
@@ -2279,7 +2291,7 @@ class ApiService {
     String salesmanId,
   ) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/salesmen/permissions/$salesmanId'),
       );
 
@@ -2294,7 +2306,7 @@ class ApiService {
 
   static Future<Map<String, dynamic>> logout() async {
     try {
-      final response = await http.post(
+      final response = await ApiService.client.post(
         Uri.parse('$apiUrl/logout'),
         headers: {'Content-Type': 'application/json'},
       );
@@ -2311,7 +2323,7 @@ class ApiService {
 
   static Future<double> getCustomerOutstanding(String customerId) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/customers/$customerId/outstanding'),
       );
 
@@ -2328,7 +2340,7 @@ class ApiService {
 
   static Future<List<dynamic>> getNotifications(String distributorId) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/notifications/$distributorId'),
       );
 
@@ -2344,7 +2356,7 @@ class ApiService {
 
   static Future<int> getUnreadNotificationCount(String distributorId) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/notifications/unread-count/$distributorId'),
       );
 
@@ -2363,7 +2375,7 @@ class ApiService {
     String notificationId,
   ) async {
     try {
-      final response = await http.put(
+      final response = await ApiService.client.put(
         Uri.parse('$apiUrl/notifications/$notificationId/read'),
         headers: {'Content-Type': 'application/json'},
       );
@@ -2381,7 +2393,7 @@ class ApiService {
     String distributorId,
   ) async {
     try {
-      final response = await http.put(
+      final response = await ApiService.client.put(
         Uri.parse('$apiUrl/notifications/mark-all-read/$distributorId'),
         headers: {'Content-Type': 'application/json'},
       );
@@ -2400,7 +2412,7 @@ class ApiService {
     int stockReduction,
   ) async {
     try {
-      final response = await http.put(
+      final response = await ApiService.client.put(
         Uri.parse('$apiUrl/products/$productId/stock'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'stockReduction': stockReduction}),
@@ -2433,7 +2445,7 @@ class ApiService {
         orderData['items'] = items;
       }
 
-      final response = await http.put(
+      final response = await ApiService.client.put(
         Uri.parse('$apiUrl/orders/$orderId'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(orderData),
@@ -2451,7 +2463,7 @@ class ApiService {
 
   static Future<Map<String, dynamic>> deleteOrder(String orderId) async {
     try {
-      final response = await http.delete(Uri.parse('$apiUrl/orders/$orderId'));
+      final response = await ApiService.client.delete(Uri.parse('$apiUrl/orders/$orderId'));
 
       if (response.statusCode == 200) {
         return json.decode(response.body);
@@ -2471,7 +2483,7 @@ class ApiService {
     required String requestingUserRole,
   }) async {
     try {
-      final response = await http.post(
+      final response = await ApiService.client.post(
         Uri.parse('$apiUrl/change-password'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
@@ -2497,7 +2509,7 @@ class ApiService {
     String distributorId,
   ) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/users-under-distributor/$distributorId'),
       );
 
@@ -2517,7 +2529,7 @@ class ApiService {
       final uri = city != null && city.isNotEmpty
           ? Uri.parse('$apiUrl/areas?city=$city')
           : Uri.parse('$apiUrl/areas');
-      final response = await http.get(uri);
+      final response = await ApiService.client.get(uri);
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
         final areas = data['areas'] as List?;
@@ -2534,7 +2546,7 @@ class ApiService {
 
   static Future<List<String>> getSubAreas({required String area}) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/sub-areas?area=$area'),
       );
       if (response.statusCode == 200) {
@@ -2555,7 +2567,7 @@ class ApiService {
     String distributorId,
   ) async {
     try {
-      final response = await http.get(
+      final response = await ApiService.client.get(
         Uri.parse('$apiUrl/dashboard/stats/$distributorId'),
       ).timeout(const Duration(seconds: 25));
 
@@ -2627,7 +2639,7 @@ class CustomerService {
 
   Future<void> deleteCustomer(String customerId) async {
     try {
-      final response = await http.delete(
+      final response = await ApiService.client.delete(
         Uri.parse('${ApiService.apiUrl}/customers/$customerId'),
       );
 
@@ -2692,7 +2704,7 @@ class ProductService {
 
   Future<void> updateProduct(ProductModel product) async {
     try {
-      final response = await http.put(
+      final response = await ApiService.client.put(
         Uri.parse('${ApiService.apiUrl}/products/${product.id}'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(product.toMap()),
@@ -2714,7 +2726,7 @@ class ProductService {
 
   Future<void> deleteProduct(String productId) async {
     try {
-      final response = await http.delete(
+      final response = await ApiService.client.delete(
         Uri.parse('${ApiService.apiUrl}/products/$productId'),
       );
 
@@ -2732,7 +2744,7 @@ class ProductService {
 
   Future<void> updateProductStock(String productId, int newStock) async {
     try {
-      final response = await http.put(
+      final response = await ApiService.client.put(
         Uri.parse('${ApiService.apiUrl}/products/$productId/stock'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'newStock': newStock}),
@@ -2820,7 +2832,7 @@ class SalesmanService {
 
   Future<void> updateSalesman(SalesmanModel salesman) async {
     try {
-      final response = await http.put(
+      final response = await ApiService.client.put(
         Uri.parse('${ApiService.apiUrl}/salesmen/${salesman.id}'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode(salesman.toMap()),
@@ -2842,7 +2854,7 @@ class SalesmanService {
 
   Future<void> deleteSalesman(String salesmanId) async {
     try {
-      final response = await http.delete(
+      final response = await ApiService.client.delete(
         Uri.parse('${ApiService.apiUrl}/salesmen/$salesmanId'),
       );
 
@@ -2959,6 +2971,9 @@ class OrderService {
                     schAmt: (item['schAmt'] ?? 0).toDouble(),
                     grossAmt: (item['grossAmt'] ?? 0).toDouble(),
                     netAmt: (item['netAmt'] ?? item['amount'] ?? 0).toDouble(),
+                    sysCompCode: item['sysCompCode']?.toString(),
+                    companyCode: item['companyCode']?.toString(),
+                    companyName: item['companyName']?.toString(),
                   ),
                 )
                 .toList() ??
@@ -2981,6 +2996,7 @@ class OrderService {
             ? DateTime.parse(data['createdAt'])
             : DateTime.now(),
         timeline: [],
+        isMixBilling: data['isMixBilling'] == true,
       );
     }).toList();
   }
@@ -3076,9 +3092,16 @@ class OrderService {
                 'schAmt': item.schAmt,
                 'grossAmt': item.grossAmt,
                 'netAmt': item.netAmt,
+                if (order.isMixBilling && item.sysCompCode != null)
+                  'sysCompCode': item.sysCompCode,
+                if (order.isMixBilling && item.companyCode != null)
+                  'companyCode': item.companyCode,
+                if (order.isMixBilling && item.companyName != null)
+                  'companyName': item.companyName,
               },
             )
             .toList(),
+        if (order.isMixBilling) 'isMixBilling': true,
         'totalAmount': order.totalAmount,
         'paidAmount': order.paidAmount,
         'dueAmount': order.dueAmount,
@@ -3131,6 +3154,7 @@ class OrderService {
         latitude: order.latitude,
         longitude: order.longitude,
         timeline: order.timeline,
+        isMixBilling: order.isMixBilling,
       );
       _orders.insert(0, savedOrder);
       return savedOrder;
@@ -3163,9 +3187,16 @@ class OrderService {
                 'schAmt': item.schAmt,
                 'grossAmt': item.grossAmt,
                 'netAmt': item.netAmt,
+                if (order.isMixBilling && item.sysCompCode != null)
+                  'sysCompCode': item.sysCompCode,
+                if (order.isMixBilling && item.companyCode != null)
+                  'companyCode': item.companyCode,
+                if (order.isMixBilling && item.companyName != null)
+                  'companyName': item.companyName,
               },
             )
             .toList(),
+        if (order.isMixBilling) 'isMixBilling': true,
         'totalAmount': order.totalAmount,
         'paidAmount': order.paidAmount,
         'dueAmount': order.dueAmount,
@@ -3325,6 +3356,7 @@ class OrderService {
           internalNotes: order.internalNotes,
           createdAt: order.createdAt,
           timeline: order.timeline,
+          isMixBilling: order.isMixBilling,
         );
       }
     } catch (e) {
@@ -3382,39 +3414,67 @@ class PdfService {
 }
 
 // ==================== NOTIFICATION SERVICE ====================
-class NotificationService {
+class NotificationService with WidgetsBindingObserver {
+  NotificationService({Future<int> Function(String)? fetchUnreadCount})
+    : _loadUnreadCount = fetchUnreadCount ?? ApiService.getUnreadNotificationCount;
+
+  final Future<int> Function(String) _loadUnreadCount;
   int _unreadCount = 0;
   List<NotificationModel> _notifications = [];
   Timer? _pollingTimer;
   Function(int)? _onUnreadCountChanged;
   String? _currentDistributorId;
+  bool _fetchingUnread = false;
+  bool _observingLifecycle = false;
+  int _generation = 0;
 
   void init(String distributorId, {Function(int)? onUnreadCountChanged}) {
+    _generation++;
     _currentDistributorId = distributorId;
     _onUnreadCountChanged = onUnreadCountChanged;
+    if (!_observingLifecycle) {
+      WidgetsBinding.instance.addObserver(this);
+      _observingLifecycle = true;
+    }
     _startPolling();
   }
 
   void _startPolling() {
     _pollingTimer?.cancel();
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    if (_currentDistributorId == null ||
+        (lifecycle != null && lifecycle != AppLifecycleState.resumed)) return;
     _pollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
       _fetchUnreadCount();
     });
     _fetchUnreadCount();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startPolling();
+    } else {
+      _pollingTimer?.cancel();
+    }
+  }
+
   Future<void> _fetchUnreadCount() async {
-    if (_currentDistributorId == null) return;
+    final distributorId = _currentDistributorId;
+    if (distributorId == null || _fetchingUnread) return;
+    final generation = _generation;
+    _fetchingUnread = true;
     try {
-      final count = await ApiService.getUnreadNotificationCount(
-        _currentDistributorId!,
-      );
+      final count = await _loadUnreadCount(distributorId);
+      if (generation != _generation) return;
       if (count != _unreadCount) {
         _unreadCount = count;
         _onUnreadCountChanged?.call(count);
       }
     } catch (e) {
       print('Error fetching unread count: $e');
+    } finally {
+      _fetchingUnread = false;
     }
   }
 
@@ -3441,7 +3501,7 @@ class NotificationService {
     try {
       await ApiService.markNotificationRead(notificationId);
       final index = _notifications.indexWhere((n) => n.id == notificationId);
-      if (index != -1) {
+      if (index != -1 && !_notifications[index].isRead) {
         _notifications[index] = NotificationModel(
           id: _notifications[index].id,
           distributorId: _notifications[index].distributorId,
@@ -3457,7 +3517,7 @@ class NotificationService {
           readAt: DateTime.now(),
           orderData: _notifications[index].orderData,
         );
-        _unreadCount--;
+        _unreadCount = math.max(0, _unreadCount - 1);
         _onUnreadCountChanged?.call(_unreadCount);
       }
     } catch (e) {
@@ -3496,7 +3556,14 @@ class NotificationService {
   }
 
   void dispose() {
+    _generation++;
     _pollingTimer?.cancel();
+    _currentDistributorId = null;
+    _onUnreadCountChanged = null;
+    if (_observingLifecycle) {
+      WidgetsBinding.instance.removeObserver(this);
+      _observingLifecycle = false;
+    }
   }
 }
 
@@ -8425,7 +8492,7 @@ class _DistributorDashboardEnhancedState
 
     _notificationService.dispose();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.clear();
+    await ApiService.clearSessionPreferences(prefs);
 
     if (mounted) {
       Navigator.pushAndRemoveUntil(
@@ -15556,6 +15623,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   Position? _lastDeliveryRouteOrigin;
   Position? _lastDeliveryPlanOrigin;
   Position? _pendingDeliveryPosition;
+  DateTime? _lastAutomaticRouteAt;
+  int _deliveryRouteGeneration = 0;
+  final Set<String> _completingDeliveryBills = {};
   bool _isRecalculatingDeliveryRoute = false;
   Map<String, dynamic>? _deliveryPlan;
   String? _deliveryPlanLoadId;
@@ -15673,6 +15743,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   String? _selectedCustomerId;
   PaymentMode _selectedPaymentMode = PaymentMode.credit;
   String _orderNotes = '';
+  bool get _mixBillingEnabled => _selectedOrderCompany == '__mix__';
 
   final TextEditingController _productSearchController =
       TextEditingController();
@@ -15731,12 +15802,17 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         companies[entry.key] = entry.value;
       }
     }
-    return _cachedOrderCompanies = companies;
+    companies['__mix__'] = 'MIX';
+    return _cachedOrderCompanies = Map.fromEntries(
+      companies.entries.toList()
+        ..sort((a, b) => a.value.toLowerCase().compareTo(b.value.toLowerCase())),
+    );
   }
 
   List<String> get orderRoutes {
     final company = _selectedOrderCompany;
     if (company == null || company.trim().isEmpty) return [];
+    if (company == '__mix__') return [];
     if (_cachedOrderRoutesCompany == company && _cachedOrderRoutes != null) {
       return _cachedOrderRoutes!;
     }
@@ -15754,15 +15830,21 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
 
   List<CustomerModel> get orderFilteredCustomers {
     final selectedRoute = _selectedOrderRoute;
-    if (selectedRoute == null || selectedRoute.trim().isEmpty) return [];
+    final isMixCompany = _mixBillingEnabled;
+    if (!isMixCompany &&
+        (selectedRoute == null || selectedRoute.trim().isEmpty)) {
+      return [];
+    }
 
-    final routeKey = _cleanText(selectedRoute);
+    final routeKey = _cleanText(selectedRoute ?? '');
     final query = _cleanText(_customerSearchQuery);
 
     var customers = _customers.where((c) {
-      if (!_customerBelongsToCompany(c, _selectedOrderCompany ?? '')) {
+      if (!isMixCompany &&
+          !_customerBelongsToCompany(c, _selectedOrderCompany ?? '')) {
         return false;
       }
+      if (isMixCompany) return true;
       final companyDetails = _customerCompanyForOrderSelection(
         c,
         _selectedOrderCompany ?? '',
@@ -15797,7 +15879,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
 
   List<ProductModel> get orderFilteredProducts {
     final selectedCompany = _selectedOrderCompany;
-    var products = selectedCompany == null || selectedCompany.trim().isEmpty
+    var products = _mixBillingEnabled
+        ? _products.where((product) => product.isActive).toList()
+        : selectedCompany == null || selectedCompany.trim().isEmpty
         ? <ProductModel>[]
         : _products
               .where(
@@ -15970,14 +16054,17 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   String? get _selectedOrderCustomerQueryKey {
     final company = _selectedOrderCompany?.trim() ?? '';
     final route = _selectedOrderRoute?.trim() ?? '';
-    if (company.isEmpty || route.isEmpty) return null;
+    if (company.isEmpty || (!_mixBillingEnabled && route.isEmpty)) return null;
     return json.encode([company, route, _customerSearchQuery.trim()]);
   }
 
   String? get _selectedOrderProductQueryKey {
     final company = _selectedOrderCompany?.trim() ?? '';
     if (company.isEmpty || _selectedCustomerId == null) return null;
-    return json.encode([company, _productSearchQuery.trim()]);
+    return json.encode([
+      _mixBillingEnabled ? '__mix__' : company,
+      _productSearchQuery.trim(),
+    ]);
   }
 
   Future<void> _loadOrderCustomers({bool more = false}) async {
@@ -16001,7 +16088,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     try {
       final data = await ApiService.getSalesmanData(
         _currentSalesman.salesmanId ?? _currentSalesman.id,
-        section: 'order-customers', company: company, route: route,
+        section: 'order-customers',
+        company: company,
+        route: _mixBillingEnabled ? null : route,
         search: _customerSearchQuery.trim(), page: page,
         timeout: const Duration(seconds: 45),
       );
@@ -16027,7 +16116,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   Future<void> _loadOrderProducts({bool more = false}) async {
-    final company = _selectedOrderCompany?.trim() ?? '';
+    final company = _mixBillingEnabled
+        ? '__mix__'
+        : _selectedOrderCompany?.trim() ?? '';
     final key = _selectedOrderProductQueryKey;
     if (key == null) return;
     final append = more && key == _orderProductRequestKey && _orderProductPage > 0;
@@ -17385,6 +17476,10 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
           });
           if (!stillAssigned) _startedDeliveryLoadKey = null;
         });
+        if (_startedDeliveryLoadKey == null) {
+          unawaited(_deliveryPositionSubscription?.cancel());
+          _deliveryPositionSubscription = null;
+        }
         unawaited(_loadSavedDeliveryPlan());
       }
     } catch (error) {
@@ -17528,6 +17623,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                               rate: (item['rate'] ?? 0).toDouble(),
                               amount: (item['amount'] ?? 0).toDouble(),
                               mrp: (item['mrp'] ?? 0).toDouble(),
+                              sysCompCode: item['sysCompCode']?.toString(),
+                              companyCode: item['companyCode']?.toString(),
+                              companyName: item['companyName']?.toString(),
                             ),
                           )
                           .toList() ??
@@ -17550,6 +17648,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
                       ? DateTime.parse(o['createdAt'])
                       : DateTime.now(),
                   timeline: [],
+                  isMixBilling: o['isMixBilling'] == true,
                 );
               }).toList() ??
               [];
@@ -17771,6 +17870,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     );
 
     if (shouldLogout != true) return;
+    await _deliveryPositionSubscription?.cancel();
+    _deliveryPositionSubscription = null;
+    _startedDeliveryLoadKey = null;
 
     setState(() => _isLoading = true);
 
@@ -17781,7 +17883,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
     }
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.clear();
+    await ApiService.clearSessionPreferences(prefs);
 
     if (mounted) {
       Navigator.pushAndRemoveUntil(
@@ -18859,6 +18961,20 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         salesmanName: _orderToEdit!.salesmanName,
         items: _editCart.entries.map((entry) {
           final item = entry.value;
+          ProductModel? product;
+          for (final candidate in _products) {
+            if (candidate.id == entry.key) {
+              product = candidate;
+              break;
+            }
+          }
+          OrderItemModel? previousItem;
+          for (final previous in _orderToEdit!.items) {
+            if (previous.productId == entry.key) {
+              previousItem = previous;
+              break;
+            }
+          }
           return OrderItemModel(
             id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
             productId: item.productId,
@@ -18873,6 +18989,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             schAmt: item.schAmt,
             grossAmt: item.grossAmt,
             netAmt: item.netAmt,
+            sysCompCode: product?.sysCompCode ?? previousItem?.sysCompCode,
+            companyCode: product?.companyCode ?? previousItem?.companyCode,
+            companyName: product?.companyName ?? previousItem?.companyName,
           );
         }).toList(),
         totalAmount: newTotalAmount,
@@ -18886,6 +19005,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         internalNotes: _orderToEdit!.internalNotes,
         createdAt: _orderToEdit!.createdAt,
         timeline: _orderToEdit!.timeline,
+        isMixBilling: _orderToEdit!.isMixBilling,
       );
 
       // Call the API to update the order
@@ -18979,7 +19099,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
   }
 
   Future<void> submitOrder() async {
-    if (_selectedCustomerId == null || _cart.isEmpty) return;
+    if (_isLoading || _selectedCustomerId == null || _cart.isEmpty) return;
 
     setState(() => _isLoading = true);
 
@@ -19011,6 +19131,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         salesmanName: _currentSalesman.name,
         items: _cart.entries.map((entry) {
           final item = entry.value;
+          final product = _products.firstWhere((p) => p.id == entry.key);
           return OrderItemModel(
             id: 'item_${entry.key}_${DateTime.now().millisecondsSinceEpoch}',
             productId: item.productId,
@@ -19025,6 +19146,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             schAmt: item.schAmt,
             grossAmt: item.grossAmt,
             netAmt: item.netAmt,
+            sysCompCode: product.sysCompCode,
+            companyCode: product.companyCode,
+            companyName: product.companyName,
           );
         }).toList(),
         totalAmount: cartTotal,
@@ -19053,6 +19177,7 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
             timestamp: DateTime.now(),
           ),
         ],
+        isMixBilling: _mixBillingEnabled,
       );
 
       final savedOrder = await _orderService.createOrder(
@@ -19061,7 +19186,9 @@ class _SalesmanDashboardEnhancedState extends State<SalesmanDashboardEnhanced> {
         _currentSalesman.salesmanId ?? _currentSalesman.id,
         sysCompCode: companyDetails?['sysCompCode']?.toString(),
         companyCode: companyDetails?['companyCode']?.toString(),
-        companyName: companyDetails?['companyName']?.toString(),
+        companyName: _mixBillingEnabled
+            ? 'MIX'
+            : companyDetails?['companyName']?.toString(),
       );
 
       if (mounted) {
@@ -23681,9 +23808,30 @@ Thank you.
     final active = customer.status.toLowerCase() == 'active';
     final statusColor = active ? successGreen : errorRed;
     final customerAddress = customer.address?.trim() ?? '';
+    final companyDetails =
+        _customerCompanyForOrderSelection(
+          customer,
+          _customerOrderCompanyKey(customer),
+        ) ??
+        (customer.companies.isEmpty ? null : customer.companies.first);
+    final companyAddress =
+        (companyDetails?['address'] ?? companyDetails?['Address'] ?? '')
+            .toString()
+            .trim();
     final address = customerAddress.isNotEmpty
         ? customerAddress
+        : companyAddress.isNotEmpty
+        ? companyAddress
         : customer.area;
+    final companyRoute =
+        (companyDetails?['route'] ??
+                companyDetails?['Route'] ??
+                companyDetails?['area'] ??
+                '')
+            .toString()
+            .trim();
+    final customerRoute = customer.route?.trim() ?? '';
+    final route = customerRoute.isNotEmpty ? customerRoute : companyRoute;
     final phone = customer.phone ?? customer.mobile ?? 'N/A';
     final gstStatus = customer.gstStatus ?? 'N/A';
 
@@ -23755,6 +23903,15 @@ Thank you.
                   ),
                 ),
                 Text(
+                  'Route: ${route.isNotEmpty ? route : "N/A"}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 10,
+                    color: Color(0xFF64748B),
+                  ),
+                ),
+                Text(
                   'Phone: $phone  |  GST: $gstStatus',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -23801,12 +23958,7 @@ Thank you.
                         borderRadius: BorderRadius.circular(8),
                       ),
                     ),
-                    onPressed: () {
-                      setState(() {
-                        _selectedCustomerId = customer.id;
-                        _selectedIndex = 2;
-                      });
-                    },
+                    onPressed: () => _startOrderForCustomer(customer),
                     child: const Text(
                       'Order',
                       style: TextStyle(
@@ -23821,6 +23973,106 @@ Thank you.
         ],
       ),
     );
+  }
+
+  void _startOrderForCustomer(CustomerModel customer) {
+    final orderCustomers = <String, CustomerModel>{
+      for (final existing in _customers) existing.id: existing,
+      customer.id: customer,
+    }.values.toList();
+
+    final currentCompany = _selectedOrderCompany?.trim() ?? '';
+    String? company;
+    if (currentCompany.isNotEmpty &&
+        currentCompany != '__mix__' &&
+        _customerBelongsToCompany(customer, currentCompany)) {
+      company = currentCompany;
+    } else {
+      final assignedCompany = _customerOrderCompanyKey(customer).trim();
+      if (assignedCompany.isNotEmpty && assignedCompany != '__unmapped__') {
+        company = assignedCompany;
+      } else {
+        for (final companyDetails in customer.companies) {
+          final sysCompCode =
+              (companyDetails['sysCompCode'] ?? '').toString().trim();
+          final companyCode =
+              (companyDetails['companyCode'] ?? '').toString().trim();
+          final candidate = sysCompCode.isNotEmpty ? sysCompCode : companyCode;
+          if (candidate.isNotEmpty) {
+            company = candidate;
+            break;
+          }
+        }
+      }
+    }
+
+    final companyDetails = company == null
+        ? null
+        : _customerCompanyForOrderSelection(customer, company);
+    final companyRoute = companyDetails?['route']?.toString().trim() ?? '';
+    final companyArea = companyDetails?['area']?.toString().trim() ?? '';
+    final route = companyRoute.isNotEmpty
+        ? companyRoute
+        : companyArea.isNotEmpty
+        ? companyArea
+        : (customer.route?.trim().isNotEmpty ?? false)
+        ? customer.route!.trim()
+        : customer.area.trim();
+    final availableRoutes = company == null
+        ? <String>{}
+        : <String>{
+            ...?_quickOrderRoutes[company],
+            ..._orderRoutesForCompany(orderCustomers, company),
+          };
+    final selectedRoute = route.isNotEmpty && availableRoutes.contains(route)
+        ? route
+        : null;
+
+    _orderCustomerSearchDebounce?.cancel();
+    _orderCustomerSearchDebounce = null;
+    _orderProductSearchDebounce?.cancel();
+    _orderProductSearchDebounce = null;
+
+    setState(() {
+      _customers = orderCustomers;
+      _invalidateOrderDropdowns();
+      _selectedOrderCompany = company;
+      _selectedOrderRoute = selectedRoute;
+      _persistedSelectedRoute = selectedRoute;
+      _selectedCustomerId = customer.id;
+      _selectedIndex = 2;
+      _orderStep = company != null && selectedRoute != null ? 2 : 1;
+      _cart.clear();
+      _stockAlertShown.clear();
+      _orderToEdit = null;
+      _isEditingOrder = false;
+      _editCart.clear();
+      _orderCustomerGeneration++;
+      _orderCustomerRequestKey = null;
+      _loadingOrderCustomers = false;
+      _orderCustomerError = null;
+      _orderCustomerPage = 0;
+      _moreOrderCustomers = false;
+      _orderProductGeneration++;
+      _orderProductRequestKey = null;
+      _loadingOrderProducts = false;
+      _orderProductError = null;
+      _orderProductPage = 0;
+      _moreOrderProducts = false;
+      _orderNotes = '';
+      _selectedPaymentMode = PaymentMode.credit;
+      _orderOutstandingFutures.clear();
+      _customerSearchQuery = '';
+      _customerSearchController.clear();
+      _productSearchQuery = '';
+      _productSearchController.clear();
+      _orderProductFilter = 'all';
+      _showAllOrderCustomers = false;
+    });
+
+    if (company != null) {
+      unawaited(_saveOrderCompany(company));
+    }
   }
 
   Widget _buildListHeader({
@@ -24640,8 +24892,12 @@ Thank you.
     final routeOptions = selectedCompany == null ? <String>[] : orderRoutes;
     final selectedRoute = routeOptions.contains(_selectedOrderRoute)
         ? _selectedOrderRoute : null;
+    final isMixCompany = selectedCompany == '__mix__';
     final routeSelected = selectedRoute != null && selectedRoute.trim().isNotEmpty;
-    final customerKey = routeSelected ? _selectedOrderCustomerQueryKey : null;
+    final customerSelectionAvailable = isMixCompany || routeSelected;
+    final customerKey = customerSelectionAvailable
+        ? _selectedOrderCustomerQueryKey
+        : null;
     final waitingForCustomers = customerKey != null &&
         (customerKey != _orderCustomerRequestKey ||
             _loadingOrderCustomers ||
@@ -24772,7 +25028,62 @@ Thank you.
         const SizedBox(height: 8),
 
         // ROUTE
-        Container(
+        if (isMixCompany)
+          Container(
+            height: 51,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFDCE6F3)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x080F2A52),
+                  blurRadius: 8,
+                  offset: Offset(0, 3),
+                ),
+              ],
+            ),
+            child: const Row(
+              children: [
+                Icon(
+                  Icons.location_on_rounded,
+                  color: Color(0xFF18A43F),
+                  size: 25,
+                ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Route',
+                        style: TextStyle(
+                          color: Color(0xFF6077A7),
+                          fontSize: 10,
+                          height: 1.05,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        'Not applicable - all outlets eligible',
+                        style: TextStyle(
+                          color: Color(0xFF142D67),
+                          fontSize: 13,
+                          height: 1.05,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          Container(
           height: 51,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
@@ -24897,7 +25208,7 @@ Thank you.
         _buildOrderSearchBox(
           controller: _customerSearchController,
           hint: 'Search customer by name, code...',
-          enabled: routeSelected,
+          enabled: customerSelectionAvailable,
           onChanged: _onOrderCustomerSearchChanged,
         ),
         const SizedBox(height: 10),
@@ -24914,7 +25225,7 @@ Thank you.
                 ),
               ),
             ),
-            if (routeSelected && customers.length > 5)
+            if (customerSelectionAvailable && customers.length > 5)
               TextButton(
                 onPressed: () => setState(
                   () => _showAllOrderCustomers = !_showAllOrderCustomers,
@@ -24936,7 +25247,7 @@ Thank you.
           ],
         ),
         const SizedBox(height: 4),
-        if (!routeSelected)
+        if (!customerSelectionAvailable)
           _orderCard(
             child: const Padding(
               padding: EdgeInsets.symmetric(vertical: 18),
@@ -25070,6 +25381,18 @@ Thank you.
                                         fontWeight: FontWeight.w600,
                                       ),
                                     ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Route: ${_selectedOrderRoute?.trim().isNotEmpty == true ? _selectedOrderRoute!.trim() : (customer.route?.trim().isNotEmpty == true ? customer.route!.trim() : '-')}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Color(0xFF58709E),
+                                        fontSize: 9.8,
+                                        height: 1.05,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
                                     const SizedBox(height: 4),
                                     _buildCustomerGstLine(customer),
                                   ],
@@ -25182,7 +25505,7 @@ Thank you.
               ),
             );
           }),
-        if (routeSelected && _moreOrderCustomers)
+        if (customerSelectionAvailable && _moreOrderCustomers)
           TextButton(
             onPressed: _loadingOrderCustomers
                 ? null : () => unawaited(_loadOrderCustomers(more: true)),
@@ -26240,6 +26563,11 @@ Thank you.
           ...products.map((product) {
             final cartItem = _cart[product.id];
             final inCart = cartItem != null;
+            final productCompany = product.companyName?.trim().isNotEmpty == true
+                ? product.companyName!.trim()
+                : product.companyCode?.trim().isNotEmpty == true
+                ? product.companyCode!.trim()
+                : product.sysCompCode?.trim() ?? '';
 
             return Container(
               margin: const EdgeInsets.only(bottom: 6),
@@ -26275,6 +26603,20 @@ Thank you.
                             fontWeight: FontWeight.w900,
                           ),
                         ),
+                        if (_mixBillingEnabled && productCompany.isNotEmpty) ...[
+                          const SizedBox(height: 3),
+                          Text(
+                            'Company: $productCompany',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xFF58709E),
+                              fontSize: 9,
+                              height: 1,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 4),
                         Row(
                           children: [
@@ -29149,8 +29491,7 @@ Thank you.
 
   Map<String, dynamic>? _nextDeliveryStop(List<Map<String, dynamic>> route) {
     for (final bill in route) {
-      if (!_isDeliveryCompleted(bill) &&
-          _hasValidDeliveryLocation(bill)) {
+      if (!_isDeliveryCompleted(bill)) {
         return bill;
       }
     }
@@ -29158,19 +29499,48 @@ Thank you.
   }
 
   Future<bool> _markDeliveryCompleted(Map<String, dynamic> bill) async {
+    final key = '${bill['_deliveryLoadId']}|${_deliveryBillKey(bill)}|${bill['SysAcCode']}';
+    if (!_completingDeliveryBills.add(key)) return false;
+    try {
+      return await _completeDeliveryBill(bill);
+    } finally {
+      _completingDeliveryBills.remove(key);
+    }
+  }
+
+  Future<bool> _completeDeliveryBill(Map<String, dynamic> bill) async {
     if (_isDeliveryCompleted(bill)) return true;
 
     final storeLatitude = _getBillLatitude(bill);
     final storeLongitude = _getBillLongitude(bill);
-    if (!_hasValidDeliveryLocation(bill) ||
-        storeLatitude == null ||
-        storeLongitude == null) {
-      showSafeSnackBar(
-        context,
-        'This store does not have a valid location. Delivery cannot be completed.',
-        backgroundColor: errorRed,
+    final missingLocation = !_hasValidDeliveryLocation(bill) || storeLatitude == null || storeLongitude == null;
+    String? exceptionReason;
+    if (missingLocation) {
+      final reasonController = TextEditingController();
+      exceptionReason = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('Outlet location exception'),
+          content: TextField(
+            controller: reasonController,
+            maxLength: 500,
+            maxLines: 3,
+            decoration: const InputDecoration(
+              labelText: 'Why can this delivery be confirmed?',
+              helperText: 'At least 10 characters. Saved for distributor review.',
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+            TextButton(onPressed: () {
+              if (reasonController.text.trim().length >= 10) Navigator.pop(dialogContext, reasonController.text.trim());
+            }, child: const Text('Continue')),
+          ],
+        ),
       );
-      return false;
+      // The dialog can still be animating out; defer controller disposal.
+      Future<void>.delayed(const Duration(seconds: 1), reasonController.dispose);
+      if (exceptionReason == null || !mounted) return false;
     }
 
     Position currentPosition;
@@ -29188,7 +29558,7 @@ Thank you.
       return false;
     }
 
-    final distanceMeters = Geolocator.distanceBetween(
+    final distanceMeters = missingLocation ? 0.0 : Geolocator.distanceBetween(
       currentPosition.latitude,
       currentPosition.longitude,
       storeLatitude,
@@ -29206,6 +29576,7 @@ Thank you.
       return false;
     }
 
+    if (!mounted) return false;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -29229,6 +29600,11 @@ Thank you.
     if (confirmed != true || !mounted) return false;
 
     try {
+      // Confirmation can remain open long enough for the first fix to expire.
+      currentPosition = await _requestSalesmanLocation();
+      if (!missingLocation && Geolocator.distanceBetween(currentPosition.latitude, currentPosition.longitude, storeLatitude, storeLongitude) > _deliveryCompletionRadiusMeters) {
+        throw Exception('Move within 150 m of the outlet and retry.');
+      }
       await ApiService.completeLoadDelivery({
         'loadDocumentId': bill['_deliveryLoadId']?.toString() ?? '',
         'distributorId': _deliveryDistributorId.isNotEmpty
@@ -29240,6 +29616,8 @@ Thank you.
         'deliveryLatitude': currentPosition.latitude,
         'deliveryLongitude': currentPosition.longitude,
         'deliveryAccuracy': currentPosition.accuracy,
+        'locationCapturedAt': currentPosition.timestamp.toUtc().toIso8601String(),
+        if (exceptionReason != null) 'exceptionReason': exceptionReason,
         'distanceFromStoreMeters': distanceMeters,
       });
       if (!mounted) return true;
@@ -29249,6 +29627,7 @@ Thank you.
         final sourceIndex = _deliveryBills.indexWhere(
           (item) =>
               item is Map &&
+              item['_deliveryLoadId']?.toString() == bill['_deliveryLoadId']?.toString() &&
               _deliveryBillKey(Map<String, dynamic>.from(item)) ==
                   _deliveryBillKey(bill) &&
               _deliveryText(Map<String, dynamic>.from(item), const [
@@ -29267,8 +29646,14 @@ Thank you.
         'Order marked completed. Continue to the next stop.',
         backgroundColor: successGreen,
       );
-      final latestPosition = _salesmanPosition;
-      if (latestPosition != null) {
+      final allDone = _activeDeliveryBills().every(_isDeliveryCompleted);
+      if (allDone) {
+        await _deliveryPositionSubscription?.cancel();
+        _deliveryPositionSubscription = null;
+        _startedDeliveryLoadKey = null;
+      }
+      final latestPosition = currentPosition;
+      if (!allDone) {
         final outletCode = _deliveryText(bill, const ['SysAcCode', 'customer_id']);
         final loadId = bill['_deliveryLoadId']?.toString() ?? '';
         final outletCompleted = _deliveryBills.whereType<Map>().where((item) {
@@ -31437,6 +31822,15 @@ Thank you.
         !(latitude == 0 && longitude == 0);
   }
 
+  bool _usableDeliveryPosition(Position position) {
+    final age = DateTime.now().difference(position.timestamp);
+    return position.latitude.isFinite && position.longitude.isFinite &&
+        position.latitude.abs() <= 90 && position.longitude.abs() <= 180 &&
+        !(position.latitude == 0 && position.longitude == 0) &&
+        position.accuracy.isFinite && position.accuracy > 0 && position.accuracy <= 100 &&
+        age.inSeconds >= -5 && age.inSeconds <= 60;
+  }
+
   Future<Position> _requestSalesmanLocation() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -31458,12 +31852,16 @@ Thank you.
       );
     }
 
-    return Geolocator.getCurrentPosition(
+    final position = await Geolocator.getCurrentPosition(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
         timeLimit: Duration(seconds: 20),
       ),
     );
+    if (!_usableDeliveryPosition(position)) {
+      throw Exception('GPS is inaccurate or stale. Wait for a clear signal and retry.');
+    }
+    return position;
   }
 
   Future<String?> _prepareDeliveryStart(String series, String loadNo) async {
@@ -31510,7 +31908,12 @@ Thank you.
       // ============================================================
       // 3. GET SALESMAN CURRENT LOCATION
       // ============================================================
-      final position = await _requestSalesmanLocation();
+      Position? position;
+      try {
+        position = await _requestSalesmanLocation();
+      } catch (error) {
+        if (mounted) showSafeSnackBar(context, 'Load opened without GPS. Navigation and proximity completion need a valid location.');
+      }
 
       if (!mounted) {
         return 'Unable to start delivery.';
@@ -31537,6 +31940,8 @@ Thank you.
         _lastDeliveryRouteOrigin = position;
         _lastDeliveryPlanOrigin = null;
         _pendingDeliveryPosition = null;
+        _lastAutomaticRouteAt = null;
+        _deliveryRouteGeneration++;
 
         // Clear previous load route
         _deliveryRoadRoute = const [];
@@ -31557,7 +31962,7 @@ Thank you.
       // If Google Routes API fails, the load MUST still open.
       // Bill delivery/payment functionality is not dependent on it.
       // ============================================================
-      if (routeBills.isNotEmpty) {
+      if (position != null && routeBills.isNotEmpty) {
         // Show the selected load's outlets immediately. Road directions can
         // arrive later without holding up the inline delivery sequence.
         unawaited(_loadStartedDeliveryPlanAndRoadRoute(
@@ -31566,7 +31971,7 @@ Thank you.
           _deliveryLoadKey(series, normalizedLoadNo),
         ));
       } else {
-        unawaited(_saveDeliveryPlan(position));
+        if (position != null) unawaited(_saveDeliveryPlan(position));
         debugPrint(
           'Load ${series.isEmpty ? "(blank)" : series}/$normalizedLoadNo '
           'started without route because no valid customer coordinates exist.',
@@ -31576,7 +31981,7 @@ Thank you.
       // ============================================================
       // 6. START LIVE LOCATION TRACKING
       // ============================================================
-      await _startDeliveryLocationTracking();
+      if (position != null) await _startDeliveryLocationTracking();
 
       return null;
     } catch (error) {
@@ -31694,6 +32099,7 @@ Thank you.
     String? loadKey,
   }) async {
     if (pendingBills.isEmpty) return;
+    final generation = ++_deliveryRouteGeneration;
 
     // ============================================================
     // 1. KEEP YOUR EXISTING ROUTE OPTIMIZATION
@@ -31831,7 +32237,7 @@ Thank you.
       currentOriginLongitude = lastStop.longitude;
     }
 
-    if (!mounted ||
+    if (!mounted || generation != _deliveryRouteGeneration ||
         (loadKey != null &&
             loadKey != _deliveryLoadKey(
               _activeLoadSeries ?? '',
@@ -31874,7 +32280,7 @@ Thank you.
   }
 
   void _handleDeliveryPositionUpdate(Position position) {
-    if (!mounted || _activeLoadSeries == null || _activeLoadNumber == null) {
+    if (!mounted || !_usableDeliveryPosition(position) || _startedDeliveryLoadKey == null || _activeLoadSeries == null || _activeLoadNumber == null) {
       return;
     }
 
@@ -31888,11 +32294,14 @@ Thank you.
             position.latitude,
             position.longitude,
           );
-    if (movedMeters < 100) return;
+    if (movedMeters < 250) return;
+    final now = DateTime.now();
+    if (_lastAutomaticRouteAt != null && now.difference(_lastAutomaticRouteAt!).inSeconds < 60) return;
     if (_isRecalculatingDeliveryRoute) {
       _pendingDeliveryPosition = position;
       return;
     }
+    _lastAutomaticRouteAt = now;
     unawaited(_recalculateActiveDeliveryRoute(position, replanStops: true));
   }
 
@@ -31901,7 +32310,11 @@ Thank you.
   ) async {
     if (_isRecalculatingDeliveryRoute) return;
     _isRecalculatingDeliveryRoute = true;
+    final loadKey = _deliveryLoadKey(_activeLoadSeries ?? '', _activeLoadNumber ?? '');
     try {
+      if (_deliveryPositionSubscription == null && _startedDeliveryLoadKey != null) {
+        await _startDeliveryLocationTracking();
+      }
       final pendingBills = _activeDeliveryBills()
           .where(
             (bill) =>
@@ -31920,7 +32333,8 @@ Thank you.
               ) >= 500)) {
         await _saveDeliveryPlan(position, recalculate: true);
       }
-      await _updateDeliveryRoadRoute(position, pendingBills);
+      if (!mounted || loadKey != _deliveryLoadKey(_activeLoadSeries ?? '', _activeLoadNumber ?? '')) return;
+      await _updateDeliveryRoadRoute(position, pendingBills, loadKey: loadKey);
     } catch (error) {
       debugPrint('Unable to recalculate delivery route: $error');
     } finally {
@@ -34301,6 +34715,16 @@ class _LoginScreenState extends State<LoginScreen> {
     final prefs = await SharedPreferences.getInstance();
     final isLoggedIn = prefs.getBool('is_logged_in') ?? false;
     final userJson = prefs.getString('user_json');
+    if ((prefs.getString('api_session_token') ?? '').isEmpty) return;
+    try {
+      final response = await ApiService.client.get(Uri.parse('$apiUrl/session'));
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        await ApiService.clearSessionPreferences(prefs);
+        return;
+      }
+    } catch (_) {
+      // Keep the cached login available while the connection is unavailable.
+    }
 
     if (isLoggedIn && userJson != null && mounted) {
       try {
@@ -34376,8 +34800,7 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final response = await http
-          .post(
+      final response = await ApiService.client.post(
             Uri.parse('$apiUrl/login'),
             headers: {'Content-Type': 'application/json'},
             body: json.encode({
@@ -34394,6 +34817,7 @@ class _LoginScreenState extends State<LoginScreen> {
           final backendRoleStr = userData['role'];
 
           final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('api_session_token', data['token']?.toString() ?? '');
           await prefs.setString('user_email', userData['email'] ?? '');
           await prefs.setString('user_role', backendRoleStr);
           await prefs.setBool('is_logged_in', true);
@@ -34520,8 +34944,7 @@ class _LoginScreenState extends State<LoginScreen> {
         'isActive': true,
       };
 
-      final registerResponse = await http
-          .post(
+      final registerResponse = await ApiService.client.post(
             Uri.parse('$apiUrl/register'),
             headers: {'Content-Type': 'application/json'},
             body: json.encode(registrationData),
