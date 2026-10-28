@@ -1588,6 +1588,27 @@ app.post('/api/import/products', excelUpload.single('file'), async (req, res) =>
     }
 });
 
+// Stock synchronization must use the exact SKU stored by the product master.
+// Supports legacy ProductCode_MRP and newer ProductCode_MRP_SRate identities.
+// Do not reformat price/rate decimals: formatting is part of the stored key.
+function stockSyncProductSku(code, mrp) {
+    const sku = String(code ?? '').trim();
+    const parts = sku.split('_');
+    if (parts.length !== 2 && parts.length !== 3) {
+        throw new Error(`Invalid product SKU/MRP pair: ${code} / ${mrp}`);
+    }
+    const [productCode, skuMrp, skuRate] = parts;
+    const numericPattern = /^[0-9]+(?:\.[0-9]+)?$/;
+    const amount = Number(mrp);
+    if (!productCode || !numericPattern.test(skuMrp) ||
+        (parts.length === 3 && !numericPattern.test(skuRate)) ||
+        !Number.isFinite(amount) || amount < 0 ||
+        Math.abs(Number(skuMrp) - amount) > 0.0000001) {
+        throw new Error(`Invalid product SKU/MRP pair: ${code} / ${mrp}`);
+    }
+    return sku;
+}
+
 // ==================== INCREMENTAL DESKTOP MASTER SYNC ====================
 // Additive routes only: the existing customer/product import routes above remain unchanged.
 // The desktop compares these remote records before uploading only missing/new records.
@@ -1630,7 +1651,7 @@ app.get('/api/import/sync-state', async (req, res) => {
                     return res.status(409).json({ success: false, error: 'A product lacks SKU or company code; sync comparison unsafe', code: rawCode });
                 }
                 let code;
-                try { code = canonicalProductSku(rawCode, row.mrp); }
+                try { code = stockSyncProductSku(rawCode, row.mrp); }
                 catch (err) { return res.status(409).json({ success: false, error: err.message, code: rawCode }); }
                 const key = `${sysCompCode}|${code}`;
                 if (keys.has(key)) {
@@ -1674,7 +1695,7 @@ app.post('/api/import/products/stock', excelUpload.single('file'), async (req, r
                 return res.status(400).json({ success: false, error: `Missing product SKU, MRP, company or stock at row ${index + 2}` });
             }
             let code;
-            try { code = canonicalProductSku(rawCode, rawMrp); }
+            try { code = stockSyncProductSku(rawCode, rawMrp); }
             catch (error) { return res.status(400).json({ success: false, error: `Row ${index + 2}: ${error.message}` }); }
             const key = `${company}|${code}`;
             if (seen.has(key)) return res.status(409).json({ success: false, error: `Duplicate company/product key in stock file: ${key}` });
